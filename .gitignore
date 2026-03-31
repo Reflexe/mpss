@@ -376,5 +376,9 @@ FodyWeavers.xsd
 # Nvim configs
 .nvim
 
+# XCFramework build output
+*.xcframework
+
 # Random
 **/compile_commands.json
+CLAUDE.local.md
