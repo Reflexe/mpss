@@ -90,7 +90,7 @@ jobs:
     displayName: ${{ parameters.name }}
     timeoutInMinutes: 180
     pool:
-      vmImage: 'windows-latest'
+      vmImage: 'ubuntu-latest'
     steps:
     - template: android.yaml
       parameters:
