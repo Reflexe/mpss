@@ -243,6 +243,7 @@ The following table outlines the common CMake configuration options recognized b
 | `MPSS_BUILD_MPSS_OPENSSL_STATIC=ON` | Build the OpenSSL provider as a static library. |
 | `MPSS_BUILD_MPSS_OPENSSL_SHARED=ON` | Build the OpenSSL provider as a shared library. |
 | `MPSS_BACKEND_YUBIKEY=ON` | Enable the YubiKey PIV backend. |
+| `MPSS_ENABLE_HARDENING=OFF` | Disable security hardening compile and link flags (default is `ON`). |
 | `BUILD_SHARED_LIBS=ON` | Build all targets as shared libraries (convenience shortcut). |
 
 Static targets are named `mpss::mpss_static` and `mpss::mpss_openssl_static`, whereas shared targets are `mpss::mpss` and `mpss::mpss_openssl`.

@@ -92,14 +92,21 @@ if(MPSS_ENABLE_HARDENING)
         add_compile_options(/guard:cf)
         add_link_options(/guard:cf)
     else()
-        # Stack canaries.
-        add_compile_options(-fstack-protector-strong)
+        # Gate compile flags to clang/gcc-driven languages so they don't leak
+        # into Swift's compile/link driver on Apple targets.
+        set(_mpss_c_family_langs "$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>")
 
-        # Stack-clash protection (gated; not available on older toolchains).
-        include(CheckCCompilerFlag)
-        check_c_compiler_flag(-fstack-clash-protection MPSS_HAS_STACK_CLASH_PROTECTION)
-        if(MPSS_HAS_STACK_CLASH_PROTECTION)
-            add_compile_options(-fstack-clash-protection)
+        # Stack canaries.
+        add_compile_options($<${_mpss_c_family_langs}:-fstack-protector-strong>)
+
+        # Stack-clash protection (no-op on Apple Clang; gated for older
+        # GCC/Clang versions that don't support the flag).
+        if(NOT APPLE)
+            include(CheckCCompilerFlag)
+            check_c_compiler_flag(-fstack-clash-protection MPSS_HAS_STACK_CLASH_PROTECTION)
+            if(MPSS_HAS_STACK_CLASH_PROTECTION)
+                add_compile_options($<${_mpss_c_family_langs}:-fstack-clash-protection>)
+            endif()
         endif()
 
         # Position-independent code (PIC for libraries, PIE for executables).
