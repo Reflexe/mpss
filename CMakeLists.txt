@@ -10,6 +10,7 @@ option(MPSS_BUILD_MPSS_OPENSSL_STATIC "Build the OpenSSL provider static library
 option(MPSS_BUILD_MPSS_OPENSSL_SHARED "Build the mpss OpenSSL provider shared library." NO)
 option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
+option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
 # default to building shared libraries. Explicit -D options take precedence.
@@ -83,12 +84,57 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     include(UseJava)
 endif()
 
+# Security hardening flags. Applied as directory-scope options; do NOT
+# propagate to downstream consumers via the install/export interface.
+if(MPSS_ENABLE_HARDENING)
+    if(MSVC)
+        # Control Flow Guard.
+        add_compile_options(/guard:cf)
+        add_link_options(/guard:cf)
+    else()
+        # Stack canaries.
+        add_compile_options(-fstack-protector-strong)
+
+        # Stack-clash protection (gated; not available on older toolchains).
+        include(CheckCCompilerFlag)
+        check_c_compiler_flag(-fstack-clash-protection MPSS_HAS_STACK_CLASH_PROTECTION)
+        if(MPSS_HAS_STACK_CLASH_PROTECTION)
+            add_compile_options(-fstack-clash-protection)
+        endif()
+
+        # Position-independent code (PIC for libraries, PIE for executables).
+        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+        # Standard library hardening (bounds-checked containers, etc.).
+        add_compile_definitions(
+            $<$<NOT:$<CONFIG:Debug>>:_GLIBCXX_ASSERTIONS>
+            $<$<NOT:$<CONFIG:Debug>>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
+        )
+
+        # Full RELRO, immediate binding, non-executable stack (ELF only).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
+            add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+        endif()
+
+        # Fortified libc functions (requires -O1+, skip on Apple).
+        if(NOT APPLE)
+            add_compile_options($<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>)
+            add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+        endif()
+    endif()
+endif()
+
 # Define additional directory path variables.
 include(GNUInstallDirs)
 
-# Setup runtime path.
-set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+# Setup runtime path. Use loader-relative paths on Apple to keep XCFrameworks
+# relocatable. Use the absolute install lib dir on ELF platforms.
+if(APPLE)
+    set(CMAKE_INSTALL_RPATH "@loader_path;@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+else()
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+endif()
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
 # Define source tree variables.
 set(mpss_INCLUDES_DIR "${CMAKE_CURRENT_LIST_DIR}")

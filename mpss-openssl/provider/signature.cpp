@@ -445,6 +445,11 @@ extern "C" int mpss_signature_digest_verify_final(void *ctx, const unsigned char
         return 0;
     }
 
+    if (nullptr == sctx->pkey || !sctx->pkey->has_valid_key())
+    {
+        return 0;
+    }
+
     // Check that the digest context is available and in the right state.
     // This means that the EVP_MD_CTX and EVP_MD are already set up.
     const digest_state state = sctx->dctx->state;

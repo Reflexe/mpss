@@ -95,6 +95,11 @@ byte_vector mpss_vk_params_to_spki(OSSL_LIB_CTX *libctx, const OSSL_PARAM *param
 
     // Create a new EVP_PKEY from the parameters.
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=default");
+    if (nullptr == ctx)
+    {
+        return {};
+    }
+
     EVP_PKEY *pkey = nullptr;
     unsigned char *der_buf = nullptr;
     byte_vector der_data;
