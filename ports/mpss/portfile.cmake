@@ -5,11 +5,6 @@ if(VCPKG_TARGET_IS_LINUX AND NOT "yubikey" IN_LIST FEATURES)
         "OS-native backend. Install with: vcpkg install mpss[yubikey]")
 endif()
 
-# Android only supports shared libraries.
-if(VCPKG_TARGET_IS_ANDROID)
-    vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
-endif()
-
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO Microsoft/mpss

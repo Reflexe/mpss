@@ -4,7 +4,7 @@
   "description": "A multi-platform C++ library for hardware-backed digital signature key storage and signing.",
   "homepage": "https://github.com/microsoft/mpss",
   "license": "MIT",
-  "supports": "windows | osx | linux | ios | android",
+  "supports": "windows | osx | linux",
   "dependencies": [
     {
       "name": "vcpkg-cmake",

@@ -24,6 +24,8 @@ MPSS core depends only on operating system APIs, except that it uses [GoogleTest
 When the YubiKey backend is enabled, it additionally depends on [libykpiv](https://developers.yubico.com/yubico-piv-tool/) and [OpenSSL](https://GitHub.com/openssl/openssl), both provided automatically by vcpkg.
 The OpenSSL provider naturally requires [OpenSSL](https://GitHub.com/openssl/openssl) as well.
 
+A [vcpkg port](ports/mpss/) is provided for **desktop platforms only** (Windows, macOS, Linux). On these platforms, downstream projects can consume MPSS as a vcpkg package once the port is published to a registry. **iOS and Android are not covered by the vcpkg port** — on those platforms, build MPSS directly from source using the dedicated paths described in the platform-specific sections below (the iOS XCFramework helper for iOS, and the direct NDK-based CMake build for Android). Note that even on iOS and Android, vcpkg may still be used as the *dependency manager* (for example, to fetch OpenSSL) — that is independent of the port.
+
 ### Using CMake Presets (Windows, macOS, Linux)
 
 The easiest way to build MPSS on desktop platforms is using [CMake presets](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html).
