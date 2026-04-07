@@ -303,7 +303,10 @@ TEST(MPSS_OpenSSL, DeleteKeyFromBackend)
         // Clean up a possible leftover from a previous run.
         mpss_delete_key_from_backend(key_name.c_str(), backend);
 
-        // Create a key in this specific backend.
+        // Create a key in this specific backend. The backend may be registered
+        // without an underlying device being currently available (e.g., no
+        // YubiKey plugged in), so treat key generation failure as "backend not
+        // currently usable" and continue to the next one.
         EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss");
         ASSERT_NE(nullptr, ctx);
         ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
@@ -313,7 +316,11 @@ TEST(MPSS_OpenSSL, DeleteKeyFromBackend)
             OSSL_PARAM_construct_utf8_string("mpss_backend", const_cast<char *>(backend), 0), OSSL_PARAM_END};
         ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, params));
         EVP_PKEY *pkey = nullptr;
-        ASSERT_EQ(1, EVP_PKEY_generate(ctx, &pkey));
+        if (1 != EVP_PKEY_generate(ctx, &pkey))
+        {
+            EVP_PKEY_CTX_free(ctx);
+            continue;
+        }
         EVP_PKEY_CTX_free(ctx);
         EVP_PKEY_free(pkey);
 
