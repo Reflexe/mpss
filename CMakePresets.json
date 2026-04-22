@@ -157,6 +157,56 @@
             }
         },
         {
+            "name": "linux-arm64-debug",
+            "displayName": "Linux Debug (arm64, Ninja)",
+            "inherits": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "VCPKG_TARGET_TRIPLET": "arm64-linux",
+                "VCPKG_HOST_TRIPLET": "arm64-linux"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-release",
+            "displayName": "Linux Release (arm64, Ninja)",
+            "inherits": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "VCPKG_TARGET_TRIPLET": "arm64-linux",
+                "VCPKG_HOST_TRIPLET": "arm64-linux"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-debug",
+            "displayName": "Linux Debug (arm64, Ninja) [YubiKey]",
+            "inherits": "linux-arm64-debug",
+            "cacheVariables": {
+                "MPSS_BACKEND_YUBIKEY": "YES"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-release",
+            "displayName": "Linux Release (arm64, Ninja) [YubiKey]",
+            "inherits": "linux-arm64-release",
+            "cacheVariables": {
+                "MPSS_BACKEND_YUBIKEY": "YES"
+            }
+        },
+        {
             "name": "macos-arm64-debug",
             "displayName": "macOS Debug (arm64, Ninja)",
             "inherits": "base",
@@ -449,6 +499,46 @@
         {
             "name": "linux-with-yubikey-release",
             "configurePreset": "linux-with-yubikey-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-debug",
+            "configurePreset": "linux-arm64-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-release",
+            "configurePreset": "linux-arm64-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-debug",
+            "configurePreset": "linux-arm64-with-yubikey-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-release",
+            "configurePreset": "linux-arm64-with-yubikey-release",
             "jobs": 0,
             "condition": {
                 "type": "equals",
