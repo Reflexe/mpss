@@ -13,6 +13,27 @@
 #   BUILD_MPSS_OPENSSL  Build the OpenSSL provider XCFramework. Default: ON.
 #   OUTPUT_DIR     Where to place the .xcframework bundles. Default: project root.
 #   WORK_DIR       Directory for intermediate build/install files. Default: out/ios-xcframework.
+#
+# Scope and design notes:
+#
+# 1. iOS-only by design: produces arm64 slices for `iphoneos` (device) and
+#    `iphonesimulator` (Apple Silicon Mac sim host). Does not cover x86_64
+#    simulator (Intel Mac hosts), macOS native, Mac Catalyst, visionOS, etc.
+#
+# 2. Static-library XCFrameworks: the inner artifacts are .a archives, not
+#    .framework bundles. Consequence: none of the dylib/framework runtime
+#    machinery (LC_ID_DYLIB, LC_LOAD_DYLIB, LC_RPATH, install names) applies
+#    to what we ship here -- static archives carry only object code plus a
+#    LC_BUILD_VERSION per object identifying the platform slice. The
+#    consumer's link step pulls our .o files into their final binary.
+#
+# 3. OpenSSL is not embedded: libmpss_openssl_static.a defines only its own
+#    _OSSL_provider_init entry point; all _EVP_*/_BIO_*/_OSSL_*/_X509_*/etc.
+#    references are left undefined for the consumer's link to resolve against
+#    their own iOS-built OpenSSL. This is why the same vcpkg triplet header
+#    path can serve both the device and simulator builds below: only headers
+#    are consulted at our compile time, and OpenSSL's public headers are
+#    SDK-agnostic. No iPhoneOS-flagged code leaks into the simulator slice.
 
 cmake_minimum_required(VERSION 3.25)
 
@@ -20,8 +41,23 @@ cmake_minimum_required(VERSION 3.25)
 if(NOT DEFINED BUILD_TYPE)
     set(BUILD_TYPE Release)
 endif()
+if(NOT BUILD_TYPE STREQUAL "Release" AND NOT BUILD_TYPE STREQUAL "Debug")
+    message(FATAL_ERROR "BUILD_TYPE must be 'Release' or 'Debug' (got '${BUILD_TYPE}').")
+endif()
 if(NOT DEFINED BUILD_MPSS_OPENSSL)
     set(BUILD_MPSS_OPENSSL ON)
+endif()
+
+# When building the OpenSSL provider, vcpkg must be available so the
+# iOS-targeted OpenSSL headers and link target come from the right SDK.
+# Without VCPKG_ROOT, CMake would silently fall back to system OpenSSL
+# (Homebrew, /usr/lib) which is not iOS-compatible and fails late at
+# compile or link time with confusing errors.
+if(BUILD_MPSS_OPENSSL AND NOT DEFINED ENV{VCPKG_ROOT})
+    message(FATAL_ERROR
+        "BUILD_MPSS_OPENSSL=ON requires the VCPKG_ROOT environment variable "
+        "to be set so an iOS-targeted OpenSSL can be located. Either set "
+        "VCPKG_ROOT or pass -DBUILD_MPSS_OPENSSL=OFF.")
 endif()
 
 # Source directory is the parent of the cmake/ directory containing this script.
@@ -58,8 +94,16 @@ set(COMMON_ARGS
     -GXcode
     -DCMAKE_SYSTEM_NAME=iOS
     -DCMAKE_OSX_ARCHITECTURES=arm64
+    # Static for iOS: App Store policy disallows dlopen of arbitrary user
+    # code, so the OpenSSL provider must be linked into the consumer app at
+    # build time and registered via OSSL_PROVIDER_add_builtin() rather than
+    # OSSL_PROVIDER_load() of a dynamic .dylib.
     -DMPSS_BUILD_MPSS_CORE_STATIC=ON
     -DMPSS_BUILD_MPSS_OPENSSL_STATIC=${BUILD_MPSS_OPENSSL}
+    # YubiKey is unsupported on iOS and the libykpiv vcpkg port has no iOS
+    # triplet. Force it off here so a stray cache or environment variable
+    # cannot accidentally enable it.
+    -DMPSS_BACKEND_YUBIKEY=OFF
 )
 if(DEFINED ENV{VCPKG_ROOT})
     list(APPEND COMMON_ARGS
@@ -134,6 +178,43 @@ if(NOT result EQUAL 0)
     message(FATAL_ERROR "Failed to install simulator build.")
 endif()
 
+# --- Verify expected install artifacts ---
+#
+# Fail loudly with a clear message if something upstream (a renamed target,
+# a changed install prefix layout, a disabled MPSS_BUILD_MPSS_OPENSSL build)
+# broke our assumptions, rather than letting xcodebuild emit a confusing
+# "file not found" error later.
+
+if(BUILD_TYPE STREQUAL "Debug")
+    set(CORE_LIB "libmpss_static_debug.a")
+    set(OPENSSL_LIB "libmpss_openssl_static_debug.a")
+else()
+    set(CORE_LIB "libmpss_static.a")
+    set(OPENSSL_LIB "libmpss_openssl_static.a")
+endif()
+
+set(_expected_libs "${CORE_LIB}")
+if(BUILD_MPSS_OPENSSL)
+    list(APPEND _expected_libs "${OPENSSL_LIB}")
+endif()
+
+foreach(_slice IN ITEMS "${INSTALL_DEVICE}" "${INSTALL_SIMULATOR}")
+    foreach(_libname IN LISTS _expected_libs)
+        if(NOT EXISTS "${_slice}/lib/${_libname}")
+            message(FATAL_ERROR
+                "Expected install artifact not found: ${_slice}/lib/${_libname}")
+        endif()
+    endforeach()
+    if(NOT IS_DIRECTORY "${_slice}/include/mpss")
+        message(FATAL_ERROR
+            "Expected include directory not found: ${_slice}/include/mpss")
+    endif()
+    if(BUILD_MPSS_OPENSSL AND NOT IS_DIRECTORY "${_slice}/include/mpss-openssl")
+        message(FATAL_ERROR
+            "Expected include directory not found: ${_slice}/include/mpss-openssl")
+    endif()
+endforeach()
+
 # --- Create XCFrameworks ---
 
 # Stage headers per platform slice. XCFramework needs separate header trees
@@ -144,15 +225,8 @@ file(COPY "${INSTALL_DEVICE}/include/mpss"
 file(COPY "${INSTALL_SIMULATOR}/include/mpss"
      DESTINATION "${XCF_STAGING}/mpss/simulator")
 
-# Determine library filename based on build type.
-if(BUILD_TYPE STREQUAL "Debug")
-    set(CORE_LIB "libmpss_static_debug.a")
-    set(OPENSSL_LIB "libmpss_openssl_static_debug.a")
-else()
-    set(CORE_LIB "libmpss_static.a")
-    set(OPENSSL_LIB "libmpss_openssl_static.a")
-endif()
-
+# xcodebuild refuses to overwrite an existing .xcframework output, so clear
+# any prior bundles before re-creating them.
 set(CORE_XCF "${OUTPUT_DIR}/libmpss.xcframework")
 file(REMOVE_RECURSE "${CORE_XCF}")
 
@@ -178,15 +252,21 @@ if(BUILD_MPSS_OPENSSL)
     file(COPY "${INSTALL_SIMULATOR}/include/mpss-openssl"
          DESTINATION "${XCF_STAGING}/mpss-openssl/simulator")
 
-    # Include OpenSSL headers from vcpkg if available.
-    if(EXISTS "${BUILD_DEVICE}/vcpkg_installed/arm64-ios/include/openssl")
-        file(COPY "${BUILD_DEVICE}/vcpkg_installed/arm64-ios/include/openssl"
+    # Include OpenSSL headers from vcpkg if available. Both slices must
+    # have them; otherwise the XCFramework headers tree would be asymmetric
+    # and the file(COPY) of the missing slice would fail with an unhelpful
+    # error.
+    set(_dev_openssl_inc "${BUILD_DEVICE}/vcpkg_installed/arm64-ios/include/openssl")
+    set(_sim_openssl_inc "${BUILD_SIMULATOR}/vcpkg_installed/arm64-ios/include/openssl")
+    if(EXISTS "${_dev_openssl_inc}" AND EXISTS "${_sim_openssl_inc}")
+        file(COPY "${_dev_openssl_inc}"
              DESTINATION "${XCF_STAGING}/mpss-openssl/device")
-        file(COPY "${BUILD_SIMULATOR}/vcpkg_installed/arm64-ios/include/openssl"
+        file(COPY "${_sim_openssl_inc}"
              DESTINATION "${XCF_STAGING}/mpss-openssl/simulator")
     endif()
 
     set(OPENSSL_XCF "${OUTPUT_DIR}/libmpss-openssl.xcframework")
+    # See note above: xcodebuild won't overwrite an existing .xcframework.
     file(REMOVE_RECURSE "${OPENSSL_XCF}")
 
     message(STATUS "Creating OpenSSL provider XCFramework...")

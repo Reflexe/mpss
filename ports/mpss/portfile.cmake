@@ -13,16 +13,23 @@ vcpkg_from_github(
     HEAD_REF main
 )
 
+# Pick the matching CMake option per linkage; the unused option in each
+# pair (STATIC vs SHARED) defaults to NO from the option() declarations in
+# the root CMakeLists.txt and does not need to be set explicitly.
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
-    set(CORE_STATIC ON)
-    set(CORE_SHARED OFF)
-    set(OPENSSL_STATIC ON)
-    set(OPENSSL_SHARED OFF)
+    set(CORE_OPTION    "-DMPSS_BUILD_MPSS_CORE_STATIC=ON")
+    set(OPENSSL_OPTION "-DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON")
 else()
-    set(CORE_STATIC OFF)
-    set(CORE_SHARED ON)
-    set(OPENSSL_STATIC OFF)
-    set(OPENSSL_SHARED ON)
+    set(CORE_OPTION    "-DMPSS_BUILD_MPSS_CORE_SHARED=ON")
+    set(OPENSSL_OPTION "-DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON")
+endif()
+
+# The 'openssl' feature is handled manually rather than via
+# vcpkg_check_features because it controls one of two CMake options
+# (MPSS_BUILD_MPSS_OPENSSL_STATIC / _SHARED) keyed on the triplet's
+# linkage. vcpkg_check_features is one-feature-to-one-option only.
+if(NOT "openssl" IN_LIST FEATURES)
+    set(OPENSSL_OPTION "")
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
@@ -30,22 +37,12 @@ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
         yubikey    MPSS_BACKEND_YUBIKEY
 )
 
-if("openssl" IN_LIST FEATURES)
-    set(BUILD_OPENSSL_STATIC ${OPENSSL_STATIC})
-    set(BUILD_OPENSSL_SHARED ${OPENSSL_SHARED})
-else()
-    set(BUILD_OPENSSL_STATIC OFF)
-    set(BUILD_OPENSSL_SHARED OFF)
-endif()
-
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
-        -DMPSS_BUILD_MPSS_CORE_STATIC=${CORE_STATIC}
-        -DMPSS_BUILD_MPSS_CORE_SHARED=${CORE_SHARED}
-        -DMPSS_BUILD_MPSS_OPENSSL_STATIC=${BUILD_OPENSSL_STATIC}
-        -DMPSS_BUILD_MPSS_OPENSSL_SHARED=${BUILD_OPENSSL_SHARED}
+        ${CORE_OPTION}
+        ${OPENSSL_OPTION}
         -DMPSS_BUILD_TESTS=OFF
 )
 
@@ -53,9 +50,7 @@ vcpkg_cmake_install()
 
 vcpkg_copy_pdbs()
 
-string(REGEX MATCH "^[0-9]+\\.[0-9]+" VERSION_MAJOR_MINOR "${VERSION}")
-
-vcpkg_cmake_config_fixup(CONFIG_PATH "lib/cmake/mpss-${VERSION_MAJOR_MINOR}")
+vcpkg_cmake_config_fixup(CONFIG_PATH "lib/cmake/mpss")
 
 file(REMOVE_RECURSE
     "${CURRENT_PACKAGES_DIR}/debug/include"

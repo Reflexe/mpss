@@ -113,9 +113,11 @@ if(MPSS_ENABLE_HARDENING)
         set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
         # Standard library hardening (bounds-checked containers, etc.).
+        # Gated to C-family languages for consistency with the compile-flag
+        # gating above; Swift's clang importer has no use for these.
         add_compile_definitions(
-            $<$<NOT:$<CONFIG:Debug>>:_GLIBCXX_ASSERTIONS>
-            $<$<NOT:$<CONFIG:Debug>>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_GLIBCXX_ASSERTIONS>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
         )
 
         # Full RELRO, immediate binding, non-executable stack (ELF only).
@@ -125,8 +127,8 @@ if(MPSS_ENABLE_HARDENING)
 
         # Fortified libc functions (requires -O1+, skip on Apple).
         if(NOT APPLE)
-            add_compile_options($<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>)
-            add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+            add_compile_options($<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:-U_FORTIFY_SOURCE>)
+            add_compile_definitions($<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_FORTIFY_SOURCE=2>)
         endif()
     endif()
 endif()
@@ -134,8 +136,11 @@ endif()
 # Define additional directory path variables.
 include(GNUInstallDirs)
 
-# Setup runtime path. Use loader-relative paths on Apple to keep XCFrameworks
-# relocatable. Use the absolute install lib dir on ELF platforms.
+# Setup runtime path for shared/dylib `cmake --install` flows. Apple:
+# loader-relative so an installed .dylib resolves siblings in the same lib
+# dir or via the standard bin/ -> ../lib/ layout. ELF: absolute install lib
+# dir matching the configure-time prefix. Has no effect on the iOS
+# XCFramework path, which ships static archives carrying no LC_RPATH.
 if(APPLE)
     set(CMAKE_INSTALL_RPATH "@loader_path;@loader_path/../${CMAKE_INSTALL_LIBDIR}")
 else()
@@ -157,9 +162,9 @@ set(mpss_CONFIG_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssConfig.cmake")
 set(mpss_TARGETS_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssTargets.cmake")
 set(mpss_CONFIG_VERSION_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssConfigVersion.cmake")
 
-# Define the install directories.
-set(mpss_VERSION_MM "${mpss_VERSION_MAJOR}.${mpss_VERSION_MINOR}")
-set(mpss_CONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/mpss-${mpss_VERSION_MM}")
+# Define the install directories. Headers and CMake config are unversioned;
+# multiple side-by-side mpss versions on the same prefix are not supported.
+set(mpss_CONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/mpss")
 set(mpss_INCLUDES_INSTALL_DIR "${CMAKE_INSTALL_INCLUDEDIR}")
 
 set(mpss_ARCHIVE_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")

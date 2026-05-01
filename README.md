@@ -116,10 +116,17 @@ cmake -DBUILD_MPSS_OPENSSL=OFF -P cmake/ios_xcframework.cmake
 cmake -DBUILD_TYPE=Debug -DOUTPUT_DIR=./out -P cmake/ios_xcframework.cmake
 ```
 
-This configures and builds for both device (`iphoneos`) and simulator (`iphonesimulator`), installs both, and creates the XCFramework bundle(s) automatically. The output is placed in the project root by default (`libmpss.xcframework` and `libmpss-openssl.xcframework`).
+This configures and builds for both device (`iphoneos`) and simulator (`iphonesimulator`), installs both, and creates the XCFramework bundle(s) automatically.
+The output is placed in the project root by default (`libmpss.xcframework` and `libmpss-openssl.xcframework`).
+The XCFrameworks target **iOS only**: arm64 slices for the device (`iphoneos`) and the Apple Silicon iOS simulator (`iphonesimulator`).
+
+For other Apple platforms, build directly with the appropriate `CMAKE_SYSTEM_NAME` / `CMAKE_OSX_SYSROOT` / `CMAKE_OSX_ARCHITECTURES` and bundle the resulting `.a` files into your own XCFramework.
 
 Once you have the XCFramework(s), you can simply include them in your Xcode project as Framework dependencies.
 You will naturally still need to build OpenSSL itself for iOS to be able to load and use the OpenSSL provider.
+
+Note that the MPSS core API is C++ and is intended to be consumed from C++ or Objective-C++.
+Swift consumers should either wrap the parts they need in a thin Objective-C facade, or interact with MPSS-backed keys through the OpenSSL provider's standard `EVP_*` C API.
 
 <details>
 <summary>Manual build steps (without the script)</summary>

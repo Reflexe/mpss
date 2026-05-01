@@ -13,10 +13,20 @@
 #   - MPSS_CONFIG_DIR : Directory where the MPSS config files are.
 #   - MPSS_BACKEND_YUBIKEY : YES if MPSS was built with the YubiKey PIV backend.
 #   - MPSS_AVAILABLE_TARGETS : Contains a list of available MPSS targets.
+#   - MPSS_VERSION : The full version number.
+#   - MPSS_VERSION_MAJOR : The major version number.
+#   - MPSS_VERSION_MINOR : The minor version number.
+#   - MPSS_VERSION_PATCH : The patch version number.
 
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+
+# Version variables, baked in at configure time.
+set(MPSS_VERSION @PROJECT_VERSION@)
+set(MPSS_VERSION_MAJOR @PROJECT_VERSION_MAJOR@)
+set(MPSS_VERSION_MINOR @PROJECT_VERSION_MINOR@)
+set(MPSS_VERSION_PATCH @PROJECT_VERSION_PATCH@)
 
 # Set our variables.
 set(MPSS_CORE_SHARED_FOUND NO)
@@ -81,7 +91,7 @@ endif()
 
 # Print information about available targets and directories.
 if(MPSS_CORE_FOUND OR MPSS_OPENSSL_FOUND)
-    message(STATUS "Found mpss version \"${mpss_VERSION}\". Available targets:")
+    message(STATUS "Found mpss version \"${MPSS_VERSION}\". Available targets:")
     foreach(target ${MPSS_AVAILABLE_TARGETS})
         message(STATUS "  - ${target}")
     endforeach()

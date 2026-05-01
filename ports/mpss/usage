@@ -10,3 +10,9 @@ mpss provides CMake targets:
   # OpenSSL provider (if installed with vcpkg install mpss[openssl]):
   target_link_libraries(main PRIVATE mpss::mpss_openssl_static)   # static triplet
   target_link_libraries(main PRIVATE mpss::mpss_openssl)           # dynamic triplet
+
+On Linux there is no OS-native backend, so the YubiKey backend is required:
+
+  vcpkg install mpss[yubikey]
+
+`vcpkg install mpss` (no features) will fail on Linux.
