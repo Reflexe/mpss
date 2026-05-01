@@ -8,7 +8,8 @@ steps:
     script: |
       sudo apt-get update
       sudo apt-get install -y openjdk-21-jdk
-      echo "##vso[task.setvariable variable=JAVA_HOME]/usr/lib/jvm/java-21-openjdk-amd64"
+      JAVA_HOME=$(readlink -f "$(command -v javac)" | sed 's:/bin/javac::')
+      echo "##vso[task.setvariable variable=JAVA_HOME]$JAVA_HOME"
 
 - task: CmdLine@2
   displayName: 'Get tool info'
@@ -29,7 +30,7 @@ steps:
       if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
         API_LEVEL=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
       else
-        API_LEVEL=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -oP '\d+$' | sort -n | tail -1)
+        API_LEVEL=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
       fi
       echo "Highest API level: $API_LEVEL"
       echo "##vso[task.setvariable variable=MPSSAndroidAPILevel;isOutput=true]$API_LEVEL"
