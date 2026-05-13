@@ -1,7 +1,7 @@
 {
   "name": "mpss",
-  "version": "1.1.0",
-  "description": "A C++ library for multi-platform secret storage.",
+  "version": "1.2.0",
+  "description": "A multi-platform C++ library for hardware-backed digital signature key storage and signing.",
   "license": "MIT",
   "dependencies": [],
   "features": {
@@ -25,5 +25,5 @@
       ]
     }
   },
-  "builtin-baseline": "ed8445dd2a9ba44e0e3ace4e952b2e33130082d9"
+  "builtin-baseline": "003cb58a3c2cd943c348901481fca78d665308e2"
 }

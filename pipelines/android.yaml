@@ -9,98 +9,43 @@ steps:
     jdkArchitectureOption: 'x64'
     jdkSourceOption: 'PreInstalled'
 
-- task: Powershell@2
+- task: CmdLine@2
   displayName: 'Get tool info'
   name: GetToolInfo
   inputs:
-    targetType: 'inline'
     script: |
-        function Get-AndroidNdkMaxApi {
-            param(
-                # Optionally pass a specific NDK path; otherwise we auto-detect.
-                [string]$NdkRoot
-            )
+      # Find the highest supported Android API level from the NDK.
+      NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT}}"
+      if [ -z "$NDK_ROOT" ]; then
+        SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+        NDK_ROOT=$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)
+      fi
+      if [ ! -d "$NDK_ROOT" ]; then
+        echo "##[error]Android NDK not found."
+        exit 1
+      fi
 
-            # 1. Locate the NDK root --------------------------------------------------
-            if (-not $NdkRoot) {
-                # a) Respect common env-vars
-                $NdkRoot = $Env:ANDROID_NDK_ROOT, $Env:ANDROID_NDK_HOME |
-                           Where-Object { $_ } | Select-Object -First 1
+      if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
+        API_LEVEL=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
+      else
+        API_LEVEL=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
+      fi
+      echo "Highest API level: $API_LEVEL"
+      echo "##vso[task.setvariable variable=MPSSAndroidAPILevel;isOutput=true]$API_LEVEL"
 
-                # b) Otherwise pick the *latest* version under the SDK
-                if (-not $NdkRoot) {
-                    $sdkRoot = $Env:ANDROID_SDK_ROOT, $Env:ANDROID_HOME |
-                               Where-Object { $_ } | Select-Object -First 1
-                    if (-not $sdkRoot) { throw "ANDROID_SDK_ROOT / ANDROID_HOME not set." }
-
-                    $NdkRoot = Get-ChildItem "$sdkRoot\ndk" -Directory |
-                               Sort-Object { [version]$_.Name } -Descending |
-                               Select-Object -First 1 |
-                               ForEach-Object FullName
-
-                    # fallback for really old layouts
-                    if (-not $NdkRoot -and (Test-Path "$sdkRoot\ndk-bundle")) {
-                        $NdkRoot = "$sdkRoot\ndk-bundle"
-                    }
-                }
-            }
-
-            if (-not (Test-Path $NdkRoot)) {
-                throw "NDK not found at '$NdkRoot'."
-            }
-
-            # 2. Read meta/platforms.json --------------------------------------------
-            $metaFile = Join-Path $NdkRoot "meta\platforms.json"
-            if (Test-Path $metaFile) {
-                $json = Get-Content $metaFile -Raw | ConvertFrom-Json
-                return [int]$json.max
-            }
-
-            # 3. Legacy NDKs (< r23): fall back to directory scan ---------------------
-            $maxApi = Get-ChildItem "$NdkRoot\platforms" -Directory |
-                      Where-Object Name -match '^android-(\d+)$' |
-                      ForEach-Object { [int]$Matches[1] } |
-                      Sort-Object -Descending |
-                      Select-Object -First 1
-            if (-not $maxApi) { throw "Unable to determine supported API levels." }
-            return $maxApi
-        }
-
-        $maxSupportedApi = Get-AndroidNdkMaxApi
-        Write-Host "Highest API level supported by this NDK: $maxSupportedApi"        
-        $env:MPSS_ANDROID_API_LEVEL = $maxSupportedApi
-        echo "##vso[task.setvariable variable=MPSSAndroidAPILevel;isOutput=true]$maxSupportedApi"
-
-
-        $ninjaPath = (Get-Command ninja).Source
-        if (-not $ninjaPath) {
-            throw "Ninja build tool not found. Please install Ninja."
-        } else {
-            $ninjaPath = $ninjaPath -replace '\\', '/'  # Normalize path for consistency
-            echo "Ninja found at: $ninjaPath"
-        }
-        $env:NINJA_PATH = $ninjaPath
-        echo "##vso[task.setvariable variable=NinjaPath;isOutput=true]$ninjaPath"
-
-        # Normalize Android NDK path
-        $ndkHome = $env:ANDROID_NDK_HOME
-        if (-not $ndkHome) {
-            throw "ANDROID_NDK_HOME environment variable is not set."
-        } else {
-            $ndkHome = $ndkHome -replace '\\', '/'  # Normalize path for consistency
-            echo "ANDROID_NDK_HOME: $ndkHome"
-        }
-        echo "##vso[task.setvariable variable=AndroidNdkHome;isOutput=true]$ndkHome"
+      echo "NDK: $NDK_ROOT"
+      echo "##vso[task.setvariable variable=AndroidNdkHome;isOutput=true]$NDK_ROOT"
 
 - task: CmdLine@2
   displayName: 'Bootstrap vcpkg'
   inputs:
     script: |
       cd $(Build.SourcesDirectory)
+      BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
       git clone https://github.com/microsoft/vcpkg.git
       cd vcpkg
-      git checkout ed8445dd2a9ba44e0e3ace4e952b2e33130082d9
-      bootstrap-vcpkg.bat -disableMetrics
+      git checkout $BASELINE
+      ./bootstrap-vcpkg.sh -disableMetrics
     workingDirectory: '$(Build.SourcesDirectory)'
     failOnStderr: false
 
@@ -117,7 +62,6 @@ steps:
         -DCMAKE_SYSTEM_NAME=Android
         -DCMAKE_SYSTEM_VERSION=$(GetToolInfo.MPSSAndroidAPILevel)
         -DCMAKE_ANDROID_ARCH_ABI=x86_64
-        -DCMAKE_MAKE_PROGRAM=$(GetToolInfo.NinjaPath)
         -DCMAKE_ANDROID_NDK=$(GetToolInfo.AndroidNdkHome)
         -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
         -DVCPKG_TARGET_TRIPLET=x64-android
@@ -136,7 +80,6 @@ steps:
         -DCMAKE_SYSTEM_NAME=Android
         -DCMAKE_SYSTEM_VERSION=$(GetToolInfo.MPSSAndroidAPILevel)
         -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a
-        -DCMAKE_MAKE_PROGRAM=$(GetToolInfo.NinjaPath)
         -DCMAKE_ANDROID_NDK=$(GetToolInfo.AndroidNdkHome)
         -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
         -DVCPKG_TARGET_TRIPLET=arm64-android
@@ -152,4 +95,16 @@ steps:
   displayName: 'Build MPSS for Arm64'
   inputs:
     cmakeArgs: --build build-arm64
+    workingDirectory: '$(Build.SourcesDirectory)'
+
+- task: CMake@1
+  displayName: 'Install MPSS for x64'
+  inputs:
+    cmakeArgs: --install build-x64 --prefix install-x64
+    workingDirectory: '$(Build.SourcesDirectory)'
+
+- task: CMake@1
+  displayName: 'Install MPSS for Arm64'
+  inputs:
+    cmakeArgs: --install build-arm64 --prefix install-arm64
     workingDirectory: '$(Build.SourcesDirectory)'

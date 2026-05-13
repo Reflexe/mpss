@@ -850,9 +850,14 @@ TEST_F(CrossBackendTest, CreateKeyOnEachBackend)
     auto os_key = mpss::KeyPair::Create(os_key_name, ecdsa_secp256r1_sha256, "os");
     ASSERT_NE(nullptr, os_key);
 
-    // Create a key on the YubiKey backend.
+    // Create a key on the YubiKey backend. The backend may be registered without
+    // any device being currently available, so treat creation failure as a skip.
     auto yk_key = mpss::KeyPair::Create(yk_key_name, ecdsa_secp256r1_sha256, "yubikey");
-    ASSERT_NE(nullptr, yk_key);
+    if (nullptr == yk_key)
+    {
+        os_key->delete_key();
+        GTEST_SKIP() << "YubiKey backend registered but no device available.";
+    }
 
     // Both should be able to sign independently.
     const std::vector<std::byte> hash(32, static_cast<std::byte>('d'));

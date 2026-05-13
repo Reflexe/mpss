@@ -7,47 +7,20 @@ steps:
   inputs:
     script: |
       cd $(Build.SourcesDirectory)
+      BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
       git clone https://github.com/microsoft/vcpkg.git
       cd vcpkg
-      git checkout ed8445dd2a9ba44e0e3ace4e952b2e33130082d9
+      git checkout $BASELINE
       ./bootstrap-vcpkg.sh -disableMetrics
     workingDirectory: '$(Build.SourcesDirectory)'
     failOnStderr: false
 
-- task: CMake@1
-  displayName: 'Configure MPSS for x64'
+- task: CmdLine@2
+  displayName: 'Build iOS XCFrameworks'
   inputs:
+    script: |
+      export VCPKG_ROOT=$(Build.SourcesDirectory)/vcpkg
+      cmake \
+        -DBUILD_TYPE=${{ parameters.configuration }} \
+        -P cmake/ios_xcframework.cmake
     workingDirectory: '$(Build.SourcesDirectory)'
-    cmakeArgs: >
-      -S .
-      -B build-x64
-      -GXcode
-      -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON
-      -DCMAKE_SYSTEM_NAME=iOS
-      "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
-      -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-- task: CMake@1
-  displayName: 'Configure MPSS for arm64'
-  inputs:
-    workingDirectory: '$(Build.SourcesDirectory)'
-    cmakeArgs: >
-      -S .
-      -B build-arm64
-      -GXcode
-      -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON
-      -DCMAKE_SYSTEM_NAME=iOS
-      "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
-      -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-- script: |
-      cd $BUILD_SOURCESDIRECTORY
-      xcodebuild -project build-x64/mpss.xcodeproj -sdk iphonesimulator -arch x86_64 -configuration ${{ parameters.configuration }} clean build
-
-      xcodebuild -project build-arm64/mpss.xcodeproj -sdk iphonesimulator -arch arm64 -configuration ${{ parameters.configuration }} clean build
-  displayName: 'Build MPSS for Simulator (x64 and arm64)'
-
-- script: |
-      cd $BUILD_SOURCESDIRECTORY
-      xcodebuild -project build-arm64/mpss.xcodeproj -sdk iphoneos -arch arm64 -configuration ${{ parameters.configuration }} clean build
-  displayName: 'Build MPSS for iOS (arm64)'

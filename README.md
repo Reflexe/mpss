@@ -24,6 +24,8 @@ MPSS core depends only on operating system APIs, except that it uses [GoogleTest
 When the YubiKey backend is enabled, it additionally depends on [libykpiv](https://developers.yubico.com/yubico-piv-tool/) and [OpenSSL](https://GitHub.com/openssl/openssl), both provided automatically by vcpkg.
 The OpenSSL provider naturally requires [OpenSSL](https://GitHub.com/openssl/openssl) as well.
 
+A [vcpkg port](ports/mpss/) is provided for **desktop platforms only** (Windows, macOS, Linux). On these platforms, downstream projects can consume MPSS as a vcpkg package once the port is published to a registry. **iOS and Android are not covered by the vcpkg port** — on those platforms, build MPSS directly from source using the dedicated paths described in the platform-specific sections below (the iOS XCFramework helper for iOS, and the direct NDK-based CMake build for Android). Note that even on iOS and Android, vcpkg may still be used as the *dependency manager* (for example, to fetch OpenSSL) — that is independent of the port.
+
 ### Using CMake Presets (Windows, macOS, Linux)
 
 The easiest way to build MPSS on desktop platforms is using [CMake presets](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html).
@@ -101,17 +103,46 @@ In [Using MPSS with YubiKey PIV](#using-mpss-with-yubikey-piv) we explain how to
 
 ### iOS
 
-To build mpss for iOS and iOS simulator (arm64 in this example), take the following steps:
+The easiest way to build XCFrameworks for iOS is with the provided CMake script:
+
 ```bash
+# Core library + OpenSSL provider (default):
+cmake -P cmake/ios_xcframework.cmake
+
+# Core library only (without OpenSSL provider):
+cmake -DBUILD_MPSS_OPENSSL=OFF -P cmake/ios_xcframework.cmake
+
+# Debug build, custom output directory:
+cmake -DBUILD_TYPE=Debug -DOUTPUT_DIR=./out -P cmake/ios_xcframework.cmake
+```
+
+This configures and builds for both device (`iphoneos`) and simulator (`iphonesimulator`), installs both, and creates the XCFramework bundle(s) automatically.
+The output is placed in the project root by default (`libmpss.xcframework` and `libmpss-openssl.xcframework`).
+The XCFrameworks target **iOS only**: arm64 slices for the device (`iphoneos`) and the Apple Silicon iOS simulator (`iphonesimulator`).
+
+For other Apple platforms, build directly with the appropriate `CMAKE_SYSTEM_NAME` / `CMAKE_OSX_SYSROOT` / `CMAKE_OSX_ARCHITECTURES` and bundle the resulting `.a` files into your own XCFramework.
+
+Once you have the XCFramework(s), you can simply include them in your Xcode project as Framework dependencies.
+You will naturally still need to build OpenSSL itself for iOS to be able to load and use the OpenSSL provider.
+
+Note that the MPSS core API is C++ and is intended to be consumed from C++ or Objective-C++.
+Swift consumers should either wrap the parts they need in a thin Objective-C facade, or interact with MPSS-backed keys through the OpenSSL provider's standard `EVP_*` C API.
+
+<details>
+<summary>Manual build steps (without the script)</summary>
+
+```bash
+D=out/ios-xcframework  # working directory
+
 # Configure for separate build directories.
-cmake -S . -B build-ios-device -GXcode                                      \
+cmake -S . -B $D/build-device -GXcode                                       \
     -DCMAKE_SYSTEM_NAME=iOS                                                 \
     -DCMAKE_OSX_SYSROOT=iphoneos                                            \
     -DCMAKE_OSX_ARCHITECTURES=arm64                                         \
     -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"   \
     -DMPSS_BUILD_MPSS_CORE_STATIC=ON                                        \
     -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON # only if building also mpss-openssl
-cmake -S . -B build-ios-simulator -GXcode                                   \
+cmake -S . -B $D/build-simulator -GXcode                                    \
     -DCMAKE_SYSTEM_NAME=iOS                                                 \
     -DCMAKE_OSX_SYSROOT=iphonesimulator                                     \
     -DCMAKE_OSX_ARCHITECTURES=arm64                                         \
@@ -119,42 +150,42 @@ cmake -S . -B build-ios-simulator -GXcode                                   \
     -DMPSS_BUILD_MPSS_CORE_STATIC=ON                                        \
     -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON # only if building also mpss-openssl
 
-# Build and install to local directories.
-cmake --build build-ios-device --config Release -j
-cmake --build build-ios-simulator --config Release -j
-cmake --install build-ios-device --config Release --prefix install-ios-device
-cmake --install build-ios-simulator --config Release --prefix install-ios-simulator
+# Build and install.
+cmake --build $D/build-device --config Release -j
+cmake --build $D/build-simulator --config Release -j
+cmake --install $D/build-device --config Release --prefix $D/install-device
+cmake --install $D/build-simulator --config Release --prefix $D/install-simulator
 
-# We need some temporary directory structure to create XCFrameworks.
-mkdir -p xcf/include/mpss/{device,simulator}
-rsync -a install-ios-device/include/mpss-1.1/mpss xcf/include/mpss/device/mpss
-rsync -a install-ios-simulator/include/mpss-1.1/mpss xcf/include/mpss/simulator/mpss
+# Stage headers per platform (config.h may differ between device and simulator).
+mkdir -p $D/staging/mpss/{device,simulator}
+rsync -a $D/install-device/include/mpss $D/staging/mpss/device/
+rsync -a $D/install-simulator/include/mpss $D/staging/mpss/simulator/
 
 # Only if building also mpss-openssl.
-mkdir -p xcf/include/mpss-openssl/{device,simulator}
-rsync -a install-ios-device/include/mpss-1.1/mpss-openssl xcf/include/mpss-openssl/device/mpss-openssl
-rsync -a install-ios-simulator/include/mpss-1.1/mpss-openssl xcf/include/mpss-openssl/simulator/mpss-openssl
-rsync -a build-ios-device/vcpkg_installed/arm64-ios/include/openssl xcf/include/mpss-openssl/device
-rsync -a build-ios-simulator/vcpkg_installed/arm64-ios/include/openssl xcf/include/mpss-openssl/simulator
+mkdir -p $D/staging/mpss-openssl/{device,simulator}
+rsync -a $D/install-device/include/mpss-openssl $D/staging/mpss-openssl/device/
+rsync -a $D/install-simulator/include/mpss-openssl $D/staging/mpss-openssl/simulator/
+rsync -a $D/build-device/vcpkg_installed/arm64-ios/include/openssl $D/staging/mpss-openssl/device
+rsync -a $D/build-simulator/vcpkg_installed/arm64-ios/include/openssl $D/staging/mpss-openssl/simulator
 
 # Create an XCFramework for mpss.
-xcodebuild -create-xcframework                                      \
-    -library install-ios-device/lib/mpss-1.1/libmpss_static.a       \
-    -headers xcf/include/mpss/device                                \
-    -library install-ios-simulator/lib/mpss-1.1/libmpss_static.a    \
-    -headers xcf/include/mpss/simulator                             \
-    -output libmpss-1.1.xcframework
+xcodebuild -create-xcframework                                              \
+    -library $D/install-device/lib/libmpss_static.a                         \
+    -headers $D/staging/mpss/device                                         \
+    -library $D/install-simulator/lib/libmpss_static.a                      \
+    -headers $D/staging/mpss/simulator                                      \
+    -output libmpss.xcframework
 
 # Only if building also mpss-openssl.
 xcodebuild -create-xcframework                                              \
-    -library install-ios-device/lib/mpss-1.1/libmpss_openssl_static.a       \
-    -headers xcf/include/mpss-openssl/device                                \
-    -library install-ios-simulator/lib/mpss-1.1/libmpss_openssl_static.a    \
-    -headers xcf/include/mpss-openssl/simulator                             \
-    -output libmpss_openssl-1.1.xcframework
+    -library $D/install-device/lib/libmpss_openssl_static.a                 \
+    -headers $D/staging/mpss-openssl/device                                 \
+    -library $D/install-simulator/lib/libmpss_openssl_static.a              \
+    -headers $D/staging/mpss-openssl/simulator                              \
+    -output libmpss-openssl.xcframework
 ```
-Once you have the XCFramework(s), you can simply include them in your Xcode project as Framework dependencies.
-You will naturally still need to build OpenSSL itself for iOS to be able to load and use the OpenSSL provider.
+
+</details>
 
 ### Android
 
@@ -198,6 +229,17 @@ cmake -S . -B buildArm                                                      ^
 %ANDROID_HOME%\platforms\android-%CMAKE_SYSTEM_VERSION%\android.jar
 ```
 
+After building and installing, you will find:
+- `lib/libmpss.so` — the native shared library.
+- `lib/mpss.jar` — the Java classes for the JNI bridge (`KeyManagement`, `Algorithm`, etc.).
+
+To use in an Android Studio project:
+1. Copy `libmpss.so` to `app/src/main/jniLibs/<abi>/` (e.g., `arm64-v8a/` or `x86_64/`).
+2. Copy `mpss.jar` to `app/libs/`.
+3. Add the JAR as a file dependency in your module's `build.gradle`.
+
+**Note**: Only shared libraries are supported on Android. Static builds will produce a configuration error.
+
 ### Common Build Options
 
 The following table outlines the common CMake configuration options recognized by the build system:
@@ -210,7 +252,8 @@ The following table outlines the common CMake configuration options recognized b
 | `MPSS_BUILD_MPSS_OPENSSL_STATIC=ON` | Build the OpenSSL provider as a static library. |
 | `MPSS_BUILD_MPSS_OPENSSL_SHARED=ON` | Build the OpenSSL provider as a shared library. |
 | `MPSS_BACKEND_YUBIKEY=ON` | Enable the YubiKey PIV backend. |
-| `BUILD_SHARED_LIBS=ON` | Build all targets as shared libraries. |
+| `MPSS_ENABLE_HARDENING=OFF` | Disable security hardening compile and link flags (default is `ON`). |
+| `BUILD_SHARED_LIBS=ON` | Build all targets as shared libraries (convenience shortcut). |
 
 Static targets are named `mpss::mpss_static` and `mpss::mpss_openssl_static`, whereas shared targets are `mpss::mpss` and `mpss::mpss_openssl`.
 As usual, you can set `CMAKE_BUILD_TYPE` to set the build type (`Release`, `Debug`, etc.) when using a single-configuration generator.

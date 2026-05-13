@@ -122,6 +122,7 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
     const mpss::AlgorithmInfo info = pkey->key_pair->algorithm_info();
     const std::string_view type_str = info.type_str;
 
+    // Capacity: at most 2 params (group name + public key) plus OSSL_PARAM_END terminator.
     OSSL_PARAM params[3]{};
     OSSL_PARAM *p = params;
 

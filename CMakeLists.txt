@@ -10,11 +10,21 @@ option(MPSS_BUILD_MPSS_OPENSSL_STATIC "Build the OpenSSL provider static library
 option(MPSS_BUILD_MPSS_OPENSSL_SHARED "Build the mpss OpenSSL provider shared library." NO)
 option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
+option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
-# If BUILD_SHARED_LIBS is set, build only shared libraries.
+# If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
+# default to building shared libraries. Explicit -D options take precedence.
 if(BUILD_SHARED_LIBS)
-    set(MPSS_BUILD_MPSS_CORE_SHARED ON)
-    set(MPSS_BUILD_MPSS_OPENSSL_SHARED ON)
+    set(_mpss_explicit_options OFF)
+    if(MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_CORE_SHARED
+        OR MPSS_BUILD_MPSS_OPENSSL_STATIC OR MPSS_BUILD_MPSS_OPENSSL_SHARED)
+        set(_mpss_explicit_options ON)
+    endif()
+
+    if(NOT _mpss_explicit_options)
+        set(MPSS_BUILD_MPSS_CORE_SHARED ON)
+        set(MPSS_BUILD_MPSS_OPENSSL_SHARED ON)
+    endif()
 endif()
 
 # Validate mutual exclusivity.
@@ -56,7 +66,7 @@ if(MPSS_BACKEND_YUBIKEY)
     list(APPEND VCPKG_MANIFEST_FEATURES "yubikey")
 endif()
 
-project(mpss VERSION 1.1.0 LANGUAGES C CXX)
+project(mpss VERSION 1.2.0 LANGUAGES C CXX)
 
 if(MPSS_BACKEND_YUBIKEY)
     # The vcpkg port is named "yubico-piv-tool" but exports the CMake config
@@ -74,12 +84,69 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     include(UseJava)
 endif()
 
+# Security hardening flags. Applied as directory-scope options; do NOT
+# propagate to downstream consumers via the install/export interface.
+if(MPSS_ENABLE_HARDENING)
+    if(MSVC)
+        # Control Flow Guard.
+        add_compile_options(/guard:cf)
+        add_link_options(/guard:cf)
+    else()
+        # Gate compile flags to clang/gcc-driven languages so they don't leak
+        # into Swift's compile/link driver on Apple targets.
+        set(_mpss_c_family_langs "$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>")
+
+        # Stack canaries.
+        add_compile_options($<${_mpss_c_family_langs}:-fstack-protector-strong>)
+
+        # Stack-clash protection (no-op on Apple Clang; gated for older
+        # GCC/Clang versions that don't support the flag).
+        if(NOT APPLE)
+            include(CheckCCompilerFlag)
+            check_c_compiler_flag(-fstack-clash-protection MPSS_HAS_STACK_CLASH_PROTECTION)
+            if(MPSS_HAS_STACK_CLASH_PROTECTION)
+                add_compile_options($<${_mpss_c_family_langs}:-fstack-clash-protection>)
+            endif()
+        endif()
+
+        # Position-independent code (PIC for libraries, PIE for executables).
+        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+        # Standard library hardening (bounds-checked containers, etc.).
+        # Gated to C-family languages for consistency with the compile-flag
+        # gating above; Swift's clang importer has no use for these.
+        add_compile_definitions(
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_GLIBCXX_ASSERTIONS>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
+        )
+
+        # Full RELRO, immediate binding, non-executable stack (ELF only).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
+            add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+        endif()
+
+        # Fortified libc functions (requires -O1+, skip on Apple).
+        if(NOT APPLE)
+            add_compile_options($<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:-U_FORTIFY_SOURCE>)
+            add_compile_definitions($<$<AND:$<NOT:$<CONFIG:Debug>>,${_mpss_c_family_langs}>:_FORTIFY_SOURCE=2>)
+        endif()
+    endif()
+endif()
+
 # Define additional directory path variables.
 include(GNUInstallDirs)
 
-# Setup runtime path.
-set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+# Setup runtime path for shared/dylib `cmake --install` flows. Apple:
+# loader-relative so an installed .dylib resolves siblings in the same lib
+# dir or via the standard bin/ -> ../lib/ layout. ELF: absolute install lib
+# dir matching the configure-time prefix. Has no effect on the iOS
+# XCFramework path, which ships static archives carrying no LC_RPATH.
+if(APPLE)
+    set(CMAKE_INSTALL_RPATH "@loader_path;@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+else()
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+endif()
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
 # Define source tree variables.
 set(mpss_INCLUDES_DIR "${CMAKE_CURRENT_LIST_DIR}")
@@ -95,10 +162,12 @@ set(mpss_CONFIG_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssConfig.cmake")
 set(mpss_TARGETS_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssTargets.cmake")
 set(mpss_CONFIG_VERSION_FILENAME "${CMAKE_CURRENT_BINARY_DIR}/cmake/mpssConfigVersion.cmake")
 
-# Define the install directories.
-set(mpss_VERSION_MM "${mpss_VERSION_MAJOR}.${mpss_VERSION_MINOR}")
-set(mpss_CONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/mpss-${mpss_VERSION_MM}")
-set(mpss_INCLUDES_INSTALL_DIR "${CMAKE_INSTALL_INCLUDEDIR}/mpss-${mpss_VERSION_MM}")
+# Define the install directories. Headers and CMake config are unversioned;
+# multiple side-by-side mpss versions on the same prefix are not supported.
+set(mpss_CONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/mpss")
+set(mpss_INCLUDES_INSTALL_DIR "${CMAKE_INSTALL_INCLUDEDIR}")
+
+set(mpss_ARCHIVE_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")
 
 # Clean config.h from the source dir when configuring.
 if(EXISTS "${mpss_CONFIG_H_FILENAME}")
@@ -197,7 +266,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Android")
 
     # Add Jar file with Java part of the code.
     add_jar(mpss_jar
-        STATIC ${mpss_JAR_SOURCE_FILES}
+        SOURCES ${mpss_JAR_SOURCE_FILES}
+        OUTPUT_NAME mpss
         OUTPUT_DIR ${CMAKE_BINARY_DIR}/lib)
 endif()
 
@@ -255,10 +325,8 @@ if(TARGET ${mpss_TARGET})
 
     # Add our targets to an export mpssTargets.
     if(MPSS_BUILD_MPSS_CORE_STATIC)
-        # This allows multiple versions for static libraries since the directories
-        # are named according to the version. Works both on Windows and Linux.
         install(TARGETS ${mpss_TARGET} EXPORT mpssTargets
-            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}/mpss-${mpss_VERSION_MM}"
+            ARCHIVE DESTINATION "${mpss_ARCHIVE_INSTALL_DIR}"
         )
     elseif(MPSS_BUILD_MPSS_CORE_SHARED)
         # This allows multiple versions for shared libraries on Linux since the
@@ -271,9 +339,6 @@ if(TARGET ${mpss_TARGET})
             RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         )
 
-        # THERE IS A REMAINING PROBLEM: ON WINDOWS SOME DIRECTORIES ARE BEING
-        # NUMBERED WITH VERSION, SO IT MAY NOT BE CLEAR TO THE USER THAT THERE IS
-        # JUST ONE LIBRARY ACTUALLY INSTALLED IN THIS CASE.
         if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
             target_compile_definitions(${mpss_TARGET} PRIVATE
                 MPSS_EXPORTS
@@ -319,7 +384,7 @@ if(TARGET ${mpss_openssl_TARGET})
 
     if(MPSS_BUILD_MPSS_OPENSSL_STATIC)
         install(TARGETS ${mpss_openssl_TARGET} EXPORT mpssTargets
-            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}/mpss-${mpss_VERSION_MM}"
+            ARCHIVE DESTINATION "${mpss_ARCHIVE_INSTALL_DIR}"
         )
     elseif(MPSS_BUILD_MPSS_OPENSSL_SHARED)
         install(TARGETS ${mpss_openssl_TARGET} EXPORT mpssTargets
