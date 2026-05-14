@@ -3,11 +3,26 @@
 parameters:
   debug: 'false'
   yubikey: 'false'
+  linkage: 'static'
 
 jobs:
 
 - ${{ if eq(parameters.name, 'Windows') }}:
-  - ${{ if eq(parameters.yubikey, 'true') }}:
+  - ${{ if and(eq(parameters.yubikey, 'true'), eq(parameters.linkage, 'shared')) }}:
+    - job: ${{ parameters.name }}_YubiKey_Shared
+      displayName: "${{ parameters.name }} (YubiKey, Shared)"
+      timeoutInMinutes: 180
+      pool:
+        vmImage: 'windows-latest'
+      steps:
+      - template: windows.yaml
+        parameters:
+          preset: 'win-vs2022-x64-with-yubikey-shared'
+          ${{ if eq(parameters.debug, 'true') }}:
+            configuration: 'Debug'
+          ${{ if eq(parameters.debug, 'false') }}:
+            configuration: 'Release'
+  - ${{ if and(eq(parameters.yubikey, 'true'), ne(parameters.linkage, 'shared')) }}:
     - job: ${{ parameters.name }}_YubiKey
       displayName: "${{ parameters.name }} (YubiKey)"
       timeoutInMinutes: 180
@@ -16,14 +31,26 @@ jobs:
       steps:
       - template: windows.yaml
         parameters:
-          yubikey: ${{ parameters.yubikey }}
+          preset: 'win-vs2022-x64-with-yubikey'
           ${{ if eq(parameters.debug, 'true') }}:
             configuration: 'Debug'
-            path: 'Debug'
           ${{ if eq(parameters.debug, 'false') }}:
             configuration: 'Release'
-            path: 'Release'
-  - ${{ if ne(parameters.yubikey, 'true') }}:
+  - ${{ if and(ne(parameters.yubikey, 'true'), eq(parameters.linkage, 'shared')) }}:
+    - job: ${{ parameters.name }}_Shared
+      displayName: "${{ parameters.name }} (Shared)"
+      timeoutInMinutes: 180
+      pool:
+        vmImage: 'windows-latest'
+      steps:
+      - template: windows.yaml
+        parameters:
+          preset: 'win-vs2022-x64-shared'
+          ${{ if eq(parameters.debug, 'true') }}:
+            configuration: 'Debug'
+          ${{ if eq(parameters.debug, 'false') }}:
+            configuration: 'Release'
+  - ${{ if and(ne(parameters.yubikey, 'true'), ne(parameters.linkage, 'shared')) }}:
     - job: ${{ parameters.name }}
       displayName: ${{ parameters.name }}
       timeoutInMinutes: 180
@@ -32,13 +59,11 @@ jobs:
       steps:
       - template: windows.yaml
         parameters:
-          yubikey: ${{ parameters.yubikey }}
+          preset: 'win-vs2022-x64'
           ${{ if eq(parameters.debug, 'true') }}:
             configuration: 'Debug'
-            path: 'Debug'
           ${{ if eq(parameters.debug, 'false') }}:
             configuration: 'Release'
-            path: 'Release'
 
 - ${{ if and(eq(parameters.name, 'Linux'), eq(parameters.yubikey, 'true')) }}:
   - job: ${{ parameters.name }}_YubiKey
@@ -48,11 +73,12 @@ jobs:
     steps:
     - template: nix.yaml
       parameters:
-        artifactName: linux-drop
         yubikey: 'true'
         ${{ if eq(parameters.debug, 'true') }}:
+          preset: 'linux-with-yubikey-debug'
           configuration: 'Debug'
         ${{ if eq(parameters.debug, 'false') }}:
+          preset: 'linux-with-yubikey-release'
           configuration: 'Release'
 
 - ${{ if eq(parameters.name, 'macOS') }}:
@@ -64,11 +90,12 @@ jobs:
       steps:
       - template: nix.yaml
         parameters:
-          artifactName: macos-drop
           yubikey: ${{ parameters.yubikey }}
           ${{ if eq(parameters.debug, 'true') }}:
+            preset: 'macos-x64-with-yubikey-debug'
             configuration: 'Debug'
           ${{ if eq(parameters.debug, 'false') }}:
+            preset: 'macos-x64-with-yubikey-release'
             configuration: 'Release'
   - ${{ if ne(parameters.yubikey, 'true') }}:
     - job: ${{ parameters.name }}
@@ -78,11 +105,12 @@ jobs:
       steps:
       - template: nix.yaml
         parameters:
-          artifactName: macos-drop
           yubikey: ${{ parameters.yubikey }}
           ${{ if eq(parameters.debug, 'true') }}:
+            preset: 'macos-x64-debug'
             configuration: 'Debug'
           ${{ if eq(parameters.debug, 'false') }}:
+            preset: 'macos-x64-release'
             configuration: 'Release'
 
 - ${{ if eq(parameters.name, 'Android') }}:
