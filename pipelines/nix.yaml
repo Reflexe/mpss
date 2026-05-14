@@ -1,6 +1,6 @@
 parameters:
-  artifactName: ''
   configuration: 'Release'
+  preset: ''
   yubikey: 'false'
 
 steps:
@@ -26,51 +26,25 @@ steps:
       cd vcpkg
       git checkout $BASELINE
       ./bootstrap-vcpkg.sh -disableMetrics
+      echo "##vso[task.setvariable variable=VCPKG_ROOT]$(Build.SourcesDirectory)/vcpkg"
     workingDirectory: '$(Build.SourcesDirectory)'
     failOnStderr: false
 
-- ${{ if ne(parameters.yubikey, 'true') }}:
-  - task: CMake@1
-    displayName: 'Configure MPSS'
-    inputs:
-      cmakeArgs: >
-        -S .
-        -B build
-        -GNinja
-        -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
-        -DMPSS_BUILD_MPSS_CORE_STATIC=ON
-        -DMPSS_BUILD_TESTS=ON
-        -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON
-        -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
-      workingDirectory: '$(Build.SourcesDirectory)'
-
-- ${{ if eq(parameters.yubikey, 'true') }}:
-  - task: CMake@1
-    displayName: 'Configure MPSS (YubiKey)'
-    inputs:
-      cmakeArgs: >
-        -S .
-        -B build
-        -GNinja
-        -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
-        -DMPSS_BUILD_MPSS_CORE_STATIC=ON
-        -DMPSS_BUILD_TESTS=ON
-        -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON
-        -DMPSS_BACKEND_YUBIKEY=ON
-        -DCMAKE_TOOLCHAIN_FILE=$(Build.SourcesDirectory)/vcpkg/scripts/buildsystems/vcpkg.cmake
-      workingDirectory: '$(Build.SourcesDirectory)'
+- task: CMake@1
+  displayName: 'Configure MPSS (${{ parameters.preset }})'
+  inputs:
+    cmakeArgs: --preset ${{ parameters.preset }}
+    workingDirectory: '$(Build.SourcesDirectory)'
 
 - task: CMake@1
   displayName: 'Build MPSS'
   inputs:
-    cmakeArgs: >
-      --build build
-      --config ${{ parameters.configuration }}
+    cmakeArgs: --build out/build/${{ parameters.preset }}
     workingDirectory: '$(Build.SourcesDirectory)'
 
 - ${{ if ne(parameters.yubikey, 'true') }}:
   - task: CmdLine@2
     displayName: 'Run MPSS unit tests'
     inputs:
-      script: 'build/bin/mpss_tests'
+      script: out/build/${{ parameters.preset }}/bin/mpss_tests
       workingDirectory: '$(Build.SourcesDirectory)'

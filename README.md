@@ -39,6 +39,7 @@ cmake --install out/build/<build-preset-name> # optional; to install in custom d
 
 The list of available presets can be seen by running `cmake --list-presets=all`.
 Presets whose name includes `-with-yubikey` additionally enable the YubiKey PIV backend ([see prerequisites below](#prerequisites)).
+Presets whose name includes `-shared` build MPSS (and the OpenSSL provider) as shared libraries; otherwise the default is static.
 
 If you do not want to use presets, you can configure manually as shown in the platform-specific sections below.
 

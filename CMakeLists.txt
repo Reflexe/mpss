@@ -66,7 +66,7 @@ if(MPSS_BACKEND_YUBIKEY)
     list(APPEND VCPKG_MANIFEST_FEATURES "yubikey")
 endif()
 
-project(mpss VERSION 1.2.0 LANGUAGES C CXX)
+project(mpss VERSION 1.2.1 LANGUAGES C CXX)
 
 if(MPSS_BACKEND_YUBIKEY)
     # The vcpkg port is named "yubico-piv-tool" but exports the CMake config
@@ -190,6 +190,17 @@ if(MPSS_BUILD_MPSS_OPENSSL_STATIC OR MPSS_BUILD_MPSS_OPENSSL_SHARED)
     add_subdirectory(mpss-openssl)
 endif()
 
+# These must be set before configure_file so they propagate into config.h.
+# mpss/defines.h keys __declspec(dllexport)/(dllimport) off MPSS_CORE_IS_SHARED
+# on MSVC; if it's unset at substitution time, a Windows DLL build produces
+# zero exported symbols and no import library.
+if(MPSS_BUILD_MPSS_CORE_SHARED)
+    set(MPSS_CORE_IS_SHARED ON)
+endif()
+if(MPSS_BUILD_MPSS_OPENSSL_SHARED)
+    set(MPSS_OPENSSL_IS_SHARED ON)
+endif()
+
 # Create config.h from config.h.in.
 configure_file("${mpss_CONFIG_H_IN_FILENAME}" "${mpss_CONFIG_H_FILENAME}")
 
@@ -213,9 +224,6 @@ if(MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_CORE_SHARED)
     elseif(mpss_LIBRARY_TYPE STREQUAL "SHARED")
         message(STATUS "[mpss] Building shared library.")
 
-        # This variable is used in the config.h.in file.
-        set(MPSS_CORE_IS_SHARED ON)
-
         set(mpss_TARGET mpss)
         add_library(${mpss_TARGET} ${mpss_LIBRARY_TYPE} ${mpss_SOURCE_FILES})
     else()
@@ -235,9 +243,6 @@ if(MPSS_BUILD_MPSS_OPENSSL_STATIC OR MPSS_BUILD_MPSS_OPENSSL_SHARED)
         add_library(${mpss_openssl_TARGET} ${mpss_openssl_LIBRARY_TYPE} ${mpss_openssl_SOURCE_FILES})
     elseif(mpss_openssl_LIBRARY_TYPE STREQUAL "SHARED")
         message(STATUS "[mpss-openssl] Building shared library.")
-
-        # This variable is used in the config.h.in file.
-        set(MPSS_OPENSSL_IS_SHARED ON)
 
         set(mpss_openssl_TARGET mpss_openssl)
         add_library(${mpss_openssl_TARGET} ${mpss_openssl_LIBRARY_TYPE} ${mpss_openssl_SOURCE_FILES})

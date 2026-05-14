@@ -29,6 +29,17 @@ stages:
     - template: jobs.yaml
       parameters:
         debug: 'true'
+        name: Windows
+        linkage: 'shared'
+    - template: jobs.yaml
+      parameters:
+        debug: 'true'
+        name: Windows
+        yubikey: 'true'
+        linkage: 'shared'
+    - template: jobs.yaml
+      parameters:
+        debug: 'true'
         name: macOS
     - template: jobs.yaml
       parameters:

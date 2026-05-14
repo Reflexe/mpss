@@ -25,6 +25,16 @@
             }
         },
         {
+            "name": "shared-base",
+            "hidden": true,
+            "cacheVariables": {
+                "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
+                "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
+                "MPSS_BUILD_MPSS_OPENSSL_STATIC": "NO",
+                "MPSS_BUILD_MPSS_OPENSSL_SHARED": "YES"
+            }
+        },
+        {
             "name": "win-vs2022-x64",
             "displayName": "Windows VS 2022 (x64)",
             "inherits": "base",
@@ -105,6 +115,46 @@
             "displayName": "Windows VS 2026 (arm64) [YubiKey]",
             "inherits": "win-vs2022-arm64-with-yubikey",
             "generator": "Visual Studio 18 2026"
+        },
+        {
+            "name": "win-vs2022-x64-shared",
+            "displayName": "Windows VS 2022 (x64) [Shared]",
+            "inherits": ["win-vs2022-x64", "shared-base"]
+        },
+        {
+            "name": "win-vs2022-x64-with-yubikey-shared",
+            "displayName": "Windows VS 2022 (x64) [Shared, YubiKey]",
+            "inherits": ["win-vs2022-x64-with-yubikey", "shared-base"]
+        },
+        {
+            "name": "win-vs2022-arm64-shared",
+            "displayName": "Windows VS 2022 (arm64) [Shared]",
+            "inherits": ["win-vs2022-arm64", "shared-base"]
+        },
+        {
+            "name": "win-vs2022-arm64-with-yubikey-shared",
+            "displayName": "Windows VS 2022 (arm64) [Shared, YubiKey]",
+            "inherits": ["win-vs2022-arm64-with-yubikey", "shared-base"]
+        },
+        {
+            "name": "win-vs2026-x64-shared",
+            "displayName": "Windows VS 2026 (x64) [Shared]",
+            "inherits": ["win-vs2026-x64", "shared-base"]
+        },
+        {
+            "name": "win-vs2026-arm64-shared",
+            "displayName": "Windows VS 2026 (arm64) [Shared]",
+            "inherits": ["win-vs2026-arm64", "shared-base"]
+        },
+        {
+            "name": "win-vs2026-x64-with-yubikey-shared",
+            "displayName": "Windows VS 2026 (x64) [Shared, YubiKey]",
+            "inherits": ["win-vs2026-x64-with-yubikey", "shared-base"]
+        },
+        {
+            "name": "win-vs2026-arm64-with-yubikey-shared",
+            "displayName": "Windows VS 2026 (arm64) [Shared, YubiKey]",
+            "inherits": ["win-vs2026-arm64-with-yubikey", "shared-base"]
         },
         {
             "name": "linux-debug",
@@ -207,6 +257,26 @@
             }
         },
         {
+            "name": "linux-with-yubikey-shared-debug",
+            "displayName": "Linux Debug (Ninja) [Shared, YubiKey]",
+            "inherits": ["linux-with-yubikey-debug", "shared-base"]
+        },
+        {
+            "name": "linux-with-yubikey-shared-release",
+            "displayName": "Linux Release (Ninja) [Shared, YubiKey]",
+            "inherits": ["linux-with-yubikey-release", "shared-base"]
+        },
+        {
+            "name": "linux-arm64-with-yubikey-shared-debug",
+            "displayName": "Linux Debug (arm64, Ninja) [Shared, YubiKey]",
+            "inherits": ["linux-arm64-with-yubikey-debug", "shared-base"]
+        },
+        {
+            "name": "linux-arm64-with-yubikey-shared-release",
+            "displayName": "Linux Release (arm64, Ninja) [Shared, YubiKey]",
+            "inherits": ["linux-arm64-with-yubikey-release", "shared-base"]
+        },
+        {
             "name": "macos-arm64-debug",
             "displayName": "macOS Debug (arm64, Ninja)",
             "inherits": "base",
@@ -287,6 +357,46 @@
             "cacheVariables": {
                 "MPSS_BACKEND_YUBIKEY": "YES"
             }
+        },
+        {
+            "name": "macos-arm64-shared-debug",
+            "displayName": "macOS Debug (arm64, Ninja) [Shared]",
+            "inherits": ["macos-arm64-debug", "shared-base"]
+        },
+        {
+            "name": "macos-arm64-shared-release",
+            "displayName": "macOS Release (arm64, Ninja) [Shared]",
+            "inherits": ["macos-arm64-release", "shared-base"]
+        },
+        {
+            "name": "macos-arm64-with-yubikey-shared-debug",
+            "displayName": "macOS Debug (arm64, Ninja) [Shared, YubiKey]",
+            "inherits": ["macos-arm64-with-yubikey-debug", "shared-base"]
+        },
+        {
+            "name": "macos-arm64-with-yubikey-shared-release",
+            "displayName": "macOS Release (arm64, Ninja) [Shared, YubiKey]",
+            "inherits": ["macos-arm64-with-yubikey-release", "shared-base"]
+        },
+        {
+            "name": "macos-x64-shared-debug",
+            "displayName": "macOS Debug (x64, Ninja) [Shared]",
+            "inherits": ["macos-x64-debug", "shared-base"]
+        },
+        {
+            "name": "macos-x64-shared-release",
+            "displayName": "macOS Release (x64, Ninja) [Shared]",
+            "inherits": ["macos-x64-release", "shared-base"]
+        },
+        {
+            "name": "macos-x64-with-yubikey-shared-debug",
+            "displayName": "macOS Debug (x64, Ninja) [Shared, YubiKey]",
+            "inherits": ["macos-x64-with-yubikey-debug", "shared-base"]
+        },
+        {
+            "name": "macos-x64-with-yubikey-shared-release",
+            "displayName": "macOS Release (x64, Ninja) [Shared, YubiKey]",
+            "inherits": ["macos-x64-with-yubikey-release", "shared-base"]
         }
     ],
     "buildPresets": [
@@ -467,6 +577,182 @@
             }
         },
         {
+            "name": "win-vs2022-x64-shared-debug",
+            "displayName": "Windows VS 2022 (x64) [Debug, Shared]",
+            "configurePreset": "win-vs2022-x64-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-x64-shared-release",
+            "displayName": "Windows VS 2022 (x64) [Release, Shared]",
+            "configurePreset": "win-vs2022-x64-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-x64-with-yubikey-shared-debug",
+            "displayName": "Windows VS 2022 (x64) [Debug, Shared, YubiKey]",
+            "configurePreset": "win-vs2022-x64-with-yubikey-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-x64-with-yubikey-shared-release",
+            "displayName": "Windows VS 2022 (x64) [Release, Shared, YubiKey]",
+            "configurePreset": "win-vs2022-x64-with-yubikey-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-arm64-shared-debug",
+            "displayName": "Windows VS 2022 (arm64) [Debug, Shared]",
+            "configurePreset": "win-vs2022-arm64-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-arm64-shared-release",
+            "displayName": "Windows VS 2022 (arm64) [Release, Shared]",
+            "configurePreset": "win-vs2022-arm64-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-arm64-with-yubikey-shared-debug",
+            "displayName": "Windows VS 2022 (arm64) [Debug, Shared, YubiKey]",
+            "configurePreset": "win-vs2022-arm64-with-yubikey-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2022-arm64-with-yubikey-shared-release",
+            "displayName": "Windows VS 2022 (arm64) [Release, Shared, YubiKey]",
+            "configurePreset": "win-vs2022-arm64-with-yubikey-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-x64-shared-debug",
+            "displayName": "Windows VS 2026 (x64) [Debug, Shared]",
+            "configurePreset": "win-vs2026-x64-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-x64-shared-release",
+            "displayName": "Windows VS 2026 (x64) [Release, Shared]",
+            "configurePreset": "win-vs2026-x64-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-arm64-shared-debug",
+            "displayName": "Windows VS 2026 (arm64) [Debug, Shared]",
+            "configurePreset": "win-vs2026-arm64-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-arm64-shared-release",
+            "displayName": "Windows VS 2026 (arm64) [Release, Shared]",
+            "configurePreset": "win-vs2026-arm64-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-x64-with-yubikey-shared-debug",
+            "displayName": "Windows VS 2026 (x64) [Debug, Shared, YubiKey]",
+            "configurePreset": "win-vs2026-x64-with-yubikey-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-x64-with-yubikey-shared-release",
+            "displayName": "Windows VS 2026 (x64) [Release, Shared, YubiKey]",
+            "configurePreset": "win-vs2026-x64-with-yubikey-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-arm64-with-yubikey-shared-debug",
+            "displayName": "Windows VS 2026 (arm64) [Debug, Shared, YubiKey]",
+            "configurePreset": "win-vs2026-arm64-with-yubikey-shared",
+            "configuration": "Debug",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "win-vs2026-arm64-with-yubikey-shared-release",
+            "displayName": "Windows VS 2026 (arm64) [Release, Shared, YubiKey]",
+            "configurePreset": "win-vs2026-arm64-with-yubikey-shared",
+            "configuration": "Release",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
             "name": "linux-debug",
             "configurePreset": "linux-debug",
             "jobs": 0,
@@ -547,6 +833,46 @@
             }
         },
         {
+            "name": "linux-with-yubikey-shared-debug",
+            "configurePreset": "linux-with-yubikey-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-with-yubikey-shared-release",
+            "configurePreset": "linux-with-yubikey-shared-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-shared-debug",
+            "configurePreset": "linux-arm64-with-yubikey-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-with-yubikey-shared-release",
+            "configurePreset": "linux-arm64-with-yubikey-shared-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
             "name": "macos-arm64-debug",
             "configurePreset": "macos-arm64-debug",
             "jobs": 0,
@@ -619,6 +945,86 @@
         {
             "name": "macos-x64-with-yubikey-release",
             "configurePreset": "macos-x64-with-yubikey-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-arm64-shared-debug",
+            "configurePreset": "macos-arm64-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-arm64-shared-release",
+            "configurePreset": "macos-arm64-shared-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-arm64-with-yubikey-shared-debug",
+            "configurePreset": "macos-arm64-with-yubikey-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-arm64-with-yubikey-shared-release",
+            "configurePreset": "macos-arm64-with-yubikey-shared-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-x64-shared-debug",
+            "configurePreset": "macos-x64-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-x64-shared-release",
+            "configurePreset": "macos-x64-shared-release",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-x64-with-yubikey-shared-debug",
+            "configurePreset": "macos-x64-with-yubikey-shared-debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-x64-with-yubikey-shared-release",
+            "configurePreset": "macos-x64-with-yubikey-shared-release",
             "jobs": 0,
             "condition": {
                 "type": "equals",
