@@ -224,7 +224,7 @@ class YubiKeyPIV
      *
      * @return A vector of serial numbers for all reachable YubiKeys.
      */
-    static std::vector<std::uint32_t> available_serials();
+    static MPSS_DECOR std::vector<std::uint32_t> available_serials();
 
   private:
     ykpiv_state *state_{nullptr};
