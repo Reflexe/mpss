@@ -7,11 +7,10 @@
 
 #ifdef MPSS_BACKEND_YUBIKEY
 
+#include "mpss/defines.h"
 #include "mpss/secure_types.h"
 #include <memory>
-#include <mutex>
 #include <optional>
-#include <shared_mutex>
 #include <string_view>
 
 namespace mpss
@@ -105,7 +104,7 @@ class InteractionHandler
  * @brief Creates a new default terminal-based interaction handler.
  * @return A shared pointer to the new handler.
  */
-std::shared_ptr<InteractionHandler> NewDefaultInteractionHandler();
+MPSS_DECOR std::shared_ptr<InteractionHandler> NewDefaultInteractionHandler();
 
 /**
  * @brief Gets or replaces the global interaction handler.
@@ -114,20 +113,8 @@ std::shared_ptr<InteractionHandler> NewDefaultInteractionHandler();
  * @return The current global interaction handler (after any replacement).
  * @note This function is thread-safe for both reading and writing.
  */
-inline std::shared_ptr<InteractionHandler> GetOrSetInteractionHandler(
-    std::shared_ptr<InteractionHandler> new_handler = nullptr)
-{
-    static std::shared_mutex mtx;
-    static std::shared_ptr<InteractionHandler> handler = NewDefaultInteractionHandler();
-    if (nullptr != new_handler)
-    {
-        std::unique_lock lock{mtx};
-        handler = std::move(new_handler);
-        return handler;
-    }
-    std::shared_lock lock{mtx};
-    return handler;
-}
+MPSS_DECOR std::shared_ptr<InteractionHandler> GetOrSetInteractionHandler(
+    std::shared_ptr<InteractionHandler> new_handler = nullptr);
 
 /**
  * @brief Gets the current global interaction handler.

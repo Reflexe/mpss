@@ -1,39 +1,27 @@
-# On Linux, MPSS has no OS-native backend. The YubiKey feature must be enabled.
-if(VCPKG_TARGET_IS_LINUX AND NOT "yubikey" IN_LIST FEATURES)
-    message(FATAL_ERROR
-        "MPSS requires the 'yubikey' feature on Linux because there is no "
-        "OS-native backend. Install with: vcpkg install mpss[yubikey]")
+# Android only supports shared libraries.
+if(VCPKG_TARGET_IS_ANDROID)
+    vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 endif()
 
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO Microsoft/mpss
     REF "v${VERSION}"
-    SHA512 0 # Set to correct hash once released.
+    SHA512 0
     HEAD_REF main
 )
 
-# Pick the matching CMake option per linkage; the unused option in each
-# pair (STATIC vs SHARED) defaults to NO from the option() declarations in
-# the root CMakeLists.txt and does not need to be set explicitly.
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
-    set(CORE_OPTION    "-DMPSS_BUILD_MPSS_CORE_STATIC=ON")
-    set(OPENSSL_OPTION "-DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON")
+    set(LIBRARY_LINKAGE "STATIC")
+    set(UNUSED_LINKAGE "SHARED")
 else()
-    set(CORE_OPTION    "-DMPSS_BUILD_MPSS_CORE_SHARED=ON")
-    set(OPENSSL_OPTION "-DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON")
-endif()
-
-# The 'openssl' feature is handled manually rather than via
-# vcpkg_check_features because it controls one of two CMake options
-# (MPSS_BUILD_MPSS_OPENSSL_STATIC / _SHARED) keyed on the triplet's
-# linkage. vcpkg_check_features is one-feature-to-one-option only.
-if(NOT "openssl" IN_LIST FEATURES)
-    set(OPENSSL_OPTION "")
+    set(LIBRARY_LINKAGE "SHARED")
+    set(UNUSED_LINKAGE "STATIC")
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
+        openssl    MPSS_BUILD_MPSS_OPENSSL_${LIBRARY_LINKAGE}
         yubikey    MPSS_BACKEND_YUBIKEY
 )
 
@@ -41,8 +29,9 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
-        ${CORE_OPTION}
-        ${OPENSSL_OPTION}
+        -DMPSS_BUILD_MPSS_CORE_${LIBRARY_LINKAGE}=ON
+        -DMPSS_BUILD_MPSS_CORE_${UNUSED_LINKAGE}=OFF
+        -DMPSS_BUILD_MPSS_OPENSSL_${UNUSED_LINKAGE}=OFF
         -DMPSS_BUILD_TESTS=OFF
 )
 

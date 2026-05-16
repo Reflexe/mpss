@@ -5,7 +5,11 @@
 #include "mpss/secure_types.h"
 #include <cstdlib>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
+#include <utility>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -158,6 +162,20 @@ namespace mpss
 std::shared_ptr<InteractionHandler> NewDefaultInteractionHandler()
 {
     return std::make_shared<TerminalInteractionHandler>();
+}
+
+std::shared_ptr<InteractionHandler> GetOrSetInteractionHandler(std::shared_ptr<InteractionHandler> new_handler)
+{
+    static std::shared_mutex mtx;
+    static std::shared_ptr<InteractionHandler> handler = NewDefaultInteractionHandler();
+    if (nullptr != new_handler)
+    {
+        std::unique_lock lock{mtx};
+        handler = std::move(new_handler);
+        return handler;
+    }
+    std::shared_lock lock{mtx};
+    return handler;
 }
 
 } // namespace mpss
