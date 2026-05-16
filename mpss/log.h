@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "mpss/defines.h"
 #include "mpss/log_c.h"
 #include <array>
 #include <format>
@@ -52,7 +53,7 @@ using close_handler_t = std::function<void()>;
 /**
  * @brief Thread-safe logger that dispatches messages to per-level handlers.
  */
-class Logger
+class MPSS_DECOR Logger
 {
   public:
     /**
@@ -224,7 +225,7 @@ class Logger
  * @brief Creates a new default stdout/stderr logger.
  * @return A shared pointer to the new default logger.
  */
-std::shared_ptr<Logger> NewDefaultLogger();
+MPSS_DECOR std::shared_ptr<Logger> NewDefaultLogger();
 
 /**
  * @brief Gets or replaces the global logger.
@@ -233,7 +234,7 @@ std::shared_ptr<Logger> NewDefaultLogger();
  * @return The current global logger (after any replacement).
  * @note This function is thread-safe for both reading and writing.
  */
-std::shared_ptr<Logger> GetOrSetLogger(std::shared_ptr<Logger> new_logger = nullptr);
+MPSS_DECOR std::shared_ptr<Logger> GetOrSetLogger(std::shared_ptr<Logger> new_logger = nullptr);
 
 /**
  * @brief Gets the current global logger.

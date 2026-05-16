@@ -66,7 +66,7 @@ if(MPSS_BACKEND_YUBIKEY)
     list(APPEND VCPKG_MANIFEST_FEATURES "yubikey")
 endif()
 
-project(mpss VERSION 1.2.1 LANGUAGES C CXX)
+project(mpss VERSION 1.2.2 LANGUAGES C CXX)
 
 if(MPSS_BACKEND_YUBIKEY)
     # The vcpkg port is named "yubico-piv-tool" but exports the CMake config
