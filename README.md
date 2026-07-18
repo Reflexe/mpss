@@ -116,7 +116,7 @@ sudo dnf install pcsc-lite-devel
   ```
 
 On Linux, the YubiKey backend will be used as the default since Linux has no OS-native backend.
-On Windows and macOS, the OS-native backend remains the default.
+On Windows and macOS, the OS-native backend remains the default unless you set an environment variable `MPSS_DEFAULT_BACKEND=yubikey` at runtime.
 In [Using MPSS with YubiKey PIV](#using-mpss-with-yubikey-piv) we explain how to use MPSS with YubiKey PIV, as it is a little complicated.
 
 ### iOS
@@ -478,8 +478,12 @@ If `MPSS_YUBIKEY_PIN` is not set, MPSS will prompt for the PIN interactively on 
 Applications can also provide custom PIN input handlers, as we explain in [Custom Interaction Handlers](#custom-interaction-handlers).
 Non-interactive environments (e.g., CI/CD pipelines with piped stdin) must use the environment variable.
 
-If MPSS is compiled with YubiKey support, macOS and Windows still default to using the OS-native backend.
-Use the library API to choose a backend explicitly at runtime when needed.
+If MPSS is compiled with YubiKey support, macOS and Windows will still default to using the OS-native backend.
+The library API allows choosing the backend at runtime, but the default can also be changed to the YubiKey PIV backend via an environment variable, as follows:
+
+```bash
+export MPSS_DEFAULT_BACKEND=yubikey
+```
 
 ### Key Policy Configuration
 
@@ -559,6 +563,7 @@ All operations (key creation, opening, and deletion) will fail with an error if 
 
 | Variable | Description | Values | Default |
 |----------|-------------|--------|---------|
+| `MPSS_DEFAULT_BACKEND` | Override the default backend on platforms with an OS-native backend (Windows, macOS). | `os`, `yubikey` | `os` |
 | `MPSS_YUBIKEY_PIN` | YubiKey PIV PIN for signing and PIN-protected management operations. If unset, MPSS prompts interactively. | Any valid PIN string | *(interactive prompt)* |
 | `MPSS_YUBIKEY_MGM_KEY` | Custom YubiKey PIV management key (hex-encoded). Only needed if **not** using PIN-protected mode. | 32, 48, or 64 hex characters | Factory default key |
 | `MPSS_YUBIKEY_SERIAL` | Select a YubiKey by serial number. Required when multiple devices are connected. | Serial number (e.g., `18268739`) | First available device |
@@ -611,7 +616,7 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 To run the tests with the YubiKey backend (assuming [PIN-protected management key](#setting-up-yubikey-piv) is set):
 ```bash
-MPSS_YUBIKEY_PIN=123456 out/build/macos-arm64-debug/bin/mpss_tests
+MPSS_DEFAULT_BACKEND=yubikey MPSS_YUBIKEY_PIN=123456 out/build/macos-arm64-debug/bin/mpss_tests
 ```
 If you do not supply the PIN, you will see the default terminal-based interaction handler requesting the PIN.
 Since the default touch policy is `cached`, you will see the touch prompt from the default interaction handler. To skip touch during testing, set `MPSS_YUBIKEY_TOUCHPOLICY=never`.

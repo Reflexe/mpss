@@ -31,7 +31,7 @@ class MPSS : public ::testing::Test
     static void DeleteKey(const std::string &name)
     {
         // Try to delete the key from every available backend, not just the default one.
-        // This ensures cleanup works regardless of platform default backend selection.
+        // This ensures cleanup works regardless of the MPSS_DEFAULT_BACKEND setting.
         for (const char *backend : mpss::get_available_backends())
         {
             while (true)
