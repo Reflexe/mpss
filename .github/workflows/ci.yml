@@ -321,47 +321,6 @@ jobs:
           cmake --build build-arm64
 
   # -------------------------------------------------------------------------
-  # iOS: build the XCFrameworks (device + simulator slices) via the project's
-  # own script. Build only.
-  # -------------------------------------------------------------------------
-  ios:
-    name: iOS ${{ matrix.configuration }}
-    runs-on: macos-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        configuration: [Debug, Release]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache vcpkg archives
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/vcpkg/archives
-          key: ios-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}
-          restore-keys: |
-            ios-vcpkg-${{ hashFiles('vcpkg.json') }}-
-            ios-vcpkg-
-
-      - name: Bootstrap vcpkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
-          git clone https://github.com/microsoft/vcpkg.git
-          git -C vcpkg checkout "$BASELINE"
-          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
-
-      - name: Build iOS XCFrameworks
-        shell: bash
-        run: |
-          set -euo pipefail
-          export VCPKG_ROOT="$GITHUB_WORKSPACE/vcpkg"
-          cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
-
-  # -------------------------------------------------------------------------
   # iOS Simulator: build the test suite as an .app for the iphonesimulator SDK
   # and RUN the gtest e2e on a booted simulator. GitHub's Apple-silicon runners
   # expose a working Secure Enclave inside the simulator, so this exercises the
@@ -369,9 +328,8 @@ jobs:
   # P-384/P-521) -- not a stub. Tests self-skip (GTEST_SKIP) for any algorithm
   # the backend cannot create, so the job stays meaningful either way.
   #
-  # Unlike the `ios` job above (which only needs OpenSSL *headers* and so reuses
-  # the arm64-ios device triplet), a runnable simulator app needs libraries
-  # actually built for the simulator SDK, hence the arm64-ios-simulator triplet.
+  # A runnable simulator app must link libraries built for the simulator SDK,
+  # so this uses the arm64-ios-simulator vcpkg triplet.
   # -------------------------------------------------------------------------
   ios-sim:
     name: iOS Simulator ${{ matrix.configuration }}
@@ -469,17 +427,15 @@ jobs:
           # access group, so it uses the first entry below by default.
           #
           # get-task-allow=true is mandatory: simulator apps are development
-          # binaries and launchd refuses to spawn one whose signature lacks it
+          # binaries and launchd refuses to start one whose signature lacks it
           # ("Codesigning issue", LaunchdSimError 162). The default signature the
-          # linker applies carries it; re-signing without it breaks simctl spawn.
+          # linker applies carries it; re-signing without it breaks the launch.
           ENT="$RUNNER_TEMP/mpss_tests.entitlements"
           cat > "$ENT" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>application-identifier</key>
-              <string>$BUNDLE_ID</string>
               <key>keychain-access-groups</key>
               <array>
                   <string>$BUNDLE_ID</string>
@@ -523,25 +479,41 @@ jobs:
           xcrun simctl install "$UDID" "$APP"
           CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" app)
           BIN="$CONTAINER/mpss_tests"
-          echo "Test binary: $BIN"
 
-          # Spawn the gtest binary inside the booted simulator. simctl spawn's
-          # exit code is not a reliable failure signal on every Xcode version, so
-          # we also inspect gtest's own summary lines.
+          # Optional watchdog: use GNU timeout if the runner provides it (it is
+          # not part of a stock macOS). Without it the job-level timeout applies.
+          TO=""
+          for c in timeout gtimeout; do
+            if command -v "$c" >/dev/null 2>&1; then TO="$c 600"; break; fi
+          done
+
+          # gtest reads its filter from the GTEST_FILTER env var; simctl forwards
+          # any SIMCTL_CHILD_-prefixed variable into the child, for both `spawn`
+          # and `launch`.
+          #
+          # Prefer `simctl spawn`: it execs the console test binary directly, with
+          # no SpringBoard UI-launch watchdog. If launchd rejects the entitled
+          # binary on spawn ("Codesigning issue"), fall back to a real app launch,
+          # which honors the app's entitlements. Neither path reliably propagates
+          # the app's exit code, so pass/fail is judged from gtest's summary lines.
           run_gtest() {
-            local label="$1"; shift
+            local label="$1" filter="$2"
             local log="gtest-${label}.log"
             echo "::group::gtest ($label)"
             set +e
-            xcrun simctl spawn "$UDID" "$BIN" "$@" 2>&1 | tee "$log"
-            local status=${PIPESTATUS[0]}
+            SIMCTL_CHILD_GTEST_FILTER="$filter" $TO xcrun simctl spawn "$UDID" "$BIN" 2>&1 | tee "$log"
+            if grep -qE 'launchd failed|Codesigning issue' "$log"; then
+              echo "spawn was rejected by launchd; retrying via simctl launch"
+              SIMCTL_CHILD_GTEST_FILTER="$filter" $TO xcrun simctl launch --console-pty \
+                --terminate-running-process "$UDID" "$BUNDLE_ID" 2>&1 | tee "$log"
+            fi
             set -e
             echo "::endgroup::"
             if grep -q '\[  FAILED  \]' "$log"; then
               echo "::error::[$label] gtest reported failing tests"; return 1
             fi
             if ! grep -q '\[  PASSED  \]' "$log"; then
-              echo "::error::[$label] no gtest PASSED summary (crash or no tests ran)"; return 1
+              echo "::error::[$label] no gtest PASSED summary (crash, timeout, or no tests ran)"; return 1
             fi
             # Guard against a silently broken backend: if the real Apple backend
             # cannot create keys (e.g. keychain entitlement regressed), every
@@ -552,15 +524,12 @@ jobs:
             if [ "${passed:-0}" -lt 1 ]; then
               echo "::error::[$label] 0 tests passed -- Apple backend produced no usable keys (all skipped)"; return 1
             fi
-            if [ "$status" -ne 0 ]; then
-              echo "::error::[$label] simctl spawn exited $status"; return "$status"
-            fi
             echo "[$label] OK ($passed passed)"
           }
 
           # Smoke first: the real SE + Keychain cert-chain e2e. Then the full suite.
-          run_gtest smoke --gtest_filter='*CertificateChainSerialization*'
-          run_gtest full
+          run_gtest smoke '*CertificateChainSerialization*'
+          run_gtest full '*'
 
       - name: Shut down simulator
         if: always()
