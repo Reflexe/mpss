@@ -468,10 +468,25 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
 std::unique_ptr<KeyPair> Backend::create_key(std::string_view name, Algorithm algorithm,
                                              std::optional<AttestationRequest> attestation, KeyPolicy policy) const
 {
+    if (attestation.has_value())
+    {
+        utils::log_trace("Attestation requested for key '{}' on backend '{}' (requirement={}).", name, this->name(),
+                         AttestationRequirement::require == attestation->requirement ? "require" : "request");
+    }
+
     auto key = create_key(name, algorithm, policy);
     if (nullptr == key || !attestation.has_value())
     {
         return key;
+    }
+
+    if (key->attestation().has_value())
+    {
+        utils::log_trace("Backend '{}' produced attestation evidence for key '{}'.", key->backend_name(), name);
+    }
+    else
+    {
+        utils::log_debug("Backend '{}' did not produce attestation evidence for key '{}'.", key->backend_name(), name);
     }
 
     if (AttestationRequirement::require == attestation->requirement && !key->attestation().has_value())

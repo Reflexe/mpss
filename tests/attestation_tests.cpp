@@ -30,6 +30,24 @@ using EVPKeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>
 using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
 using X509ExtensionPtr = std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)>;
 
+const char *AttestationFormatName(AttestationFormat format)
+{
+    switch (format)
+    {
+    case AttestationFormat::none:
+        return "none";
+    case AttestationFormat::apple_app_attest:
+        return "apple_app_attest";
+    case AttestationFormat::apple_acme_managed_device_attestation:
+        return "apple_acme_managed_device_attestation";
+    case AttestationFormat::android_key_attestation:
+        return "android_key_attestation";
+    case AttestationFormat::windows_tpm:
+        return "windows_tpm";
+    }
+    return "unknown";
+}
+
 std::vector<std::byte> BuildStatement(std::string_view prefix, std::span<const std::byte> challenge,
                                       std::span<const std::byte> public_key)
 {
@@ -324,6 +342,8 @@ TEST(AttestationPolicyTest, MdmOnlyAndAppAttestOnlySelectionRules)
 
 TEST(AttestationE2ETest, FullAttestationWithMockPkiService)
 {
+    SCOPED_TRACE("Creating attested key and validating evidence through mock PKI.");
+
     if (!mpss::is_algorithm_available(Algorithm::ecdsa_secp256r1_sha256))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
@@ -356,6 +376,11 @@ TEST(AttestationE2ETest, FullAttestationWithMockPkiService)
     {
         GTEST_SKIP() << "Backend did not produce attestation evidence.";
     }
+
+    SCOPED_TRACE(::testing::Message()
+                 << "Backend=" << key->backend_name() << ", format=" << AttestationFormatName(evidence->format)
+                 << ", statement_bytes=" << evidence->statement.size() << ", cert_chain_len="
+                 << evidence->cert_chain.size());
 
     if (AttestationFormat::none == evidence->format)
     {
