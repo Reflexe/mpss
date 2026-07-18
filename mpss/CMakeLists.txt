@@ -21,6 +21,7 @@ install(
         "${CMAKE_CURRENT_LIST_DIR}/algorithm.h"
         "${CMAKE_CURRENT_LIST_DIR}/defines.h"
         "${CMAKE_CURRENT_LIST_DIR}/interaction_handler.h"
+        "${CMAKE_CURRENT_LIST_DIR}/key_creation.h"
         "${CMAKE_CURRENT_LIST_DIR}/key_info.h"
         "${CMAKE_CURRENT_LIST_DIR}/key_policy.h"
         "${CMAKE_CURRENT_LIST_DIR}/log.h"

@@ -36,6 +36,12 @@ std::string random_string(std::size_t length)
     return result;
 }
 
+[[nodiscard]]
+bool is_attestation_requested(const mpss::KeyCreationOptions &options)
+{
+    return mpss::AttestationMode::none != options.attestation.mode;
+}
+
 } // namespace
 
 namespace mpss::impl
@@ -281,15 +287,25 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
                                     KeyPolicy policy)
 {
+    KeyCreationOptions options;
+    options.policy = policy;
+
+    KeyCreationResult result = create_key(backend_name, name, algorithm, options);
+    return std::move(result.key);
+}
+
+KeyCreationResult create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
+                             const KeyCreationOptions &options)
+{
     if (name.empty())
     {
         utils::log_warning("Key name cannot be empty.");
-        return nullptr;
+        return {};
     }
     if (name.size() > max_key_name_length)
     {
         utils::log_warning("Key name exceeds maximum length of {} characters.", max_key_name_length);
-        return nullptr;
+        return {};
     }
 
     BackendRegistry &registry = BackendRegistry::Instance();
@@ -297,18 +313,22 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
     if (nullptr == backend)
     {
         utils::log_and_set_error("Backend '{}' not found.", backend_name);
-        return nullptr;
+        KeyCreationResult result;
+        result.attestation.status =
+            is_attestation_requested(options) ? AttestationStatus::failed : AttestationStatus::not_requested;
+        result.attestation.nonce = options.attestation.nonce;
+        return result;
     }
 
     utils::log_trace("Creating key '{}' with algorithm '{}' using backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend->name());
-    auto key = backend->create_key(name, algorithm, policy);
-    if (nullptr != key)
+    KeyCreationResult result = backend->create_key(name, algorithm, options);
+    if (nullptr != result.key)
     {
         utils::log_trace("Key '{}' created on backend '{}'.", name, backend->name());
-        BackendNameSetter::set(*key, backend->name());
+        BackendNameSetter::set(*result.key, backend->name());
     }
-    return key;
+    return result;
 }
 
 std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name)
@@ -359,13 +379,26 @@ bool verify(std::string_view backend_name, std::span<const std::byte> hash, std:
 // Default-backend functions - delegate to the explicit-backend overloads.
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
+    KeyCreationOptions options;
+    options.policy = policy;
+
+    KeyCreationResult result = create_key(name, algorithm, options);
+    return std::move(result.key);
+}
+
+KeyCreationResult create_key(std::string_view name, Algorithm algorithm, const KeyCreationOptions &options)
+{
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
     {
         utils::log_and_set_error("No default backend available for creating key '{}'.", name);
-        return nullptr;
+        KeyCreationResult result;
+        result.attestation.status =
+            is_attestation_requested(options) ? AttestationStatus::failed : AttestationStatus::not_requested;
+        result.attestation.nonce = options.attestation.nonce;
+        return result;
     }
-    return create_key(backend->name(), name, algorithm, policy);
+    return create_key(backend->name(), name, algorithm, options);
 }
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)
@@ -445,6 +478,44 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
     std::vector<std::byte> sig(sig_size);
     const std::size_t written = key->sign_hash(hash, sig);
     return 0 != written;
+}
+
+KeyCreationResult Backend::create_key(std::string_view name, Algorithm algorithm, const KeyCreationOptions &options) const
+{
+    KeyCreationResult result;
+    result.attestation.nonce = options.attestation.nonce;
+
+    if (!options.attestation.nonce.empty() && AttestationMode::none == options.attestation.mode)
+    {
+        utils::log_and_set_error("Attestation nonce requires attestation mode 'if_supported' or 'required'.");
+        result.attestation.status = AttestationStatus::failed;
+        return result;
+    }
+
+    switch (options.attestation.mode)
+    {
+    case AttestationMode::none:
+        result.key = create_key(name, algorithm, options.policy);
+        result.attestation.status = AttestationStatus::not_requested;
+        return result;
+    case AttestationMode::if_supported:
+        result.key = create_key(name, algorithm, options.policy);
+        result.attestation.status = result.key ? AttestationStatus::unsupported : AttestationStatus::failed;
+        if (result.key)
+        {
+            utils::log_info("Backend '{}' created key '{}' without attestation because attestation is unsupported.",
+                            this->name(), name);
+        }
+        return result;
+    case AttestationMode::required:
+        utils::log_and_set_error("Backend '{}' does not support attestation for key creation.", this->name());
+        result.attestation.status = AttestationStatus::unsupported;
+        return result;
+    default:
+        utils::log_and_set_error("Unknown attestation mode requested.");
+        result.attestation.status = AttestationStatus::failed;
+        return result;
+    }
 }
 
 } // namespace mpss::impl

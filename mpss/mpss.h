@@ -5,6 +5,7 @@
 
 #include "mpss/algorithm.h"
 #include "mpss/defines.h"
+#include "mpss/key_creation.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include <cstddef>
@@ -22,6 +23,8 @@ namespace impl
 {
 class BackendNameSetter;
 } // namespace impl
+
+struct KeyCreationResult;
 
 /**
  * @brief Retrieves the last error that occurred.
@@ -164,6 +167,16 @@ class MPSS_DECOR KeyPair
                                            KeyPolicy policy = KeyPolicy::none);
 
     /**
+     * @brief Creates a new key pair with advanced creation options.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] options Advanced key creation options, including policy and attestation behavior.
+     * @return Key creation result containing the key pair, if created, and attestation status.
+     */
+    [[nodiscard]]
+    static KeyCreationResult Create(std::string_view name, Algorithm algorithm, const KeyCreationOptions &options);
+
+    /**
      * @brief Creates a new key pair using a specific backend.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
@@ -174,6 +187,18 @@ class MPSS_DECOR KeyPair
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                            KeyPolicy policy = KeyPolicy::none);
+
+    /**
+     * @brief Creates a new key pair using a specific backend and advanced creation options.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] options Advanced key creation options, including policy and attestation behavior.
+     * @return Key creation result containing the key pair, if created, and attestation status.
+     */
+    [[nodiscard]]
+    static KeyCreationResult Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                    const KeyCreationOptions &options);
 
     /**
      * @brief Opens the key pair with the given name.
@@ -268,6 +293,18 @@ class MPSS_DECOR KeyPair
     // NOLINTEND(*-non-private-member-variables-in-classes)
 
     KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description);
+};
+
+/**
+ * @brief Result of advanced key creation.
+ */
+struct MPSS_DECOR KeyCreationResult
+{
+    /** @brief The created key pair, if creation succeeded. */
+    std::unique_ptr<KeyPair> key;
+
+    /** @brief Attestation outcome for the key creation request. */
+    AttestationResult attestation;
 };
 
 } // namespace mpss

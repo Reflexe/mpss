@@ -709,6 +709,100 @@ TEST(KeyPolicyTest, CreateKeyWithPolicyNone)
     key->delete_key();
 }
 
+TEST(KeyCreationOptionsTest, CreateWithAttestationNoneReturnsNotRequested)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "test_key_attestation_none";
+    MPSS::DeleteKey(key_name);
+
+    KeyCreationOptions options;
+    options.policy = KeyPolicy::none;
+    options.attestation.mode = AttestationMode::none;
+
+    KeyCreationResult result = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, options);
+    ASSERT_NE(nullptr, result.key);
+    EXPECT_EQ(AttestationStatus::not_requested, result.attestation.status);
+    EXPECT_TRUE(result.attestation.document.empty());
+    EXPECT_TRUE(result.attestation.nonce.empty());
+
+    result.key->delete_key();
+}
+
+TEST(KeyCreationOptionsTest, CreateWithOptionalAttestationReportsUnsupported)
+{
+    const char *backend_name = mpss::get_default_backend_name();
+    if (std::strlen(backend_name) == 0 || !mpss::is_algorithm_available(ecdsa_secp256r1_sha256, backend_name))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "test_key_attestation_optional";
+    MPSS::DeleteKey(key_name);
+
+    KeyCreationOptions options;
+    options.attestation.mode = AttestationMode::if_supported;
+    options.attestation.nonce = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
+
+    KeyCreationResult result = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, backend_name, options);
+    ASSERT_NE(nullptr, result.key);
+    EXPECT_EQ(AttestationStatus::unsupported, result.attestation.status);
+    EXPECT_TRUE(result.attestation.document.empty());
+    EXPECT_EQ(options.attestation.nonce, result.attestation.nonce);
+
+    result.key->delete_key();
+}
+
+TEST(KeyCreationOptionsTest, CreateWithRequiredAttestationFailsWhenUnsupported)
+{
+    const char *backend_name = mpss::get_default_backend_name();
+    if (std::strlen(backend_name) == 0 || !mpss::is_algorithm_available(ecdsa_secp256r1_sha256, backend_name))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "test_key_attestation_required";
+    MPSS::DeleteKey(key_name);
+
+    KeyCreationOptions options;
+    options.attestation.mode = AttestationMode::required;
+    options.attestation.nonce = {std::byte{0xA1}, std::byte{0xB2}};
+
+    KeyCreationResult result = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, backend_name, options);
+    EXPECT_EQ(nullptr, result.key);
+    EXPECT_EQ(AttestationStatus::unsupported, result.attestation.status);
+    EXPECT_EQ(options.attestation.nonce, result.attestation.nonce);
+
+    auto key = mpss::KeyPair::Open(key_name, backend_name);
+    EXPECT_EQ(nullptr, key);
+}
+
+TEST(KeyCreationOptionsTest, NonceRequiresAttestationMode)
+{
+    const char *backend_name = mpss::get_default_backend_name();
+    if (std::strlen(backend_name) == 0 || !mpss::is_algorithm_available(ecdsa_secp256r1_sha256, backend_name))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "test_key_attestation_nonce_validation";
+    MPSS::DeleteKey(key_name);
+
+    KeyCreationOptions options;
+    options.attestation.mode = AttestationMode::none;
+    options.attestation.nonce = {std::byte{0x11}};
+
+    KeyCreationResult result = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, backend_name, options);
+    EXPECT_EQ(nullptr, result.key);
+    EXPECT_EQ(AttestationStatus::failed, result.attestation.status);
+
+    auto key = mpss::KeyPair::Open(key_name, backend_name);
+    EXPECT_EQ(nullptr, key);
+}
+
 // --- Key name length limit tests ---
 
 TEST(KeyNameLimitTest, KeyNameTooLongCreate)

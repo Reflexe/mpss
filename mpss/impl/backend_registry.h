@@ -38,6 +38,17 @@ class Backend
     virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const = 0;
 
     /**
+     * @brief Create a new key pair with advanced creation options.
+     * @param[in] name The name of the key pair.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] options Advanced key creation options.
+     * @return Key creation result with key and attestation status.
+     */
+    [[nodiscard]]
+    virtual KeyCreationResult create_key(std::string_view name, Algorithm algorithm,
+                                         const KeyCreationOptions &options) const;
+
+    /**
      * @brief Open an existing key pair.
      * @param[in] name The name of the key pair.
      * @return Key pair if successful, nullptr otherwise.
@@ -77,6 +88,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
                                     KeyPolicy policy);
 
 [[nodiscard]]
+KeyCreationResult create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
+                             const KeyCreationOptions &options);
+
+[[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name);
 
 [[nodiscard]]
@@ -92,6 +107,9 @@ bool is_algorithm_available(Algorithm algorithm);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
+
+[[nodiscard]]
+KeyCreationResult create_key(std::string_view name, Algorithm algorithm, const KeyCreationOptions &options);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);

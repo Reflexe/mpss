@@ -18,12 +18,27 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
     return impl::create_key(name, algorithm, policy);
 }
 
+KeyCreationResult KeyPair::Create(std::string_view name, Algorithm algorithm, const KeyCreationOptions &options)
+{
+    utils::log_trace("KeyPair::Create (advanced) called for key '{}' with algorithm '{}'.", name,
+                     get_algorithm_info(algorithm).type_str);
+    return impl::create_key(name, algorithm, options);
+}
+
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                          KeyPolicy policy)
 {
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend_name);
     return impl::create_key(backend_name, name, algorithm, policy);
+}
+
+KeyCreationResult KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                  const KeyCreationOptions &options)
+{
+    utils::log_trace("KeyPair::Create (advanced) called for key '{}' with algorithm '{}' on backend '{}'.", name,
+                     get_algorithm_info(algorithm).type_str, backend_name);
+    return impl::create_key(backend_name, name, algorithm, options);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)

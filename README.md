@@ -498,6 +498,46 @@ auto key = mpss::KeyPair::Create("my-key", mpss::Algorithm::ecdsa_secp256r1_sha2
 auto key2 = mpss::KeyPair::Create("my-key2", mpss::Algorithm::ecdsa_secp256r1_sha256);
 ```
 
+### Advanced Key Creation Options
+
+For advanced creation flows, MPSS also provides a create-options API:
+
+```cpp
+#include "mpss/key_creation.h"
+
+mpss::KeyCreationOptions options;
+options.policy = mpss::KeyPolicy::none;
+options.attestation.mode = mpss::AttestationMode::if_supported;
+options.attestation.nonce = {std::byte{0x01}, std::byte{0x02}};
+
+auto result = mpss::KeyPair::Create("my-key3", mpss::Algorithm::ecdsa_secp256r1_sha256, options);
+if (!result.key) {
+    // Handle key creation failure.
+}
+
+switch (result.attestation.status) {
+case mpss::AttestationStatus::not_requested:
+    break;
+case mpss::AttestationStatus::unsupported:
+    // The selected backend created the key, but does not support attestation.
+    break;
+case mpss::AttestationStatus::performed:
+    // result.attestation.document contains opaque backend-specific attestation bytes.
+    break;
+case mpss::AttestationStatus::failed:
+    // Attestation or key creation failed.
+    break;
+}
+```
+
+Attestation modes behave as follows:
+
+- `none` - create the key without attestation
+- `if_supported` - create the key even when the selected backend cannot attest, but report `unsupported`
+- `required` - fail creation when the selected backend cannot attest
+
+The nonce field is only valid when attestation is requested.
+
 ### Custom Interaction Handlers
 
 Applications that need custom PIN entry (e.g., a GUI dialog) or touch notifications can install a custom interaction handler:
@@ -810,4 +850,3 @@ The tests are built automatically when `MPSS_BUILD_TESTS=ON` is set, provided th
 MPSS is released under the MIT license.
 We welcome contributions, including feature additions and bug fixes.
 If you have a feature request or a question about how to use the library, please [submit an issue](https://github.com/microsoft/mpss/issues).
-
