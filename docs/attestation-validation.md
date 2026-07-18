@@ -28,7 +28,8 @@ Apple managed-device detection/capability is exposed through Apple wrapper seams
 ## Platform contracts
 
 - **Android (`android_key_attestation`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted roots. In production, chain validation to Google hardware attestation roots must be enforced server-side.
-- **Windows (`windows_tpm`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted TPM roots.
+- **Windows VBS (`windows_vbs`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted VBS roots.
+- **Windows TPM (`windows_tpm`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted TPM roots.
 - **Apple (`apple_app_attest`)**: validate App Attest evidence structure, nonce binding, and CSR-key possession binding. This is a weaker assurance than direct CSR-key non-exportability proof.
 - **Apple ACME PoC (`apple_acme_managed_device_attestation`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted roots using the managed-device-style mock statement format. This is a test seam proof-of-concept, not a production ACME integration.
 

@@ -42,6 +42,8 @@ const char *AttestationFormatName(AttestationFormat format)
         return "apple_acme_managed_device_attestation";
     case AttestationFormat::android_key_attestation:
         return "android_key_attestation";
+    case AttestationFormat::windows_vbs:
+        return "windows_vbs";
     case AttestationFormat::windows_tpm:
         return "windows_tpm";
     }
@@ -83,6 +85,28 @@ std::vector<std::byte> BuildAppleAppAttestStatement(std::span<const std::byte> c
         statement.push_back(static_cast<std::byte>((binding >> (i * 8U)) & 0xFFU));
     }
     return statement;
+}
+
+std::string_view StatementPrefixForFormat(AttestationFormat format)
+{
+    switch (format)
+    {
+    case AttestationFormat::android_key_attestation:
+        return "MPSS_ANDROID_KEY_ATTESTATION_V1";
+    case AttestationFormat::windows_tpm:
+        return "MPSS_WINDOWS_TPM_ATTESTATION_V1";
+    case AttestationFormat::windows_vbs:
+        return "MPSS_WINDOWS_VBS_ATTESTATION_V1";
+    case AttestationFormat::apple_acme_managed_device_attestation:
+        return "MPSS_APPLE_ACME_MDA_V1";
+    default:
+        return {};
+    }
+}
+
+bool UsesCertificateChain(AttestationFormat format)
+{
+    return AttestationFormat::apple_app_attest != format;
 }
 
 EVPKeyPtr GenerateEcP256Key()
@@ -410,6 +434,54 @@ TEST(AttestationE2ETest, FullAttestationWithMockPkiService)
     else
     {
         EXPECT_FALSE(result.weaker_assurance);
+    }
+}
+
+TEST(AttestationE2ETest, MockPkiAcceptsTpmVbsAppleAppAppleAcmeAndAndroidEvidence)
+{
+    const std::vector<AttestationFormat> formats{
+        AttestationFormat::windows_tpm,
+        AttestationFormat::windows_vbs,
+        AttestationFormat::apple_app_attest,
+        AttestationFormat::apple_acme_managed_device_attestation,
+        AttestationFormat::android_key_attestation,
+    };
+
+    for (const AttestationFormat format : formats)
+    {
+        SCOPED_TRACE(::testing::Message() << "format=" << AttestationFormatName(format));
+        mock_pki::MockPkiService pki;
+        const auto challenge = pki.issue_challenge();
+        const auto chain = BuildMockChain("Root", "Intermediate", "Leaf");
+
+        AttestationEvidence evidence{};
+        evidence.format = format;
+        if (AttestationFormat::apple_app_attest == format)
+        {
+            evidence.statement = BuildAppleAppAttestStatement(challenge, chain.leaf_public_key_der);
+        }
+        else
+        {
+            evidence.statement = BuildStatement(StatementPrefixForFormat(format), challenge, chain.leaf_public_key_der);
+        }
+
+        if (UsesCertificateChain(format))
+        {
+            pki.set_trusted_root(format, chain.root_der);
+            evidence.cert_chain = chain.chain_der;
+        }
+
+        const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence, format);
+        EXPECT_TRUE(result.signed_cert);
+        EXPECT_FALSE(result.reject_reason.has_value());
+        if (AttestationFormat::apple_app_attest == format)
+        {
+            EXPECT_TRUE(result.weaker_assurance);
+        }
+        else
+        {
+            EXPECT_FALSE(result.weaker_assurance);
+        }
     }
 }
 

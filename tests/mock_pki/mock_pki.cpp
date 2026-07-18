@@ -19,6 +19,7 @@ namespace
 
 constexpr std::string_view android_prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
 constexpr std::string_view windows_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
+constexpr std::string_view windows_vbs_prefix = "MPSS_WINDOWS_VBS_ATTESTATION_V1";
 constexpr std::string_view apple_prefix = "MPSS_APP_ATTEST_V1";
 constexpr std::string_view apple_acme_prefix = "MPSS_APPLE_ACME_MDA_V1";
 
@@ -28,6 +29,8 @@ constexpr std::string_view to_string(AttestationFormat format)
     {
     case AttestationFormat::none:
         return "none";
+    case AttestationFormat::windows_vbs:
+        return "windows_vbs";
     case AttestationFormat::windows_tpm:
         return "windows_tpm";
     case AttestationFormat::android_key_attestation:
@@ -187,13 +190,15 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
             return reject(RejectReason::invalid_structure);
         }
     }
-    else if (AttestationFormat::windows_tpm == evidence.format)
+    else if (AttestationFormat::windows_tpm == evidence.format || AttestationFormat::windows_vbs == evidence.format)
     {
         if (evidence.cert_chain.empty())
         {
             return reject(RejectReason::invalid_structure);
         }
-        const std::span<const char> prefix_chars{windows_prefix.data(), windows_prefix.size()};
+        const std::string_view prefix = (AttestationFormat::windows_vbs == evidence.format) ? windows_vbs_prefix
+                                                                                             : windows_prefix;
+        const std::span<const char> prefix_chars{prefix.data(), prefix.size()};
         if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge,
                                      attested_public_key))
         {

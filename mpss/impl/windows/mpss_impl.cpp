@@ -245,10 +245,13 @@ mpss::Algorithm GuessAlgorithmFromKeyBits(std::size_t key_bits)
     }
 }
 
-std::vector<std::byte> BuildWindowsAttestationStatement(std::span<const std::byte> challenge,
+std::vector<std::byte> BuildWindowsAttestationStatement(mpss::AttestationFormat format,
+                                                        std::span<const std::byte> challenge,
                                                         std::span<const std::byte> public_key)
 {
-    static constexpr std::string_view prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
+    static constexpr std::string_view tpm_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
+    static constexpr std::string_view vbs_prefix = "MPSS_WINDOWS_VBS_ATTESTATION_V1";
+    const std::string_view prefix = (mpss::AttestationFormat::windows_vbs == format) ? vbs_prefix : tpm_prefix;
     std::vector<std::byte> statement;
     statement.reserve(prefix.size() + challenge.size() + public_key.size() + 2);
 
@@ -346,20 +349,31 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
 
     if (attestation.has_value())
     {
-        mpss::utils::log_trace("Creating key '{}' with {} provider for attestation.", name, fallback_provider_description);
-        NCRYPT_KEY_HANDLE key_handle = CreateKey(name, algorithm, /* fallback */ true);
+        mpss::AttestationFormat attestation_format = AttestationFormat::windows_vbs;
+        const char *attestation_storage_description = provider_description;
+        mpss::utils::log_trace("Creating key '{}' with {} provider for attestation.", name, provider_description);
+        NCRYPT_KEY_HANDLE key_handle = CreateKey(name, algorithm, /* fallback */ false);
+        if (0 == key_handle)
+        {
+            attestation_format = AttestationFormat::windows_tpm;
+            attestation_storage_description = fallback_provider_description;
+            mpss::utils::log_trace("Primary attestation provider unavailable, trying {} for key '{}'.",
+                                   fallback_provider_description, name);
+            key_handle = CreateKey(name, algorithm, /* fallback */ true);
+        }
         if (0 == key_handle)
         {
             if (AttestationRequirement::require == attestation->requirement)
             {
-                mpss::utils::log_and_set_error("Required Windows TPM attestation unavailable for key '{}'.", name);
+                mpss::utils::log_and_set_error(
+                    "Required Windows attestation unavailable for key '{}' (VBS and TPM providers failed).", name);
                 return nullptr;
             }
             return create_key(name, algorithm, std::nullopt);
         }
 
         auto key = std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
-                                                    fallback_provider_description);
+                                                    attestation_storage_description);
         const std::size_t pk_size = key->extract_key({});
         std::vector<std::byte> public_key(pk_size);
         if (0 == key->extract_key(public_key))
@@ -374,8 +388,8 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
         }
 
         AttestationEvidence evidence{};
-        evidence.format = AttestationFormat::windows_tpm;
-        evidence.statement = BuildWindowsAttestationStatement(attestation->challenge, public_key);
+        evidence.format = attestation_format;
+        evidence.statement = BuildWindowsAttestationStatement(attestation_format, attestation->challenge, public_key);
         key->set_attestation(std::move(evidence));
         return key;
     }

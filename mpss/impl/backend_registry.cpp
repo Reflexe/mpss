@@ -44,6 +44,8 @@ constexpr std::string_view to_string(mpss::AttestationFormat format)
     {
     case none:
         return "none";
+    case windows_vbs:
+        return "windows_vbs";
     case windows_tpm:
         return "windows_tpm";
     case android_key_attestation:
