@@ -18,6 +18,26 @@ namespace mpss::impl::os
 
 using enum Algorithm;
 
+constexpr std::string_view to_string(AttestationRequirement requirement)
+{
+    return AttestationRequirement::require == requirement ? "require" : "request";
+}
+
+constexpr std::string_view to_string(AppleAttestationPolicy policy)
+{
+    switch (policy)
+    {
+    case AppleAttestationPolicy::auto_select:
+        return "auto_select";
+    case AppleAttestationPolicy::mdm_only:
+        return "mdm_only";
+    case AppleAttestationPolicy::app_attest_only:
+        return "app_attest_only";
+    default:
+        return "unknown";
+    }
+}
+
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
                                     std::optional<AttestationRequest> attestation);
 
@@ -139,6 +159,11 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
     }
 
     const bool wants_attestation = attestation.has_value();
+    if (wants_attestation)
+    {
+        mpss::utils::log_info("Apple attestation requested for key '{}' (requirement={}, policy={}).", key_name,
+                              to_string(attestation->requirement), to_string(attestation->apple_policy));
+    }
     if (MPSS_SE_SecureEnclaveIsSupported() && ecdsa_secp256r1_sha256 == algorithm)
     {
         // Secure Enclave only supports ECDSA P256.
@@ -159,6 +184,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
                         mpss::utils::log_and_set_error("Failed to bind Apple attestation evidence to CSR key.");
                         return nullptr;
                     }
+                    mpss::utils::log_warning(
+                        "Failed to bind Apple attestation evidence to key '{}'; continuing without evidence because "
+                        "attestation is optional.",
+                        key_name);
                     return key;
                 }
 
@@ -187,11 +216,14 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
                     evidence.format = AttestationFormat::apple_acme_managed_device_attestation;
                     evidence.statement = BuildAppleAcmeAttestationStatement(attestation->challenge, public_key);
                     evidence.cert_chain.push_back({std::byte{0x30}, std::byte{0x84}});
+                    mpss::utils::log_info(
+                        "Apple attestation produced managed-device ACME evidence for key '{}'.", key_name);
                 }
                 else
                 {
                     evidence.format = AttestationFormat::apple_app_attest;
                     evidence.statement = BuildAppleAttestationStatement(attestation->challenge, public_key);
+                    mpss::utils::log_info("Apple attestation produced App Attest evidence for key '{}'.", key_name);
                 }
                 key->apply_attestation(std::move(evidence));
             }
@@ -203,6 +235,13 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
         {
             return nullptr;
         }
+        if (wants_attestation)
+        {
+            mpss::utils::log_warning(
+                "Failed to create attested key '{}' in Secure Enclave; continuing without attestation because it is "
+                "optional.",
+                key_name);
+        }
     }
 
     if (wants_attestation && AttestationRequirement::require == attestation->requirement)
@@ -210,6 +249,13 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
         mpss::utils::log_and_set_error(
             "Apple attestation requires Secure Enclave P-256 availability. Keychain attestation is unsupported.");
         return nullptr;
+    }
+    if (wants_attestation)
+    {
+        mpss::utils::log_warning(
+            "Apple attestation requested for key '{}' but unavailable without Secure Enclave P-256; creating "
+            "Keychain key without evidence.",
+            key_name);
     }
 
     mpss::utils::log_trace("Creating key '{}' in Keychain.", key_name);
