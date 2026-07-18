@@ -1,0 +1,260 @@
+name: CI
+
+# Regression pipeline: builds mpss + mpss-openssl on every supported platform and
+# runs the test suite where the host can execute it (Windows, macOS). Linux, Android
+# and iOS are build-only because they either lack a runnable OS backend on hosted
+# runners (Linux needs a YubiKey) or require a device/emulator we do not gate on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Windows + macOS: configure, build, and RUN the full test suite.
+  # Tests self-skip (GTEST_SKIP) when no hardware backend is available, so a
+  # backend-less runner still exercises every non-hardware code path and, on
+  # Windows, the real CNG backend.
+  # -------------------------------------------------------------------------
+  desktop:
+    name: ${{ matrix.name }} ${{ matrix.configuration }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows,          os: windows-2022,  preset: win-vs2022-x64,        configuration: Debug,   bindir: "Debug/" }
+          - { name: Windows,          os: windows-2022,  preset: win-vs2022-x64,        configuration: Release, bindir: "Release/" }
+          - { name: Windows (shared), os: windows-2022,  preset: win-vs2022-x64-shared, configuration: Debug,   bindir: "Debug/" }
+          - { name: Windows (shared), os: windows-2022,  preset: win-vs2022-x64-shared, configuration: Release, bindir: "Release/" }
+          - { name: macOS,            os: macos-latest,  preset: macos-arm64-debug,     configuration: Debug,   bindir: "" }
+          - { name: macOS,            os: macos-latest,  preset: macos-arm64-release,   configuration: Release, bindir: "" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~/AppData/Local/vcpkg/archives' || '~/.cache/vcpkg/archives' }}
+          key: ${{ matrix.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.preset }}
+          restore-keys: |
+            ${{ matrix.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ${{ matrix.os }}-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          else
+            ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          fi
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . --preset "${{ matrix.preset }}"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build "out/build/${{ matrix.preset }}" --config "${{ matrix.configuration }}"
+          else
+            cmake --build "out/build/${{ matrix.preset }}"
+          fi
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="out/build/${{ matrix.preset }}/bin/${{ matrix.bindir }}mpss_tests"
+          [ "$RUNNER_OS" = "Windows" ] && BIN="${BIN}.exe"
+          if [ ! -f "$BIN" ]; then
+            echo "Test binary not found at $BIN" >&2
+            find "out/build/${{ matrix.preset }}/bin" -name 'mpss_tests*' -maxdepth 2 || true
+            exit 1
+          fi
+          "$BIN"
+
+  # -------------------------------------------------------------------------
+  # Linux (GCC): mpss has no native Linux backend, so we build with the YubiKey
+  # backend enabled. This is our GCC / libstdc++ portability guard. Build only:
+  # without a physical YubiKey the tests cannot run meaningfully.
+  # -------------------------------------------------------------------------
+  linux:
+    name: Linux ${{ matrix.configuration }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: linux-with-yubikey-debug,   configuration: Debug }
+          - { preset: linux-with-yubikey-release, configuration: Release }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pcsclite (YubiKey dependency)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: linux-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.preset }}
+          restore-keys: |
+            linux-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            linux-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . --preset "${{ matrix.preset }}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build "out/build/${{ matrix.preset }}"
+
+  # -------------------------------------------------------------------------
+  # Android: cross-compile the shared libraries for both shipped ABIs. Build
+  # only (no emulator gate). Mirrors the proven Azure DevOps recipe.
+  # -------------------------------------------------------------------------
+  android:
+    name: Android ${{ matrix.configuration }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: android-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}
+          restore-keys: |
+            android-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            android-vcpkg-
+
+      - name: Resolve Android NDK and API level
+        id: ndk
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+          if [ -z "$NDK_ROOT" ]; then
+            SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+            NDK_ROOT=$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)
+          fi
+          [ -d "$NDK_ROOT" ] || { echo "Android NDK not found" >&2; exit 1; }
+          if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
+            API=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
+          else
+            API=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
+          fi
+          echo "ndk=$NDK_ROOT" >> "$GITHUB_OUTPUT"
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Build shared libraries (x86_64 + arm64-v8a)
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_abi() {
+            local abi="$1" triplet="$2"
+            cmake -S . -B "build-$abi" -GNinja \
+              -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+              -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
+              -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
+              -DCMAKE_SYSTEM_NAME=Android \
+              -DCMAKE_SYSTEM_VERSION="${{ steps.ndk.outputs.api }}" \
+              -DCMAKE_ANDROID_ARCH_ABI="$abi" \
+              -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+              -DVCPKG_TARGET_TRIPLET="$triplet"
+            cmake --build "build-$abi"
+          }
+          build_abi x86_64 x64-android
+          build_abi arm64-v8a arm64-android
+
+  # -------------------------------------------------------------------------
+  # iOS: build the XCFrameworks (device + simulator slices) via the project's
+  # own script. Build only.
+  # -------------------------------------------------------------------------
+  ios:
+    name: iOS ${{ matrix.configuration }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: ios-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}
+          restore-keys: |
+            ios-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ios-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Build iOS XCFrameworks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VCPKG_ROOT="$GITHUB_WORKSPACE/vcpkg"
+          cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
