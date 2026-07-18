@@ -16,6 +16,7 @@ namespace
 constexpr std::string_view android_prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
 constexpr std::string_view windows_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
 constexpr std::string_view apple_prefix = "MPSS_APP_ATTEST_V1";
+constexpr std::string_view apple_acme_prefix = "MPSS_APPLE_ACME_MDA_V1";
 
 } // namespace
 
@@ -110,6 +111,18 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
             return {false, RejectReason::public_key_mismatch, false};
         }
         attested_public_key = csr.public_key;
+    }
+    else if (AttestationFormat::apple_acme_managed_device_attestation == evidence.format)
+    {
+        if (evidence.cert_chain.empty())
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
+        const std::span<const char> prefix_chars{apple_acme_prefix.data(), apple_acme_prefix.size()};
+        if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge, attested_public_key))
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
     }
 
     const auto nonce_it = outstanding_.find(nonce_key(challenge));

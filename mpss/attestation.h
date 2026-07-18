@@ -15,6 +15,7 @@ enum class AttestationFormat
 {
     none,
     apple_app_attest,
+    apple_acme_managed_device_attestation,
     android_key_attestation,
     windows_tpm
 };

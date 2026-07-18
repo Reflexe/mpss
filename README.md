@@ -27,6 +27,7 @@ MPSS key creation supports an optional attestation request parameter:
 - `AttestationRequirement::require` fails key creation when evidence cannot be produced and deletes any partially created key.
 
 Attestation evidence is returned as an opaque blob via `KeyPair::attestation()`. Production trust-chain validation against platform hardware roots is performed by the PKI service, not by MPSS.
+For Apple managed-device flows, the test suite also includes a mock PKI proof-of-concept attestation format (`apple_acme_managed_device_attestation`) to validate server-side seams in CI.
 
 See [docs/attestation-validation.md](docs/attestation-validation.md) for server validation contracts, nonce handling, and assurance-level differences across Android, Windows, and Apple platforms.
 
