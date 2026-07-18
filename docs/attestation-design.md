@@ -1,6 +1,6 @@
 # Design: Real Hardware Key Attestation for MPSS (Windows, macOS, iOS, Android)
 
-Status: **Draft for review** · Supersedes the mock attestation in PR #1
+Status: **Draft — key decisions resolved 2026-07-19 (§10)** · Supersedes the mock attestation in PR #1
 
 > Every platform capability below was **verified firsthand** — either by primary-source
 > research (cited in §12) or by **running probes on real hardware and on the actual CI
@@ -22,7 +22,7 @@ verify offline. Measured against that bar:
 | **Windows TPM** | ✅ `NCryptCreateClaim` (AIK+EK) | ✅ published mfr roots (`TrustedTpm.cab`) | ❌ no TPM on runner → self-hosted / vTPM lane |
 | **Windows VBS / Key Guard** | ⚠️ generation only | ❌ IDKS root is **per-machine/per-boot**, unpublished | ✅ **full generate→verify E2E** (measured) |
 | **Apple** — ACME Managed Device Attestation | ✅ (managed devices, physical Apple Silicon) | ✅ Apple Enterprise Attestation Root | ❌ nothing works on hosted/VM |
-| **Apple** — App Attest | ✗ attests the *app*, not the key | ✅ (but not key provenance) | ❌ `isSupported=false` on macOS + simulator |
+| **Apple** — App Attest | ✗ **out of scope** — attests the app, not the key | — | — |
 
 **Consequences that shape the whole design:**
 1. **Apple has no API to attest an arbitrary key.** The only real hardware **key**
@@ -140,21 +140,31 @@ design removes that entirely — the binding always lives in vendor-signed evide
 enum class AttestationFormat {
     none,
     android_key_attestation,      // X.509 chain, ext 1.3.6.1.4.1.11129.2.1.17
-    apple_acme_managed_device,    // X.509 chain (ACME device-attest-01)
-    apple_app_attest,             // CBOR "apple-appattest" (app integrity, NOT key attestation)
+    apple_acme_managed_device,    // X.509 chain (ACME device-attest-01) — the ONLY Apple path
     windows_tpm_claim,            // NCryptCreateClaim AUTHORITY_AND_SUBJECT / PLATFORM
-    windows_vbs_claim             // NCryptCreateClaim VBS_ROOT / VBS_IDENTITY (test-lane)
+    windows_vbs_claim             // NCryptCreateClaim VBS_ROOT / VBS_IDENTITY — NOT real attestation
+};
+
+// Assurance is surfaced to the relying party so a caller can NEVER mistake VBS for
+// externally-verifiable hardware attestation. Distinct from AttestationFormat.
+enum class AttestationAssurance {
+    none,
+    hardware_root_verified,  // chained to a PUBLISHED vendor root: Android TEE/StrongBox, Windows TPM, Apple ACME
+    vbs_self_asserted,       // Windows VBS/Key Guard: key PROTECTION only; per-boot root, NOT a provenance proof
+    software                 // emulator/simulator software attestation: no hardware guarantee
 };
 
 struct AttestationEvidence {
     AttestationFormat format{AttestationFormat::none};
     std::vector<std::vector<std::byte>> cert_chain;  // DER X.509: Android, ACME
-    std::vector<std::byte> blob;                     // CBOR (Apple) or NCrypt claim (Windows)
+    std::vector<std::byte> blob;                     // NCrypt claim (Windows). Apple App Attest is out of scope.
     AttestationSecurityLevel security_level{AttestationSecurityLevel::unknown};
 };
 ```
 - No app-defined framing; the nonce/public key are read from the *signed* structure.
-- The verifier fills `security_level` from the parsed evidence.
+- The verifier fills `security_level` and `AttestationAssurance` from the parsed evidence.
+- **`windows_vbs_claim` is a first-class, distinct format** — never folded into the TPM
+  format — so both the producer and the relying party always see "this is VBS."
 
 ### 6.2 Capability-scoped API
 Keep the named-key `Create(..., attestation)` for **Android/Windows** (which attest a
@@ -164,9 +174,10 @@ enum class AttestationCapability { none, key_attestation, app_instance, device_i
 [[nodiscard]] static AttestationCapability attestation_capability(std::string_view backend = "os");
 ```
 - Android/Windows → `key_attestation`.
-- iOS → `app_instance` (App Attest); macOS → `device_identity` (ACME) or `none` if not
-  managed. `Create(..., attestation)` on Apple returns a capability error unless the
-  ACME path is configured (§10 decision).
+- **Apple → `device_identity` (ACME) only.** App Attest is out of scope (it attests the
+  app, not the key). `Create(..., attestation)` on Apple returns a capability error unless
+  a managed-device ACME path is configured; **unmanaged Apple devices are unsupported** for
+  key attestation.
 - Fix PR #1 bug: `supports_attestation()` is true **only when real evidence is attached**
   (remove the SE `set_attestation(nullopt)` that forced `true`).
 
@@ -179,13 +190,23 @@ public:
      std::function<std::chrono::system_clock::time_point()>     clock;   // injectable (replay)
      std::function<bool(std::span<const std::byte> serial)>     is_revoked;
      AttestationSecurityLevel min_security_level;
+     bool accept_vbs_self_asserted{false};  // MUST opt in; VBS is never accepted as real attestation by default
+  };
+  struct Result {
+     bool ok{false};
+     AttestationAssurance    assurance{AttestationAssurance::none};      // surfaced to the caller
+     AttestationSecurityLevel security_level{AttestationSecurityLevel::unknown};
+     std::string reason;
   };
   Result verify(const AttestationEvidence&, std::span<const std::byte> expected_nonce,
                 std::span<const std::byte> expected_pubkey) const;
 };
 ```
-- Per-format verifiers behind one interface; injectable clock + roots + revocation
-  (mandatory for offline replay).
+- Per-format verifiers behind one interface; injectable clock + roots + revocation.
+- **VBS is never reported as `hardware_root_verified`.** A `windows_vbs_claim` always
+  yields `assurance = vbs_self_asserted`, and `verify` **rejects it by default** unless
+  `Policy.accept_vbs_self_asserted` is set — so a relying party cannot silently accept VBS
+  as externally-verifiable hardware attestation.
 - The PR #1 mock "PKI" is reduced to nonce issue/expire/replay bookkeeping + a call into
   this verifier; its ad-hoc blob parsing is deleted.
 
@@ -222,6 +243,11 @@ real evidence and CSR keys actually match.
   (`AUTHORITY_AND_SUBJECT` = TPM AIK-signed key attributes; `PLATFORM` = PCR quote), nonce
   via buffer type 49. EC P-256 works (1703-byte claim). Verify is **off-device**: parse
   the claim + AIK/EK chain to a **pinned manufacturer root** (`TrustedTpm.cab`).
+- **Algorithm (decision #4):** use **EC** via **direct `NCryptCreateClaim`** (measured to
+  work) + our own verifier against published EK roots. The Windows Server **AD CS
+  enterprise-CA** key-attestation flow is **out of scope** — it's RSA-only, needs a
+  domain-joined enterprise CA, and is redundant since our verifier already validates the
+  claim against `TrustedTpm.cab`. (RSA + the CA path can be added later if a scenario needs it.)
 - **Trust:** subject → AIK (bound to EK via `TPM2_ActivateCredential`) → EK cert → mfr root.
 - **PR #1 fix:** the Windows backend created a VBS key but **never called
   `NCryptCreateClaim`** (empty chain + homemade blob = no attestation). Real generation
@@ -245,17 +271,19 @@ real evidence and CSR keys actually match.
 - **Role:** **key protection** where no usable TPM exists, and a **hosted-CI E2E test lane**
   for the VBS attestation code path (real create→claim→parse→verify on every PR). **Not**
   presented as production-verifiable attestation.
+- **Surfacing (decision #2 — must be unmistakable):** VBS evidence is emitted only under the
+  distinct `windows_vbs_claim` format, and the verifier reports it as `vbs_self_asserted`
+  and **rejects it by default** (explicit `accept_vbs_self_asserted` opt-in required). Any
+  consumer therefore sees, unambiguously, that the evidence is VBS and is **not** proof of
+  hardware provenance.
 - **Test cases:** TV-1 generate→verify on hosted runner → VERIFIED (CI, self-verification,
   labeled test-only); TV-2 tampered claim → verify fails; TV-3 assert IDKS is *not* treated
   as a trust anchor by the production verifier.
 
-### 7.4 Apple — iOS App Attest (NOT key attestation)
-- App Attest attests the **app instance** (opaque internal key), needs Apple's servers,
-  and `isSupported=false` on macOS + Simulator. It is **not** a general signing key and
-  **cannot** prove `K` is hardware-backed. Include only as an **optional, clearly-labeled
-  app/device-integrity** feature, or leave out (§10). Never label it "key attestation."
-- **Test (offline only):** Apple's published golden attestation vector + captured
-  real-device (sandbox) vectors, verified against the Apple App Attest root with mocked clock.
+### 7.4 Apple — App Attest: OUT OF SCOPE (decision #1: ACME only)
+- App Attest attests the **app instance**, not a key, needs Apple's servers, and
+  `isSupported=false` on macOS + Simulator. Per decision #1 it is **excluded** — it is not
+  key attestation and would only mislead. The Apple format enum contains no `apple_app_attest`.
 
 ### 7.5 Apple — macOS/iOS ACME Managed Device Attestation (the real key path)
 - **Mechanism:** ACME `device-attest-01`; the SE generates a hardware-bound key inside the
@@ -313,19 +341,18 @@ device, expected nonce/level); clock pinned to capture date; roots pinned (never
 
 ---
 
-## 10. Open decisions
+## 10. Decisions (resolved 2026-07-19)
 
-1. **Apple scope:** real macOS/iOS key attestation = **ACME (managed only)**. Do we (a)
-   support ACME (needs a self-hosted enrolled Mac + ACME CA), (b) mark Apple key attestation
-   **unsupported on unmanaged devices**, and (c) optionally add App Attest as a *separate,
-   clearly-labeled* app-integrity feature — or leave App Attest out entirely?
-2. **Windows VBS:** ship as (a) key-protection + hosted-CI test lane only (recommended), given
-   it is not externally verifiable? Confirm it's never treated as production attestation.
-3. **Real-hardware lanes:** approve the periodic self-hosted vTPM VM + device-farm + physical
-   Mac capture lanes (cost/infra).
-4. **Windows attested-key algorithm:** EC works for `NCryptCreateClaim` (measured); the
-   enterprise-CA path is RSA-only — do we need the CA path at all, or is direct claim
-   generation + our own verifier sufficient?
+1. **Apple: ACME only.** Real Apple key attestation = ACME Managed Device Attestation on
+   managed, physical Apple-Silicon devices. App Attest is **dropped** (not key attestation).
+   Unmanaged Apple devices are **unsupported** for key attestation.
+2. **Windows VBS = key-protection + CI-test-lane only, and unmistakable.** VBS uses the
+   distinct `windows_vbs_claim` format; the verifier reports `vbs_self_asserted` and rejects
+   it by default (opt-in required). Never presented as proper attestation.
+3. **Real-hardware capture lanes approved** (self-hosted vTPM VM, device farm, physical
+   enrolled Mac).
+4. **Windows: EC via direct `NCryptCreateClaim`** + our verifier (published EK roots). The
+   RSA-only AD CS enterprise-CA path is **out of scope** for now (redundant + heavy).
 
 ---
 
