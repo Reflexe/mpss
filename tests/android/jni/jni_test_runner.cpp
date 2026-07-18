@@ -44,28 +44,35 @@ class LogcatListener : public ::testing::EmptyTestEventListener
                             u.failed_test_count(), u.skipped_test_count());
     }
 };
+
+// Point the CWD and TMPDIR at an app-writable dir; the e2e test writes PEM files
+// with relative paths and the instrumented app's CWD is the read-only "/".
+void set_working_directory(JNIEnv *env, jstring working_dir)
+{
+    if (nullptr == working_dir)
+    {
+        return;
+    }
+    const char *dir = env->GetStringUTFChars(working_dir, nullptr);
+    if (nullptr == dir)
+    {
+        return;
+    }
+    if (0 != chdir(dir))
+    {
+        __android_log_print(ANDROID_LOG_WARN, kTag, "chdir(\"%s\") failed.", dir);
+    }
+    setenv("TMPDIR", dir, 1);
+    env->ReleaseStringUTFChars(working_dir, dir);
+}
 } // namespace
 
-// The Keystore backend binds its JavaVM in JNI_OnLoad and reaches Java via
-// FindClass, which resolves against the caller's classloader - so the suite must
-// run on this (instrumentation) thread. working_dir is an app-writable directory
-// used as CWD/TMPDIR because the e2e test writes files with relative paths.
+// Runs on the calling (instrumentation) thread so the backend's FindClass
+// resolves against the app classloader.
 extern "C" JNIEXPORT jint JNICALL Java_com_microsoft_research_mpss_test_NativeTests_run(JNIEnv *env, jclass,
                                                                                         jstring working_dir)
 {
-    if (nullptr != working_dir)
-    {
-        const char *dir = env->GetStringUTFChars(working_dir, nullptr);
-        if (nullptr != dir)
-        {
-            if (0 != chdir(dir))
-            {
-                __android_log_print(ANDROID_LOG_WARN, kTag, "chdir(\"%s\") failed.", dir);
-            }
-            setenv("TMPDIR", dir, 1);
-            env->ReleaseStringUTFChars(working_dir, dir);
-        }
-    }
+    set_working_directory(env, working_dir);
 
     int argc = 1;
     char arg0[] = "mpss_tests";

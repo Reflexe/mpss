@@ -12,9 +12,7 @@ option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
-# Opt-in escape hatch for the internal Android instrumented-app test harness,
-# which statically links the whole stack into a single .so. Off by default, so
-# every shipped Android build keeps the shared-libraries-only guard below.
+# Test-harness escape hatch for the Android static guard below. Off by default.
 option(MPSS_ALLOW_ANDROID_STATIC "Allow static Android libraries (test harness only)." NO)
 
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,

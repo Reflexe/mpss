@@ -17,6 +17,8 @@ find_package(GTest CONFIG REQUIRED)
 get_filename_component(mpss_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 
 add_library(mpss_tests_jni SHARED
+    # mpss_openssl_tests.cpp (provider-internal unit tests) is omitted on purpose;
+    # desktop CI covers it, and the emulator's job is the Keystore backend.
     "${mpss_REPO_ROOT}/tests/mpss_tests.cpp"
     "${mpss_REPO_ROOT}/tests/mpss_openssl_e2e_test.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/jni_test_runner.cpp"

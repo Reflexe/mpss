@@ -3,7 +3,6 @@
 
 package com.microsoft.research.mpss.test;
 
-/** Loads the native test shim and exposes its gtest entry point. */
 public final class NativeTests {
     static {
         System.loadLibrary("mpss_tests_jni");

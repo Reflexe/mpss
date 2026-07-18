@@ -140,10 +140,9 @@ jobs:
         run: cmake --build "out/build/${{ matrix.preset }}"
 
   # -------------------------------------------------------------------------
-  # Android: build a static test shim, stage it into a tiny instrumented app,
-  # and RUN the gtest suite on an emulator against the real Keystore backend
-  # (the backend needs a JVM, bound in JNI_OnLoad, so a bare binary can't run
-  # it). Also cross-compiles the shipped arm64-v8a libs as a packaging guard.
+  # Android: run the gtest suite on an emulator against the real Keystore backend.
+  # The backend needs a JVM (bound in JNI_OnLoad), so it runs inside an
+  # instrumented app. Also cross-compiles the arm64-v8a libs as a packaging guard.
   # -------------------------------------------------------------------------
   android:
     name: Android ${{ matrix.configuration }}
@@ -163,8 +162,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # KVM permissions for the hardware-accelerated emulator; without this the
-      # emulator cannot start on the hosted runner.
+      # KVM: required for the hardware-accelerated emulator on hosted runners.
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -282,10 +280,9 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           working-directory: tests/android
-          # The action runs each script line in its own `sh -c`, so the gradle
-          # run, its exit-code capture, the logcat dump, and the final exit must
-          # stay on one line to share state. working-directory runs them in the
-          # Gradle project so `cd` isn't needed.
+          # The action runs each script line in its own `sh -c`, so gradle + exit
+          # capture + logcat + exit stay on one line; working-directory runs it in
+          # the Gradle project (`cd` wouldn't persist across lines).
           script: |
             adb logcat -c || true
             gradle connectedDebugAndroidTest --stacktrace --no-daemon; rc=$?; echo "===== logcat (MpssTests/TestRunner) ====="; adb logcat -d -s MpssTests:V TestRunner:I AndroidRuntime:E DEBUG:F | tail -n 500 || true; exit $rc
