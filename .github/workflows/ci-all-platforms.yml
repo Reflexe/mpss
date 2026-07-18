@@ -222,7 +222,10 @@ jobs:
         run: |
           mkdir -p android-e2e-x64
           cp build-x64/bin/mpss_tests android-e2e-x64/
-          find build-x64/bin install-x64/bin -maxdepth 1 -type f -name '*.so' -exec cp -f {} android-e2e-x64/ \;
+          find build-x64/bin -maxdepth 1 -type f -name '*.so' -exec cp -f {} android-e2e-x64/ \;
+          if [ -d install-x64/bin ]; then
+            find install-x64/bin -maxdepth 1 -type f -name '*.so' -exec cp -f {} android-e2e-x64/ \;
+          fi
           if [ -d install-x64/lib ]; then
             find install-x64/lib -maxdepth 2 -type f -name '*.so' -exec cp -f {} android-e2e-x64/ \;
           fi
@@ -295,8 +298,11 @@ jobs:
       - name: Run iOS simulator E2E tests
         shell: bash
         run: |
-          APP_PATH=$(find build-ios-sim-${{ matrix.configuration }} -type d -name mpss_tests.app | head -n 1)
-          if [ -z "$APP_PATH" ]; then
+          APP_PATH="build-ios-sim-${{ matrix.configuration }}/bin/${{ matrix.configuration }}/mpss_tests.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH=$(find build-ios-sim-${{ matrix.configuration }} -type d -name mpss_tests.app | head -n 1)
+          fi
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "mpss_tests.app not found" >&2
             exit 1
           fi
