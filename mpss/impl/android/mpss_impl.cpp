@@ -106,23 +106,6 @@ std::vector<std::vector<std::byte>> GetAttestationCertChain(std::string_view nam
     return chain;
 }
 
-std::vector<std::byte> BuildAndroidAttestationStatement(std::span<const std::byte> challenge,
-                                                        std::span<const std::byte> public_key)
-{
-    static constexpr std::string_view prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
-    std::vector<std::byte> statement;
-    statement.reserve(prefix.size() + challenge.size() + public_key.size() + 2);
-    for (char c : prefix)
-    {
-        statement.push_back(static_cast<std::byte>(c));
-    }
-    statement.push_back(static_cast<std::byte>(challenge.size() & 0xFFU));
-    statement.insert(statement.end(), challenge.begin(), challenge.end());
-    statement.push_back(static_cast<std::byte>(public_key.size() & 0xFFU));
-    statement.insert(statement.end(), public_key.begin(), public_key.end());
-    return statement;
-}
-
 void GetKeyProperties(std::string_view name, bool &hardware_backed, const char **storage_description)
 {
     hardware_backed = false;
@@ -454,18 +437,13 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
         auto cert_chain = GetAttestationCertChain(name);
         if (!cert_chain.empty())
         {
-            auto key = std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description,
-                                                        hardware_backed);
-            const std::size_t key_size = key->extract_key({});
-            std::vector<std::byte> public_key(key_size);
-            if (0 == key->extract_key(public_key))
-            {
-                public_key.clear();
-            }
-
+            // On Android the X.509 certificate chain IS the attestation evidence.
+            // The challenge is already embedded in the leaf certificate's Android Key
+            // Attestation extension (OID 1.3.6.1.4.1.11129.2.1.17). The statement field
+            // is therefore left empty; all verification happens against the cert chain.
             AttestationEvidence generated{};
             generated.format = AttestationFormat::android_key_attestation;
-            generated.statement = BuildAndroidAttestationStatement(attestation->challenge, public_key);
+            generated.statement = {};
             generated.cert_chain = std::move(cert_chain);
             evidence = std::move(generated);
         }

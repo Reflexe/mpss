@@ -8,7 +8,9 @@
 #include "mpss/utils/scope_guard.h"
 #include "tests/mock_pki/mock_pki.h"
 #include <gtest/gtest.h>
+#include <openssl/asn1.h>
 #include <openssl/evp.h>
+#include <openssl/objects.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <functional>
@@ -29,6 +31,8 @@ using EVPKeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 using EVPKeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
 using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
 using X509ExtensionPtr = std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)>;
+using ASN1OctetStringPtr = std::unique_ptr<ASN1_OCTET_STRING, decltype(&ASN1_OCTET_STRING_free)>;
+using ASN1ObjectPtr = std::unique_ptr<ASN1_OBJECT, decltype(&ASN1_OBJECT_free)>;
 
 const char *AttestationFormatName(AttestationFormat format)
 {
@@ -87,12 +91,113 @@ std::vector<std::byte> BuildAppleAppAttestStatement(std::span<const std::byte> c
     return statement;
 }
 
+// Build a minimal DER encoding of the Android KeyDescription SEQUENCE, embedding
+// `challenge` as the attestationChallenge OCTET STRING (field 4, zero-indexed).
+//
+//   KeyDescription ::= SEQUENCE {
+//     attestationVersion         INTEGER 4,
+//     attestationSecurityLevel   ENUMERATED 1 (SOFTWARE),
+//     keymasterVersion           INTEGER 100,
+//     keymasterSecurityLevel     ENUMERATED 1 (SOFTWARE),
+//     attestationChallenge       OCTET STRING,   <-- challenge embedded here
+//     uniqueId                   OCTET STRING (empty),
+//     softwareEnforced           SEQUENCE {},
+//     hardwareEnforced           SEQUENCE {},
+//   }
+//
+// Note: emulator builds produce SOFTWARE security level; this does not prove
+// hardware backing but allows the challenge-binding to be validated end-to-end.
+std::vector<unsigned char> BuildAndroidKeyDescriptionDer(std::span<const std::byte> challenge)
+{
+    // Helper to append a DER length field (short or multi-byte form).
+    const auto append_length = [](std::vector<unsigned char> &buf, std::size_t len) {
+        if (len < 0x80U)
+        {
+            buf.push_back(static_cast<unsigned char>(len));
+        }
+        else if (len < 0x100U)
+        {
+            buf.push_back(0x81U);
+            buf.push_back(static_cast<unsigned char>(len));
+        }
+        else
+        {
+            buf.push_back(0x82U);
+            buf.push_back(static_cast<unsigned char>((len >> 8U) & 0xFFU));
+            buf.push_back(static_cast<unsigned char>(len & 0xFFU));
+        }
+    };
+
+    std::vector<unsigned char> content;
+    // attestationVersion  INTEGER 4
+    content.insert(content.end(), {0x02, 0x01, 0x04});
+    // attestationSecurityLevel  ENUMERATED 1 (SOFTWARE)
+    content.insert(content.end(), {0x0A, 0x01, 0x01});
+    // keymasterVersion  INTEGER 100
+    content.insert(content.end(), {0x02, 0x01, 0x64});
+    // keymasterSecurityLevel  ENUMERATED 1 (SOFTWARE)
+    content.insert(content.end(), {0x0A, 0x01, 0x01});
+    // attestationChallenge  OCTET STRING
+    content.push_back(0x04);
+    append_length(content, challenge.size());
+    for (const auto b : challenge)
+    {
+        content.push_back(static_cast<unsigned char>(b));
+    }
+    // uniqueId  OCTET STRING (empty)
+    content.insert(content.end(), {0x04, 0x00});
+    // softwareEnforced  SEQUENCE (empty)
+    content.insert(content.end(), {0x30, 0x00});
+    // hardwareEnforced  SEQUENCE (empty)
+    content.insert(content.end(), {0x30, 0x00});
+
+    // Wrap in outer SEQUENCE.
+    std::vector<unsigned char> result;
+    result.push_back(0x30);
+    append_length(result, content.size());
+    result.insert(result.end(), content.begin(), content.end());
+    return result;
+}
+
+// Add the Android Key Attestation extension (OID 1.3.6.1.4.1.11129.2.1.17) to `cert`.
+// Must be called before the certificate is signed.
+// The extension value is the DER encoding of KeyDescription with `challenge` embedded.
+bool AddAndroidAttestationExtension(X509 *cert, std::span<const std::byte> challenge)
+{
+    const auto key_desc_der = BuildAndroidKeyDescriptionDer(challenge);
+
+    ASN1ObjectPtr oid(OBJ_txt2obj("1.3.6.1.4.1.11129.2.1.17", 1), ASN1_OBJECT_free);
+    if (nullptr == oid)
+    {
+        return false;
+    }
+
+    ASN1OctetStringPtr ext_val(ASN1_OCTET_STRING_new(), ASN1_OCTET_STRING_free);
+    if (nullptr == ext_val)
+    {
+        return false;
+    }
+    if (1 != ASN1_OCTET_STRING_set(ext_val.get(),
+                                    reinterpret_cast<const unsigned char *>(key_desc_der.data()),
+                                    static_cast<int>(key_desc_der.size())))
+    {
+        return false;
+    }
+
+    X509ExtensionPtr ext(X509_EXTENSION_create_by_OBJ(nullptr, oid.get(), 0, ext_val.get()),
+                         X509_EXTENSION_free);
+    if (nullptr == ext)
+    {
+        return false;
+    }
+
+    return 1 == X509_add_ext(cert, ext.get(), -1);
+}
+
 std::string_view StatementPrefixForFormat(AttestationFormat format)
 {
     switch (format)
     {
-    case AttestationFormat::android_key_attestation:
-        return "MPSS_ANDROID_KEY_ATTESTATION_V1";
     case AttestationFormat::windows_tpm:
         return "MPSS_WINDOWS_TPM_ATTESTATION_V1";
     case AttestationFormat::windows_vbs:
@@ -309,6 +414,69 @@ MockChainBundle BuildMockChain(std::string_view root_cn, std::string_view interm
     return bundle;
 }
 
+// Build a mock Android cert chain where the leaf certificate carries the Android
+// Key Attestation extension (OID 1.3.6.1.4.1.11129.2.1.17) with `challenge`
+// embedded in the attestationChallenge field.
+// The extension is added before signing so the signature covers it.
+MockChainBundle BuildAndroidMockChain(std::string_view root_cn, std::string_view intermediate_cn,
+                                      std::string_view leaf_cn, std::span<const std::byte> challenge)
+{
+    EVPKeyPtr root_key = GenerateEcP256Key();
+    EVPKeyPtr intermediate_key = GenerateEcP256Key();
+    EVPKeyPtr leaf_key = GenerateEcP256Key();
+    EXPECT_NE(nullptr, root_key);
+    EXPECT_NE(nullptr, intermediate_key);
+    EXPECT_NE(nullptr, leaf_key);
+
+    X509Ptr root_cert = CreateCertificate(root_key.get(), nullptr, nullptr, root_cn, true, 1);
+    EXPECT_NE(nullptr, root_cert);
+    X509Ptr intermediate_cert =
+        CreateCertificate(intermediate_key.get(), root_cert.get(), root_key.get(), intermediate_cn, true, 2);
+    EXPECT_NE(nullptr, intermediate_cert);
+
+    // Build leaf cert manually so we can add the Android attestation extension
+    // before signing (the extension must be covered by the certificate signature).
+    X509Ptr leaf_cert(X509_new(), X509_free);
+    EXPECT_NE(nullptr, leaf_cert);
+    if (nullptr == leaf_cert)
+    {
+        return {};
+    }
+    EXPECT_EQ(1, X509_set_version(leaf_cert.get(), 2));
+    EXPECT_EQ(1, ASN1_INTEGER_set(X509_get_serialNumber(leaf_cert.get()), 3));
+    EXPECT_NE(nullptr, X509_gmtime_adj(X509_get_notBefore(leaf_cert.get()), 0));
+    EXPECT_NE(nullptr, X509_gmtime_adj(X509_get_notAfter(leaf_cert.get()), 31536000L));
+    EXPECT_EQ(1, X509_set_pubkey(leaf_cert.get(), leaf_key.get()));
+    EXPECT_EQ(1, X509_set_issuer_name(leaf_cert.get(), X509_get_subject_name(intermediate_cert.get())));
+    X509_NAME *leaf_subject = X509_get_subject_name(leaf_cert.get());
+    EXPECT_EQ(1, X509_NAME_add_entry_by_txt(leaf_subject, "CN", MBSTRING_ASC,
+                                             reinterpret_cast<const unsigned char *>(leaf_cn.data()),
+                                             static_cast<int>(leaf_cn.size()), -1, 0));
+    EXPECT_TRUE(AddCertificateExtension(leaf_cert.get(), intermediate_cert.get(), NID_basic_constraints,
+                                        "critical,CA:FALSE"));
+    EXPECT_TRUE(AddCertificateExtension(leaf_cert.get(), intermediate_cert.get(), NID_key_usage,
+                                        "critical,digitalSignature"));
+
+    // Embed the server-issued challenge in the Android Key Attestation extension
+    // before signing — this is what the mock PKI verifier will extract and check.
+    EXPECT_TRUE(AddAndroidAttestationExtension(leaf_cert.get(), challenge));
+
+    EXPECT_GT(X509_sign(leaf_cert.get(), intermediate_key.get(), EVP_sha256()), 0);
+
+    MockChainBundle bundle{};
+    if (nullptr == root_cert || nullptr == intermediate_cert || nullptr == leaf_cert)
+    {
+        return bundle;
+    }
+
+    bundle.root_der = EncodeCertificateDer(root_cert.get());
+    bundle.chain_der.push_back(EncodeCertificateDer(leaf_cert.get()));
+    bundle.chain_der.push_back(EncodeCertificateDer(intermediate_cert.get()));
+    bundle.chain_der.push_back(bundle.root_der);
+    bundle.leaf_public_key_der = EncodePublicKeyDer(leaf_key.get());
+    return bundle;
+}
+
 std::string MakeUniqueE2EAttestationKeyName()
 {
     static std::size_t counter = 0;
@@ -452,26 +620,46 @@ TEST(AttestationE2ETest, MockPkiAcceptsTpmVbsAppleAppAppleAcmeAndAndroidEvidence
         SCOPED_TRACE(::testing::Message() << "format=" << AttestationFormatName(format));
         mock_pki::MockPkiService pki;
         const auto challenge = pki.issue_challenge();
-        const auto chain = BuildMockChain("Root", "Intermediate", "Leaf");
 
         AttestationEvidence evidence{};
         evidence.format = format;
-        if (AttestationFormat::apple_app_attest == format)
+
+        std::vector<std::byte> csr_public_key;
+
+        if (AttestationFormat::android_key_attestation == format)
         {
-            evidence.statement = BuildAppleAppAttestStatement(challenge, chain.leaf_public_key_der);
+            // Android: the cert chain IS the evidence; the statement is empty.
+            // Build a chain where the leaf cert carries the Android Key Attestation
+            // extension (OID 1.3.6.1.4.1.11129.2.1.17) with the challenge embedded in
+            // the attestationChallenge field — this is what the mock PKI will verify.
+            const auto android_chain = BuildAndroidMockChain("Root", "Intermediate", "Leaf", challenge);
+            ASSERT_FALSE(android_chain.root_der.empty());
+            pki.set_trusted_root(format, android_chain.root_der);
+            evidence.statement = {};
+            evidence.cert_chain = android_chain.chain_der;
+            csr_public_key = android_chain.leaf_public_key_der;
         }
         else
         {
-            evidence.statement = BuildStatement(StatementPrefixForFormat(format), challenge, chain.leaf_public_key_der);
+            const auto chain = BuildMockChain("Root", "Intermediate", "Leaf");
+            if (AttestationFormat::apple_app_attest == format)
+            {
+                evidence.statement = BuildAppleAppAttestStatement(challenge, chain.leaf_public_key_der);
+            }
+            else
+            {
+                evidence.statement =
+                    BuildStatement(StatementPrefixForFormat(format), challenge, chain.leaf_public_key_der);
+            }
+            if (UsesCertificateChain(format))
+            {
+                pki.set_trusted_root(format, chain.root_der);
+                evidence.cert_chain = chain.chain_der;
+            }
+            csr_public_key = chain.leaf_public_key_der;
         }
 
-        if (UsesCertificateChain(format))
-        {
-            pki.set_trusted_root(format, chain.root_der);
-            evidence.cert_chain = chain.chain_der;
-        }
-
-        const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence, format);
+        const auto result = pki.submit(mock_pki::MockCsr{csr_public_key}, evidence, format);
         EXPECT_TRUE(result.signed_cert);
         EXPECT_FALSE(result.reject_reason.has_value());
         if (AttestationFormat::apple_app_attest == format)
@@ -487,21 +675,29 @@ TEST(AttestationE2ETest, MockPkiAcceptsTpmVbsAppleAppAppleAcmeAndAndroidEvidence
 
 TEST(MockPkiTest, AcceptsAndroidEvidence)
 {
+    // Android Key Attestation: the cert chain IS the evidence; the statement is empty.
+    // Build a chain where the leaf cert carries the Android Key Attestation extension
+    // (OID 1.3.6.1.4.1.11129.2.1.17) with the challenge in attestationChallenge,
+    // then submit to the mock PKI which must extract and verify the challenge from
+    // the extension and accept the submission.
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
 
-    const auto chain = BuildMockChain("Android Root", "Android Intermediate", "Android Leaf");
+    const auto chain =
+        BuildAndroidMockChain("Android Root", "Android Intermediate", "Android Leaf", challenge);
+    ASSERT_FALSE(chain.root_der.empty());
     pki.set_trusted_root(AttestationFormat::android_key_attestation, chain.root_der);
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::android_key_attestation;
-    evidence.statement = BuildStatement("MPSS_ANDROID_KEY_ATTESTATION_V1", challenge, chain.leaf_public_key_der);
+    evidence.statement = {};  // Android statement is empty; cert chain is the evidence.
     evidence.cert_chain = chain.chain_der;
 
     const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence,
                                    AttestationFormat::android_key_attestation);
     EXPECT_TRUE(result.signed_cert);
     EXPECT_FALSE(result.reject_reason.has_value());
+    EXPECT_FALSE(result.weaker_assurance);
 }
 
 TEST(MockPkiTest, RejectsNonceReplay)

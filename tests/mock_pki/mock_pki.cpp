@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <openssl/asn1.h>
 #include <openssl/evp.h>
+#include <openssl/objects.h>
 #include <openssl/x509.h>
 #include <random>
 #include <sstream>
@@ -17,7 +19,6 @@ namespace mpss::tests::mock_pki
 namespace
 {
 
-constexpr std::string_view android_prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
 constexpr std::string_view windows_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
 constexpr std::string_view windows_vbs_prefix = "MPSS_WINDOWS_VBS_ATTESTATION_V1";
 constexpr std::string_view apple_prefix = "MPSS_APP_ATTEST_V1";
@@ -60,6 +61,8 @@ constexpr std::string_view to_string(RejectReason reason)
         return "nonce_expired";
     case RejectReason::nonce_replayed:
         return "nonce_replayed";
+    case RejectReason::nonce_mismatch:
+        return "nonce_mismatch";
     case RejectReason::public_key_mismatch:
         return "public_key_mismatch";
     default:
@@ -123,6 +126,104 @@ bool cert_der_equal(const std::vector<std::byte> &lhs, const std::vector<std::by
     return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin());
 }
 
+// Minimal DER length-field reader. Returns the decoded length and advances `offset`.
+// Returns -1 if the encoding is invalid or truncated.
+// Supports short form (1 byte) and long form (up to 3 additional bytes).
+int read_asn1_length(const unsigned char *buf, int buf_end, int &offset)
+{
+    if (offset >= buf_end)
+    {
+        return -1;
+    }
+    const unsigned char len_byte = buf[offset++];
+    if (0 == (len_byte & 0x80U))
+    {
+        return static_cast<int>(len_byte);
+    }
+    const int num_bytes = static_cast<int>(len_byte & 0x7FU);
+    if (num_bytes == 0 || num_bytes > 3 || offset + num_bytes > buf_end)
+    {
+        return -1;
+    }
+    int length = 0;
+    for (int i = 0; i < num_bytes; ++i)
+    {
+        length = (length << 8) | static_cast<int>(buf[offset++]);
+    }
+    return length;
+}
+
+// Extract the attestationChallenge OCTET STRING from the Android Key Attestation
+// extension value (OID 1.3.6.1.4.1.11129.2.1.17).
+//
+// The extension value is the DER encoding of:
+//   KeyDescription ::= SEQUENCE {
+//     attestationVersion         INTEGER,        -- field 0 (skipped)
+//     attestationSecurityLevel   ENUMERATED,     -- field 1 (skipped)
+//     keymasterVersion           INTEGER,        -- field 2 (skipped)
+//     keymasterSecurityLevel     ENUMERATED,     -- field 3 (skipped)
+//     attestationChallenge       OCTET STRING,   -- field 4 (extracted)
+//     ...
+//   }
+//
+// Returns true and fills `challenge` on success. Returns false if the
+// structure is missing, truncated, or field 4 is not an OCTET STRING.
+bool parse_android_attestation_challenge(const unsigned char *der, int der_len,
+                                         std::vector<std::byte> &challenge)
+{
+    if (nullptr == der || der_len < 2)
+    {
+        return false;
+    }
+
+    int offset = 0;
+
+    // Outer SEQUENCE tag (0x30).
+    if (der[offset++] != 0x30)
+    {
+        return false;
+    }
+    const int seq_len = read_asn1_length(der, der_len, offset);
+    if (seq_len < 0 || offset + seq_len > der_len)
+    {
+        return false;
+    }
+    const int seq_end = offset + seq_len;
+
+    // Skip fields 0–3 (attestationVersion, attestationSecurityLevel,
+    // keymasterVersion, keymasterSecurityLevel).
+    for (int field = 0; field < 4; ++field)
+    {
+        if (offset + 1 > seq_end)
+        {
+            return false; // truncated
+        }
+        ++offset; // skip tag byte
+        const int field_len = read_asn1_length(der, seq_end, offset);
+        if (field_len < 0 || offset + field_len > seq_end)
+        {
+            return false;
+        }
+        offset += field_len;
+    }
+
+    // Field 4: attestationChallenge OCTET STRING (DER tag 0x04).
+    if (offset + 1 > seq_end || der[offset] != 0x04)
+    {
+        return false;
+    }
+    ++offset;
+    const int chal_len = read_asn1_length(der, seq_end, offset);
+    if (chal_len < 0 || offset + chal_len > seq_end)
+    {
+        return false;
+    }
+
+    challenge.assign(reinterpret_cast<const std::byte *>(der + offset),
+                     reinterpret_cast<const std::byte *>(der + offset + chal_len));
+    return true;
+}
+
 } // namespace
 
 MockPkiService::MockPkiService(std::chrono::seconds ttl) : ttl_{ttl}
@@ -175,16 +276,65 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
     std::vector<std::byte> attested_public_key;
     if (AttestationFormat::android_key_attestation == evidence.format)
     {
+        // Android Key Attestation: the cert chain is the evidence.
+        // The server-issued challenge must be present in the leaf certificate's
+        // Android Key Attestation extension (OID 1.3.6.1.4.1.11129.2.1.17).
+        // The statement field is empty for Android — do not parse it.
         if (evidence.cert_chain.empty())
         {
             return reject(RejectReason::invalid_structure);
         }
-        const std::span<const char> prefix_chars{android_prefix.data(), android_prefix.size()};
-        if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge,
-                                     attested_public_key))
+
+        // Parse the leaf certificate (first entry in the chain).
+        using X509ObjPtr = std::unique_ptr<ASN1_OBJECT, decltype(&ASN1_OBJECT_free)>;
+        X509Ptr leaf = parse_der_cert(evidence.cert_chain.front());
+        if (nullptr == leaf)
         {
             return reject(RejectReason::invalid_structure);
         }
+
+        // Locate the Android Key Attestation extension by OID 1.3.6.1.4.1.11129.2.1.17.
+        X509ObjPtr android_oid(OBJ_txt2obj("1.3.6.1.4.1.11129.2.1.17", 1), ASN1_OBJECT_free);
+        if (nullptr == android_oid)
+        {
+            return reject(RejectReason::invalid_structure);
+        }
+        const int ext_idx = X509_get_ext_by_OBJ(leaf.get(), android_oid.get(), -1);
+        if (ext_idx < 0)
+        {
+            mpss::utils::log_warning("Mock PKI: Android Key Attestation extension not found in leaf cert.");
+            return reject(RejectReason::invalid_structure);
+        }
+        X509_EXTENSION *ext = X509_get_ext(leaf.get(), ext_idx);
+        if (nullptr == ext)
+        {
+            return reject(RejectReason::invalid_structure);
+        }
+
+        // The extension value (extnValue) is an OCTET STRING whose content is
+        // the DER encoding of the KeyDescription SEQUENCE defined in the Android
+        // Keystore attestation specification. Extract attestationChallenge from it.
+        const ASN1_OCTET_STRING *ext_data = X509_EXTENSION_get_data(ext);
+        if (nullptr == ext_data)
+        {
+            return reject(RejectReason::invalid_structure);
+        }
+        const unsigned char *der = ASN1_STRING_get0_data(ext_data);
+        const int der_len = ASN1_STRING_length(ext_data);
+        if (!parse_android_attestation_challenge(der, der_len, challenge))
+        {
+            mpss::utils::log_warning("Mock PKI: failed to parse attestationChallenge from Android extension.");
+            return reject(RejectReason::invalid_structure);
+        }
+
+        // Extract the leaf public key for the key-binding check below.
+        EVPKeyPtr leaf_key(X509_get_pubkey(leaf.get()), EVP_PKEY_free);
+        if (nullptr == leaf_key || !serialize_pubkey_der(leaf_key.get(), attested_public_key))
+        {
+            return reject(RejectReason::invalid_structure);
+        }
+
+        // Verify the full cert chain chains to the configured trusted root.
         if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
         {
             return reject(RejectReason::invalid_structure);
