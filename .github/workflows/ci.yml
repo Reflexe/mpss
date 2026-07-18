@@ -467,6 +467,11 @@ jobs:
           # real signing identity, so an ad-hoc signature carrying the entitlement
           # is enough to grant the access group. mpss does not request a specific
           # access group, so it uses the first entry below by default.
+          #
+          # get-task-allow=true is mandatory: simulator apps are development
+          # binaries and launchd refuses to spawn one whose signature lacks it
+          # ("Codesigning issue", LaunchdSimError 162). The default signature the
+          # linker applies carries it; re-signing without it breaks simctl spawn.
           ENT="$RUNNER_TEMP/mpss_tests.entitlements"
           cat > "$ENT" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -479,6 +484,8 @@ jobs:
               <array>
                   <string>$BUNDLE_ID</string>
               </array>
+              <key>get-task-allow</key>
+              <true/>
           </dict>
           </plist>
           PLIST
