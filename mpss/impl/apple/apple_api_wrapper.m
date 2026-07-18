@@ -108,15 +108,15 @@ int GetKeyBitSize(int signatureType) {
     mpss_log_warning("Unsupported signature type.");
     return -1;
   }
+}
 
-  bool GetBoolEnvVar(const char *name) {
-    const char *value = getenv(name);
-    if (value == NULL) {
-      return false;
-    }
-    return strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0 ||
-           strcasecmp(value, "yes") == 0 || strcasecmp(value, "on") == 0;
+bool GetBoolEnvVar(const char *name) {
+  const char *value = getenv(name);
+  if (value == NULL) {
+    return false;
   }
+  return strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0 ||
+         strcasecmp(value, "yes") == 0 || strcasecmp(value, "on") == 0;
 }
 
 ////////////////////////////////////////////////////////
