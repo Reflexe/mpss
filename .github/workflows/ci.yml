@@ -453,6 +453,40 @@ jobs:
             || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$PLIST"
           echo "app=$APP" >> "$GITHUB_OUTPUT"
 
+      - name: Ad-hoc sign app with keychain entitlement
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="${{ steps.app.outputs.app }}"
+          # mpss persists Secure-Enclave-backed and Keychain keys with SecItemAdd.
+          # On the iOS simulator a process only gets a keychain access group from a
+          # `keychain-access-groups` entitlement in its code signature; without it
+          # every key-creation call fails with -34018 (errSecMissingEntitlement),
+          # which would make the whole suite self-skip (or hard-fail the couple of
+          # tests that assume a working backend). The simulator does not enforce a
+          # real signing identity, so an ad-hoc signature carrying the entitlement
+          # is enough to grant the access group. mpss does not request a specific
+          # access group, so it uses the first entry below by default.
+          ENT="$RUNNER_TEMP/mpss_tests.entitlements"
+          cat > "$ENT" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key>
+              <string>$BUNDLE_ID</string>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>$BUNDLE_ID</string>
+              </array>
+          </dict>
+          </plist>
+          PLIST
+          # codesign must run last: it seals the bundle, so no Info.plist edits after.
+          codesign --force --sign - --entitlements "$ENT" --timestamp=none "$APP"
+          echo "Embedded entitlements:"
+          codesign -d --entitlements :- "$APP" || true
+
       - name: Boot iOS simulator
         id: sim
         shell: bash
@@ -502,10 +536,19 @@ jobs:
             if ! grep -q '\[  PASSED  \]' "$log"; then
               echo "::error::[$label] no gtest PASSED summary (crash or no tests ran)"; return 1
             fi
+            # Guard against a silently broken backend: if the real Apple backend
+            # cannot create keys (e.g. keychain entitlement regressed), every
+            # backend test self-skips via GTEST_SKIP and the run would look green
+            # while exercising nothing. Require at least one test to actually pass.
+            local passed
+            passed=$(grep -oE '\[  PASSED  \] [0-9]+ test' "$log" | grep -oE '[0-9]+' | head -n1 || echo 0)
+            if [ "${passed:-0}" -lt 1 ]; then
+              echo "::error::[$label] 0 tests passed -- Apple backend produced no usable keys (all skipped)"; return 1
+            fi
             if [ "$status" -ne 0 ]; then
               echo "::error::[$label] simctl spawn exited $status"; return "$status"
             fi
-            echo "[$label] OK"
+            echo "[$label] OK ($passed passed)"
           }
 
           # Smoke first: the real SE + Keychain cert-chain e2e. Then the full suite.
