@@ -257,7 +257,8 @@ bool MockPkiService::verify_cert_chain(std::span<const std::vector<std::byte>> c
     EVPKeyPtr leaf_key(X509_get_pubkey(leaf.get()), EVP_PKEY_free);
     std::vector<std::byte> leaf_pubkey_der;
     if (nullptr == leaf_key || !serialize_pubkey_der(leaf_key.get(), leaf_pubkey_der)
-        || leaf_pubkey_der != expected_leaf_public_key)
+        || leaf_pubkey_der.size() != expected_leaf_public_key.size()
+        || !std::equal(leaf_pubkey_der.begin(), leaf_pubkey_der.end(), expected_leaf_public_key.begin()))
     {
         return false;
     }
