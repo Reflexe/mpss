@@ -180,8 +180,8 @@ jobs:
             android-vcpkg-${{ hashFiles('vcpkg.json', 'tests/android/jni/vcpkg.json') }}-
             android-vcpkg-
 
-      # API 28 platform for the mpss JAR compile (add_jar uses android-<version>.jar).
-      - name: Install Android platform 28
+      # API 34 platform for the mpss JAR compile (add_jar uses android-<version>.jar).
+      - name: Install Android platform 34
         shell: bash
         run: |
           set -euo pipefail
@@ -189,7 +189,7 @@ jobs:
           # `yes` gets SIGPIPE once sdkmanager stops reading; keep it out of
           # pipefail so the step reflects sdkmanager's exit, not the broken pipe.
           set +o pipefail
-          yes | "$SDKMGR" "platforms;android-28" > /dev/null
+          yes | "$SDKMGR" "platforms;android-34" > /dev/null
           set -o pipefail
 
       - name: Resolve Android NDK
@@ -215,9 +215,9 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
 
-      # Static x86_64 (API 28) build, installed so the shim can find_package it.
+      # Static x86_64 (API 34) build, installed so the shim can find_package it.
       # MPSS_ALLOW_ANDROID_STATIC opts past the shared-only guard for the harness.
-      - name: Build and install static mpss (x86_64, API 28)
+      - name: Build and install static mpss (x86_64, API 34)
         shell: bash
         run: |
           set -euo pipefail
@@ -227,7 +227,7 @@ jobs:
             -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
             -DMPSS_ALLOW_ANDROID_STATIC=ON \
             -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_SYSTEM_VERSION=34 \
             -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
             -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
@@ -237,14 +237,14 @@ jobs:
 
       # One shared object with the whole stack statically linked -> a single
       # OpenSSL instance in the process.
-      - name: Build JNI test shim (x86_64, API 28)
+      - name: Build JNI test shim (x86_64, API 34)
         shell: bash
         run: |
           set -euo pipefail
           cmake -S tests/android/jni -B build-jni -GNinja \
             -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
             -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_SYSTEM_VERSION=34 \
             -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
             -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
@@ -273,7 +273,7 @@ jobs:
       - name: Run instrumented tests on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           arch: x86_64
           target: google_apis
           force-avd-creation: false
@@ -290,7 +290,7 @@ jobs:
             exit $status
 
       # Shipping guard: the arm64-v8a shared libraries must still cross-compile.
-      - name: Build shipped shared mpss (arm64-v8a, API 28)
+      - name: Build shipped shared mpss (arm64-v8a, API 34)
         shell: bash
         run: |
           set -euo pipefail
@@ -299,7 +299,7 @@ jobs:
             -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
             -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
             -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_SYSTEM_VERSION=34 \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
             -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
