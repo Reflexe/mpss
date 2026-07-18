@@ -261,7 +261,9 @@ jobs:
           abidir=tests/android/src/main/jniLibs/x86_64
           mkdir -p "$abidir"
           cp build-jni/libmpss_tests_jni.so "$abidir/"
-          libcxx=$(find "${{ steps.ndk.outputs.ndk }}" -name libc++_shared.so -path '*x86_64*' | head -n1)
+          # Match the x86_64 Android target-triple sysroot dir specifically; the
+          # NDK host dir (linux-x86_64) contains "x86_64" in every ABI's path.
+          libcxx=$(find "${{ steps.ndk.outputs.ndk }}" -path '*/x86_64-linux-android/libc++_shared.so' | head -n1)
           [ -n "$libcxx" ] || { echo "x86_64 libc++_shared.so not found" >&2; exit 1; }
           cp "$libcxx" "$abidir/"
           ls -l "$abidir"
@@ -279,15 +281,14 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
+          working-directory: tests/android
+          # The action runs each script line in its own `sh -c`, so the gradle
+          # run, its exit-code capture, the logcat dump, and the final exit must
+          # stay on one line to share state. working-directory runs them in the
+          # Gradle project so `cd` isn't needed.
           script: |
-            cd tests/android
             adb logcat -c || true
-            set +e
-            gradle connectedDebugAndroidTest --stacktrace --no-daemon
-            status=$?
-            echo "===== logcat (MpssTests / TestRunner) ====="
-            adb logcat -d -s MpssTests:V TestRunner:I AndroidRuntime:E DEBUG:F | tail -n 500
-            exit $status
+            gradle connectedDebugAndroidTest --stacktrace --no-daemon; rc=$?; echo "===== logcat (MpssTests/TestRunner) ====="; adb logcat -d -s MpssTests:V TestRunner:I AndroidRuntime:E DEBUG:F | tail -n 500 || true; exit $rc
 
       # Shipping guard: the arm64-v8a shared libraries must still cross-compile.
       - name: Build shipped shared mpss (arm64-v8a, API 34)

@@ -258,10 +258,12 @@ endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Android")
     if((MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_OPENSSL_STATIC) AND NOT MPSS_ALLOW_ANDROID_STATIC)
-        # Android ships shared libraries plus a JAR; static archives are only
-        # produced for the internal instrumented-app test harness, which
-        # aggregates the whole stack into a single .so (opt in with
-        # MPSS_ALLOW_ANDROID_STATIC).
+        # An Android app can only load shared objects, so the shipped mpss is
+        # always .so + a JAR and a standalone static .a is not a usable artifact
+        # - hence this guard. The instrumented-app test harness is the one
+        # exception: it links the static archives *into* a single .so
+        # (libmpss_tests_jni.so) that the app loads, so static is safe there. It
+        # opts in via MPSS_ALLOW_ANDROID_STATIC; every shipped build leaves it OFF.
         message(FATAL_ERROR "Static libraries are not supported on Android.")
     endif()
 
