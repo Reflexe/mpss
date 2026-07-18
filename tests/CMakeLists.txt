@@ -45,6 +45,7 @@ endif()
 
 find_package(mpss REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # Always compile the test runner.
 set(mpss_TESTS_SOURCES test_runner.cpp)
@@ -66,6 +67,7 @@ endif()
 
 add_executable(mpss_tests ${mpss_TESTS_SOURCES})
 target_link_libraries(mpss_tests PRIVATE GTest::gtest)
+target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
 
 # Link against the best available mpss target. mpss-openssl pulls in mpss
 # transitively through its PUBLIC dependency, so we only need one link.

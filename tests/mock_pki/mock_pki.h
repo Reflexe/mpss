@@ -51,6 +51,8 @@ class MockPkiService
     SubmitResult submit(const MockCsr &csr, const std::optional<AttestationEvidence> &evidence,
                         AttestationFormat expected_format);
 
+    void set_trusted_root(AttestationFormat format, std::vector<std::byte> der_certificate);
+
   private:
     struct NonceState
     {
@@ -60,10 +62,13 @@ class MockPkiService
 
     std::chrono::seconds ttl_;
     std::unordered_map<std::string, NonceState> outstanding_;
+    std::unordered_map<AttestationFormat, std::vector<std::byte>> trusted_roots_;
 
     static std::string nonce_key(std::span<const std::byte> nonce);
     static bool parse_challenge_and_key(std::span<const std::byte> statement, std::span<const std::byte> prefix,
                                         std::vector<std::byte> &challenge, std::vector<std::byte> &public_key);
+    bool verify_cert_chain(std::span<const std::vector<std::byte>> cert_chain, AttestationFormat format,
+                           std::span<const std::byte> expected_leaf_public_key) const;
 };
 
 } // namespace mpss::tests::mock_pki

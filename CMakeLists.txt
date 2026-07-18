@@ -51,6 +51,7 @@ endif()
 
 if(MPSS_BUILD_TESTS)
     list(APPEND VCPKG_MANIFEST_FEATURES "tests")
+    list(APPEND VCPKG_MANIFEST_FEATURES "openssl")
 endif()
 
 # Enable openssl feature in vcpkg if we are building mpss-openssl.
@@ -453,12 +454,14 @@ export(
 # Test suite.
 if(MPSS_BUILD_TESTS)
     find_package(GTest CONFIG REQUIRED)
+    find_package(OpenSSL REQUIRED)
 
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
 
     add_executable(mpss_tests ${mpss_TESTS_FILES})
     target_link_libraries(mpss_tests PRIVATE GTest::gtest)
+    target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
 
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.

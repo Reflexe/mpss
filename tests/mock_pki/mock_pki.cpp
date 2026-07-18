@@ -4,6 +4,9 @@
 #include "tests/mock_pki/mock_pki.h"
 #include <algorithm>
 #include <functional>
+#include <memory>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
 #include <random>
 #include <sstream>
 
@@ -18,10 +21,71 @@ constexpr std::string_view windows_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
 constexpr std::string_view apple_prefix = "MPSS_APP_ATTEST_V1";
 constexpr std::string_view apple_acme_prefix = "MPSS_APPLE_ACME_MDA_V1";
 
+using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+using EVPKeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using X509StorePtr = std::unique_ptr<X509_STORE, decltype(&X509_STORE_free)>;
+using X509StoreCtxPtr = std::unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)>;
+struct X509StackDeleter
+{
+    void operator()(STACK_OF(X509) *stack) const
+    {
+        if (nullptr != stack)
+        {
+            sk_X509_pop_free(stack, X509_free);
+        }
+    }
+};
+using X509StackPtr = std::unique_ptr<STACK_OF(X509), X509StackDeleter>;
+
+X509Ptr parse_der_cert(std::span<const std::byte> der)
+{
+    const auto *begin = reinterpret_cast<const unsigned char *>(der.data());
+    const auto *cursor = begin;
+    X509 *cert = d2i_X509(nullptr, &cursor, static_cast<long>(der.size()));
+    if (nullptr == cert || cursor != begin + static_cast<std::ptrdiff_t>(der.size()))
+    {
+        if (nullptr != cert)
+        {
+            X509_free(cert);
+        }
+        return X509Ptr(nullptr, X509_free);
+    }
+    return X509Ptr(cert, X509_free);
+}
+
+bool serialize_pubkey_der(EVP_PKEY *key, std::vector<std::byte> &out)
+{
+    if (nullptr == key)
+    {
+        return false;
+    }
+
+    const int size = i2d_PUBKEY(key, nullptr);
+    if (size <= 0)
+    {
+        return false;
+    }
+
+    out.resize(static_cast<std::size_t>(size));
+    auto *cursor = reinterpret_cast<unsigned char *>(out.data());
+    const int written = i2d_PUBKEY(key, &cursor);
+    return written == size;
+}
+
+bool cert_der_equal(const std::vector<std::byte> &lhs, const std::vector<std::byte> &rhs)
+{
+    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin());
+}
+
 } // namespace
 
 MockPkiService::MockPkiService(std::chrono::seconds ttl) : ttl_{ttl}
 {
+}
+
+void MockPkiService::set_trusted_root(AttestationFormat format, std::vector<std::byte> der_certificate)
+{
+    trusted_roots_[format] = std::move(der_certificate);
 }
 
 std::vector<std::byte> MockPkiService::issue_challenge()
@@ -68,12 +132,24 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
         {
             return {false, RejectReason::invalid_structure, false};
         }
+        if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
     }
     else if (AttestationFormat::windows_tpm == evidence.format)
     {
+        if (evidence.cert_chain.empty())
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
         const std::span<const char> prefix_chars{windows_prefix.data(), windows_prefix.size()};
         if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge,
                                      attested_public_key))
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
+        if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
         {
             return {false, RejectReason::invalid_structure, false};
         }
@@ -123,6 +199,10 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
         {
             return {false, RejectReason::invalid_structure, false};
         }
+        if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
+        {
+            return {false, RejectReason::invalid_structure, false};
+        }
     }
 
     const auto nonce_it = outstanding_.find(nonce_key(challenge));
@@ -156,6 +236,68 @@ std::string MockPkiService::nonce_key(std::span<const std::byte> nonce)
         out << std::hex << std::to_integer<unsigned int>(b);
     }
     return out.str();
+}
+
+bool MockPkiService::verify_cert_chain(std::span<const std::vector<std::byte>> cert_chain, AttestationFormat format,
+                                       std::span<const std::byte> expected_leaf_public_key) const
+{
+    const auto root_it = trusted_roots_.find(format);
+    if (trusted_roots_.end() == root_it || cert_chain.empty())
+    {
+        return false;
+    }
+
+    X509Ptr trusted_root = parse_der_cert(root_it->second);
+    X509Ptr leaf = parse_der_cert(cert_chain.front());
+    if (nullptr == trusted_root || nullptr == leaf)
+    {
+        return false;
+    }
+
+    EVPKeyPtr leaf_key(X509_get_pubkey(leaf.get()), EVP_PKEY_free);
+    std::vector<std::byte> leaf_pubkey_der;
+    if (nullptr == leaf_key || !serialize_pubkey_der(leaf_key.get(), leaf_pubkey_der)
+        || leaf_pubkey_der != expected_leaf_public_key)
+    {
+        return false;
+    }
+
+    X509StorePtr store(X509_STORE_new(), X509_STORE_free);
+    if (nullptr == store || 1 != X509_STORE_add_cert(store.get(), trusted_root.get()))
+    {
+        return false;
+    }
+
+    X509StackPtr untrusted(sk_X509_new_null());
+    if (nullptr == untrusted)
+    {
+        return false;
+    }
+
+    for (std::size_t i = 1; i < cert_chain.size(); ++i)
+    {
+        if (cert_der_equal(cert_chain[i], root_it->second))
+        {
+            continue;
+        }
+        X509Ptr cert = parse_der_cert(cert_chain[i]);
+        if (nullptr == cert)
+        {
+            return false;
+        }
+        if (1 != sk_X509_push(untrusted.get(), cert.release()))
+        {
+            return false;
+        }
+    }
+
+    X509StoreCtxPtr ctx(X509_STORE_CTX_new(), X509_STORE_CTX_free);
+    if (nullptr == ctx || 1 != X509_STORE_CTX_init(ctx.get(), store.get(), leaf.get(), untrusted.get()))
+    {
+        return false;
+    }
+
+    return 1 == X509_verify_cert(ctx.get());
 }
 
 bool MockPkiService::parse_challenge_and_key(std::span<const std::byte> statement, std::span<const std::byte> prefix,

@@ -27,10 +27,10 @@ Apple managed-device detection/capability is exposed through Apple wrapper seams
 
 ## Platform contracts
 
-- **Android (`android_key_attestation`)**: validate nonce binding, key binding, and key-attestation structure (including cert-chain presence). In production, chain validation to Google hardware attestation roots must be enforced server-side.
-- **Windows (`windows_tpm`)**: validate nonce binding and key binding from TPM-backed claim data. In production, chain validation to trusted TPM roots is required server-side.
+- **Android (`android_key_attestation`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted roots. In production, chain validation to Google hardware attestation roots must be enforced server-side.
+- **Windows (`windows_tpm`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted TPM roots.
 - **Apple (`apple_app_attest`)**: validate App Attest evidence structure, nonce binding, and CSR-key possession binding. This is a weaker assurance than direct CSR-key non-exportability proof.
-- **Apple ACME PoC (`apple_acme_managed_device_attestation`)**: validate nonce binding, key binding, and cert-chain presence using the managed-device-style mock statement format. This is a test seam proof-of-concept, not a production ACME integration.
+- **Apple ACME PoC (`apple_acme_managed_device_attestation`)**: validate nonce binding, key binding, and full certificate-chain verification to trusted roots using the managed-device-style mock statement format. This is a test seam proof-of-concept, not a production ACME integration.
 
 Apple App Attest demonstrates a genuine app instance on genuine Apple hardware with Secure Enclave support and key possession, but it does **not** provide the same non-exportability guarantee for the CSR key as Android hardware key attestation or Windows TPM claims.
 
@@ -38,4 +38,4 @@ ACME Managed Device Attestation is the stronger Apple managed-device alternative
 
 ## Reference implementation seam
 
-`tests/mock_pki/` is the in-process reference verifier used in tests. It is exercised by `tests/attestation_tests.cpp` (unit CI path), while OpenSSL certificate-chain serialization E2E coverage runs via `tests/mpss_openssl_e2e_test.cpp` in CI. Real trust-chain-to-hardware-root validation is intentionally behind a pluggable seam and must be implemented by production PKI services.
+`tests/mock_pki/` is the in-process reference verifier used in tests. It is exercised by `tests/attestation_tests.cpp` (unit CI path), while OpenSSL certificate-chain serialization E2E coverage runs via `tests/mpss_openssl_e2e_test.cpp` in CI. The mock verifier performs real X.509 chain validation against configured trusted roots for Android/Windows/Apple-ACME evidence (mocking only the transport/service boundary). Production PKI integrations still own platform-root management and policy.

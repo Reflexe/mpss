@@ -7,18 +7,27 @@
 #include "mpss/mpss.h"
 #include "tests/mock_pki/mock_pki.h"
 #include <gtest/gtest.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <functional>
 
 namespace mpss::tests
 {
 
 namespace
 {
+
+using EVPKeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using EVPKeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
+using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+using X509ExtensionPtr = std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)>;
 
 std::vector<std::byte> BuildStatement(std::string_view prefix, std::span<const std::byte> challenge,
                                       std::span<const std::byte> public_key)
@@ -55,6 +64,206 @@ std::vector<std::byte> BuildAppleAppAttestStatement(std::span<const std::byte> c
         statement.push_back(static_cast<std::byte>((binding >> (i * 8U)) & 0xFFU));
     }
     return statement;
+}
+
+EVPKeyPtr GenerateEcP256Key()
+{
+    EVPKeyCtxPtr ctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr), EVP_PKEY_CTX_free);
+    if (nullptr == ctx)
+    {
+        return EVPKeyPtr(nullptr, EVP_PKEY_free);
+    }
+    if (1 != EVP_PKEY_keygen_init(ctx.get()))
+    {
+        return EVPKeyPtr(nullptr, EVP_PKEY_free);
+    }
+    if (1 != EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx.get(), NID_X9_62_prime256v1))
+    {
+        return EVPKeyPtr(nullptr, EVP_PKEY_free);
+    }
+
+    EVP_PKEY *raw = nullptr;
+    if (1 != EVP_PKEY_keygen(ctx.get(), &raw))
+    {
+        return EVPKeyPtr(nullptr, EVP_PKEY_free);
+    }
+    return EVPKeyPtr(raw, EVP_PKEY_free);
+}
+
+bool AddCertificateExtension(X509 *cert, X509 *issuer, int nid, const char *value)
+{
+    X509V3_CTX ctx;
+    X509V3_set_ctx(&ctx, issuer, cert, nullptr, nullptr, 0);
+    X509ExtensionPtr ext(X509V3_EXT_conf_nid(nullptr, &ctx, nid, const_cast<char *>(value)), X509_EXTENSION_free);
+    if (nullptr == ext)
+    {
+        return false;
+    }
+    return 1 == X509_add_ext(cert, ext.get(), -1);
+}
+
+X509Ptr CreateCertificate(EVP_PKEY *subject_key, X509 *issuer_cert, EVP_PKEY *issuer_key, std::string_view common_name,
+                          bool is_ca, long serial)
+{
+    X509Ptr cert(X509_new(), X509_free);
+    if (nullptr == cert)
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+
+    if (1 != X509_set_version(cert.get(), 2))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+    if (1 != ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), serial))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+    if (nullptr == X509_gmtime_adj(X509_get_notBefore(cert.get()), 0)
+        || nullptr == X509_gmtime_adj(X509_get_notAfter(cert.get()), 31536000L))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+    if (1 != X509_set_pubkey(cert.get(), subject_key))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+
+    X509_NAME *subject = X509_get_subject_name(cert.get());
+    if (nullptr == subject)
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+    if (1 != X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
+                                         reinterpret_cast<const unsigned char *>(common_name.data()),
+                                         static_cast<int>(common_name.size()), -1, 0))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+
+    if (nullptr != issuer_cert)
+    {
+        if (1 != X509_set_issuer_name(cert.get(), X509_get_subject_name(issuer_cert)))
+        {
+            return X509Ptr(nullptr, X509_free);
+        }
+    }
+    else if (1 != X509_set_issuer_name(cert.get(), subject))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+
+    if (is_ca)
+    {
+        if (!AddCertificateExtension(cert.get(), (nullptr == issuer_cert) ? cert.get() : issuer_cert, NID_basic_constraints,
+                                     "critical,CA:TRUE"))
+        {
+            return X509Ptr(nullptr, X509_free);
+        }
+        if (!AddCertificateExtension(cert.get(), (nullptr == issuer_cert) ? cert.get() : issuer_cert, NID_key_usage,
+                                     "critical,keyCertSign,cRLSign"))
+        {
+            return X509Ptr(nullptr, X509_free);
+        }
+    }
+    else
+    {
+        if (!AddCertificateExtension(cert.get(), issuer_cert, NID_basic_constraints, "critical,CA:FALSE"))
+        {
+            return X509Ptr(nullptr, X509_free);
+        }
+        if (!AddCertificateExtension(cert.get(), issuer_cert, NID_key_usage, "critical,digitalSignature"))
+        {
+            return X509Ptr(nullptr, X509_free);
+        }
+    }
+
+    EVP_PKEY *signing_key = (nullptr == issuer_key) ? subject_key : issuer_key;
+    if (0 >= X509_sign(cert.get(), signing_key, EVP_sha256()))
+    {
+        return X509Ptr(nullptr, X509_free);
+    }
+
+    return cert;
+}
+
+std::vector<std::byte> EncodeCertificateDer(X509 *cert)
+{
+    const int size = i2d_X509(cert, nullptr);
+    EXPECT_GT(size, 0);
+    if (size <= 0)
+    {
+        return {};
+    }
+
+    std::vector<std::byte> der(static_cast<std::size_t>(size));
+    auto *cursor = reinterpret_cast<unsigned char *>(der.data());
+    const int written = i2d_X509(cert, &cursor);
+    EXPECT_EQ(written, size);
+    if (written != size)
+    {
+        return {};
+    }
+    return der;
+}
+
+std::vector<std::byte> EncodePublicKeyDer(EVP_PKEY *key)
+{
+    const int size = i2d_PUBKEY(key, nullptr);
+    EXPECT_GT(size, 0);
+    if (size <= 0)
+    {
+        return {};
+    }
+
+    std::vector<std::byte> der(static_cast<std::size_t>(size));
+    auto *cursor = reinterpret_cast<unsigned char *>(der.data());
+    const int written = i2d_PUBKEY(key, &cursor);
+    EXPECT_EQ(written, size);
+    if (written != size)
+    {
+        return {};
+    }
+    return der;
+}
+
+struct MockChainBundle
+{
+    std::vector<std::byte> root_der;
+    std::vector<std::vector<std::byte>> chain_der;
+    std::vector<std::byte> leaf_public_key_der;
+};
+
+MockChainBundle BuildMockChain(std::string_view root_cn, std::string_view intermediate_cn, std::string_view leaf_cn)
+{
+    EVPKeyPtr root_key = GenerateEcP256Key();
+    EVPKeyPtr intermediate_key = GenerateEcP256Key();
+    EVPKeyPtr leaf_key = GenerateEcP256Key();
+    EXPECT_NE(nullptr, root_key);
+    EXPECT_NE(nullptr, intermediate_key);
+    EXPECT_NE(nullptr, leaf_key);
+
+    X509Ptr root_cert = CreateCertificate(root_key.get(), nullptr, nullptr, root_cn, true, 1);
+    EXPECT_NE(nullptr, root_cert);
+    X509Ptr intermediate_cert =
+        CreateCertificate(intermediate_key.get(), root_cert.get(), root_key.get(), intermediate_cn, true, 2);
+    EXPECT_NE(nullptr, intermediate_cert);
+    X509Ptr leaf_cert =
+        CreateCertificate(leaf_key.get(), intermediate_cert.get(), intermediate_key.get(), leaf_cn, false, 3);
+    EXPECT_NE(nullptr, leaf_cert);
+
+    MockChainBundle bundle{};
+    if (nullptr == root_cert || nullptr == intermediate_cert || nullptr == leaf_cert)
+    {
+        return bundle;
+    }
+
+    bundle.root_der = EncodeCertificateDer(root_cert.get());
+    bundle.chain_der.push_back(EncodeCertificateDer(leaf_cert.get()));
+    bundle.chain_der.push_back(EncodeCertificateDer(intermediate_cert.get()));
+    bundle.chain_der.push_back(bundle.root_der);
+    bundle.leaf_public_key_der = EncodePublicKeyDer(leaf_key.get());
+    return bundle;
 }
 
 } // namespace
@@ -110,15 +319,17 @@ TEST(MockPkiTest, AcceptsAndroidEvidence)
 {
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
-    const std::vector<std::byte> public_key{std::byte{0x04}, std::byte{0x01}, std::byte{0x02}};
+
+    const auto chain = BuildMockChain("Android Root", "Android Intermediate", "Android Leaf");
+    pki.set_trusted_root(AttestationFormat::android_key_attestation, chain.root_der);
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::android_key_attestation;
-    evidence.statement = BuildStatement("MPSS_ANDROID_KEY_ATTESTATION_V1", challenge, public_key);
-    evidence.cert_chain.push_back({std::byte{0x30}, std::byte{0x82}});
+    evidence.statement = BuildStatement("MPSS_ANDROID_KEY_ATTESTATION_V1", challenge, chain.leaf_public_key_der);
+    evidence.cert_chain = chain.chain_der;
 
-    const auto result =
-        pki.submit(mock_pki::MockCsr{public_key}, evidence, AttestationFormat::android_key_attestation);
+    const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence,
+                                   AttestationFormat::android_key_attestation);
     EXPECT_TRUE(result.signed_cert);
     EXPECT_FALSE(result.reject_reason.has_value());
 }
@@ -127,14 +338,16 @@ TEST(MockPkiTest, RejectsNonceReplay)
 {
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
-    const std::vector<std::byte> public_key{std::byte{0x04}, std::byte{0x0A}, std::byte{0x0B}};
+    const auto chain = BuildMockChain("TPM Root", "TPM Intermediate", "TPM Leaf");
+    pki.set_trusted_root(AttestationFormat::windows_tpm, chain.root_der);
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::windows_tpm;
-    evidence.statement = BuildStatement("MPSS_WINDOWS_TPM_ATTESTATION_V1", challenge, public_key);
+    evidence.statement = BuildStatement("MPSS_WINDOWS_TPM_ATTESTATION_V1", challenge, chain.leaf_public_key_der);
+    evidence.cert_chain = chain.chain_der;
 
-    const auto first = pki.submit(mock_pki::MockCsr{public_key}, evidence, AttestationFormat::windows_tpm);
-    const auto second = pki.submit(mock_pki::MockCsr{public_key}, evidence, AttestationFormat::windows_tpm);
+    const auto first = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence, AttestationFormat::windows_tpm);
+    const auto second = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence, AttestationFormat::windows_tpm);
 
     EXPECT_TRUE(first.signed_cert);
     ASSERT_TRUE(second.reject_reason.has_value());
@@ -145,12 +358,15 @@ TEST(MockPkiTest, RejectsPublicKeyMismatch)
 {
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
-    const std::vector<std::byte> evidence_key{std::byte{0x04}, std::byte{0x03}, std::byte{0x04}};
+    const auto chain = BuildMockChain("TPM Root", "TPM Intermediate", "TPM Leaf");
+    pki.set_trusted_root(AttestationFormat::windows_tpm, chain.root_der);
+
     const std::vector<std::byte> csr_key{std::byte{0x04}, std::byte{0xAA}, std::byte{0xBB}};
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::windows_tpm;
-    evidence.statement = BuildStatement("MPSS_WINDOWS_TPM_ATTESTATION_V1", challenge, evidence_key);
+    evidence.statement = BuildStatement("MPSS_WINDOWS_TPM_ATTESTATION_V1", challenge, chain.leaf_public_key_der);
+    evidence.cert_chain = chain.chain_der;
 
     const auto result = pki.submit(mock_pki::MockCsr{csr_key}, evidence, AttestationFormat::windows_tpm);
     ASSERT_TRUE(result.reject_reason.has_value());
@@ -177,14 +393,15 @@ TEST(MockPkiTest, AcceptsAppleAcmeManagedDeviceEvidence)
 {
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
-    const std::vector<std::byte> public_key{std::byte{0x04}, std::byte{0x21}, std::byte{0x22}};
+    const auto chain = BuildMockChain("Apple ACME Root", "Apple ACME Intermediate", "Apple ACME Leaf");
+    pki.set_trusted_root(AttestationFormat::apple_acme_managed_device_attestation, chain.root_der);
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::apple_acme_managed_device_attestation;
-    evidence.statement = BuildStatement("MPSS_APPLE_ACME_MDA_V1", challenge, public_key);
-    evidence.cert_chain.push_back({std::byte{0x30}, std::byte{0x83}});
+    evidence.statement = BuildStatement("MPSS_APPLE_ACME_MDA_V1", challenge, chain.leaf_public_key_der);
+    evidence.cert_chain = chain.chain_der;
 
-    const auto result = pki.submit(mock_pki::MockCsr{public_key}, evidence,
+    const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence,
                                    AttestationFormat::apple_acme_managed_device_attestation);
     EXPECT_TRUE(result.signed_cert);
     EXPECT_FALSE(result.reject_reason.has_value());
@@ -195,14 +412,35 @@ TEST(MockPkiTest, RejectsAppleAcmeManagedDeviceEvidenceWithoutCertChain)
 {
     mock_pki::MockPkiService pki;
     const auto challenge = pki.issue_challenge();
-    const std::vector<std::byte> public_key{std::byte{0x04}, std::byte{0x31}, std::byte{0x32}};
+    const auto chain = BuildMockChain("Apple ACME Root", "Apple ACME Intermediate", "Apple ACME Leaf");
+    pki.set_trusted_root(AttestationFormat::apple_acme_managed_device_attestation, chain.root_der);
 
     AttestationEvidence evidence{};
     evidence.format = AttestationFormat::apple_acme_managed_device_attestation;
-    evidence.statement = BuildStatement("MPSS_APPLE_ACME_MDA_V1", challenge, public_key);
+    evidence.statement = BuildStatement("MPSS_APPLE_ACME_MDA_V1", challenge, chain.leaf_public_key_der);
 
-    const auto result = pki.submit(mock_pki::MockCsr{public_key}, evidence,
+    const auto result = pki.submit(mock_pki::MockCsr{chain.leaf_public_key_der}, evidence,
                                    AttestationFormat::apple_acme_managed_device_attestation);
+    ASSERT_TRUE(result.reject_reason.has_value());
+    EXPECT_EQ(mock_pki::RejectReason::invalid_structure, *result.reject_reason);
+}
+
+TEST(MockPkiTest, RejectsWindowsEvidenceSignedByWrongSigner)
+{
+    mock_pki::MockPkiService pki;
+    const auto challenge = pki.issue_challenge();
+
+    const auto windows_chain = BuildMockChain("TPM Root", "TPM Intermediate", "TPM Leaf");
+    const auto android_chain = BuildMockChain("Android Root", "Android Intermediate", "Android Leaf");
+    pki.set_trusted_root(AttestationFormat::windows_tpm, windows_chain.root_der);
+
+    AttestationEvidence evidence{};
+    evidence.format = AttestationFormat::windows_tpm;
+    evidence.statement = BuildStatement("MPSS_WINDOWS_TPM_ATTESTATION_V1", challenge, android_chain.leaf_public_key_der);
+    evidence.cert_chain = android_chain.chain_der;
+
+    const auto result = pki.submit(mock_pki::MockCsr{android_chain.leaf_public_key_der}, evidence,
+                                   AttestationFormat::windows_tpm);
     ASSERT_TRUE(result.reject_reason.has_value());
     EXPECT_EQ(mock_pki::RejectReason::invalid_structure, *result.reject_reason);
 }
