@@ -462,6 +462,13 @@ if(MPSS_BUILD_TESTS)
     add_executable(mpss_tests ${mpss_TESTS_FILES})
     target_link_libraries(mpss_tests PRIVATE GTest::gtest)
     target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
+    if(IOS)
+        set_target_properties(
+            mpss_tests
+            PROPERTIES
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.reflexe.mpss.tests"
+        )
+    endif()
 
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.
