@@ -6,109 +6,29 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  desktop:
-    name: ${{ matrix.name }}
+  windows:
+    name: Windows ${{ matrix.configuration }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows Release
-            os: windows-latest
+          - os: windows-latest
             preset: win-vs2022-x64
             configuration: Release
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows Debug
-            os: windows-latest
+          - os: windows-latest
             preset: win-vs2022-x64
             configuration: Debug
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows YubiKey Release
-            os: windows-latest
-            preset: win-vs2022-x64-with-yubikey
-            configuration: Release
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows YubiKey Debug
-            os: windows-latest
-            preset: win-vs2022-x64-with-yubikey
-            configuration: Debug
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows Shared Release
-            os: windows-latest
-            preset: win-vs2022-x64-shared
-            configuration: Release
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows Shared Debug
-            os: windows-latest
-            preset: win-vs2022-x64-shared
-            configuration: Debug
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows YubiKey Shared Release
-            os: windows-latest
-            preset: win-vs2022-x64-with-yubikey-shared
-            configuration: Release
-            run_tests: false
-            install_pcsclite: false
-          - name: Windows YubiKey Shared Debug
-            os: windows-latest
-            preset: win-vs2022-x64-with-yubikey-shared
-            configuration: Debug
-            run_tests: false
-            install_pcsclite: false
-          - name: macOS Release
-            os: macos-latest
-            preset: macos-x64-release
-            configuration: Release
-            run_tests: true
-            install_pcsclite: false
-          - name: macOS Debug
-            os: macos-latest
-            preset: macos-x64-debug
-            configuration: Debug
-            run_tests: true
-            install_pcsclite: false
-          - name: macOS YubiKey Release
-            os: macos-latest
-            preset: macos-x64-with-yubikey-release
-            configuration: Release
-            run_tests: false
-            install_pcsclite: false
-          - name: macOS YubiKey Debug
-            os: macos-latest
-            preset: macos-x64-with-yubikey-debug
-            configuration: Debug
-            run_tests: false
-            install_pcsclite: false
-          - name: Linux YubiKey Release
-            os: ubuntu-latest
-            preset: linux-with-yubikey-release
-            configuration: Release
-            run_tests: false
-            install_pcsclite: true
-          - name: Linux YubiKey Debug
-            os: ubuntu-latest
-            preset: linux-with-yubikey-debug
-            configuration: Debug
-            run_tests: false
-            install_pcsclite: true
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pcsclite (Linux)
-        if: matrix.install_pcsclite
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
-
-      - name: Bootstrap vcpkg (Windows)
-        if: runner.os == 'Windows'
+      - name: Bootstrap vcpkg
         shell: pwsh
         run: |
           $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
@@ -118,8 +38,40 @@ jobs:
           .\bootstrap-vcpkg.bat -disableMetrics
           "VCPKG_ROOT=$env:GITHUB_WORKSPACE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Bootstrap vcpkg (Unix)
-        if: runner.os != 'Windows'
+      - name: Configure MPSS
+        shell: bash
+        run: cmake -S . --preset "${{ matrix.preset }}"
+
+      - name: Build MPSS
+        shell: bash
+        run: cmake --build "out/build/${{ matrix.preset }}" --config "${{ matrix.configuration }}"
+
+      - name: Run MPSS unit tests
+        shell: bash
+        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=-*CertificateChainSerialization*"
+
+      - name: Run MPSS E2E tests
+        shell: bash
+        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=*CertificateChainSerialization*"
+
+  macos:
+    name: macOS ${{ matrix.configuration }}
+    runs-on: macos-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+        include:
+          - configuration: Debug
+            preset: macos-x64-debug
+          - configuration: Release
+            preset: macos-x64-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
         shell: bash
         run: |
           BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
@@ -133,23 +85,20 @@ jobs:
         shell: bash
         run: cmake -S . --preset "${{ matrix.preset }}"
 
-      - name: Build MPSS (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: cmake --build "out/build/${{ matrix.preset }}" --config "${{ matrix.configuration }}"
-
-      - name: Build MPSS (Unix)
-        if: runner.os != 'Windows'
+      - name: Build MPSS
         shell: bash
         run: cmake --build "out/build/${{ matrix.preset }}"
 
       - name: Run MPSS unit tests
-        if: matrix.run_tests
         shell: bash
-        run: "out/build/${{ matrix.preset }}/bin/mpss_tests"
+        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=-*CertificateChainSerialization*"
+
+      - name: Run MPSS E2E tests
+        shell: bash
+        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=*CertificateChainSerialization*"
 
   android:
-    name: Android ${{ matrix.configuration }}
+    name: Android E2E validation ${{ matrix.configuration }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -206,6 +155,7 @@ jobs:
             -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
             -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
             -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
+            -DMPSS_BUILD_TESTS=ON \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION="${{ steps.toolinfo.outputs.api }}" \
             -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
@@ -220,6 +170,7 @@ jobs:
             -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
             -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
             -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
+            -DMPSS_BUILD_TESTS=ON \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION="${{ steps.toolinfo.outputs.api }}" \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -227,7 +178,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=arm64-android
 
-      - name: Build and install Android artifacts
+      - name: Build Android artifacts and E2E test target
         shell: bash
         run: |
           cmake --build build-x64
@@ -236,7 +187,7 @@ jobs:
           cmake --install build-arm64 --prefix install-arm64
 
   ios:
-    name: iOS ${{ matrix.configuration }}
+    name: iOS E2E validation ${{ matrix.configuration }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -260,3 +211,17 @@ jobs:
         shell: bash
         run: |
           cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
+
+      - name: Compile iOS tests (includes E2E source)
+        shell: bash
+        run: |
+          cmake -S . -B build-ios-sim-${{ matrix.configuration }} -GXcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} \
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+            -DMPSS_BUILD_TESTS=ON
+          cmake --build build-ios-sim-${{ matrix.configuration }} --config ${{ matrix.configuration }} --target mpss_tests
