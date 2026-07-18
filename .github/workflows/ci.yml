@@ -370,66 +370,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B "$BUILD_DIR" -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=arm64-ios-simulator \
-            -DMPSS_BUILD_MPSS_CORE_STATIC=YES \
-            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=YES \
-            -DMPSS_BUILD_TESTS=YES \
-            -DMPSS_BACKEND_YUBIKEY=NO \
-            -DCMAKE_MACOSX_BUNDLE=YES \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
-            -DCMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
-
-      - name: Build mpss_tests (.app)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --build "$BUILD_DIR" --config "${{ matrix.configuration }}" --target mpss_tests
-
-      - name: Locate app bundle and stamp bundle identifier
-        id: app
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP=$(find "$BUILD_DIR" -name 'mpss_tests.app' -type d | head -n 1 || true)
-          if [ -z "$APP" ]; then
-            echo "mpss_tests.app not found under $BUILD_DIR" >&2
-            find "$BUILD_DIR" -name 'mpss_tests*' || true
-            exit 1
-          fi
-          echo "Found app: $APP"
-          # iOS install requires a non-empty CFBundleIdentifier; CMake's default
-          # bundle plist leaves it blank, so set (or add) it explicitly.
-          PLIST="$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$PLIST" \
-            || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$PLIST"
-          echo "app=$APP" >> "$GITHUB_OUTPUT"
-
-      - name: Ad-hoc sign app with keychain entitlement
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP="${{ steps.app.outputs.app }}"
-          # mpss persists Secure-Enclave-backed and Keychain keys with SecItemAdd.
-          # On the iOS simulator a process only gets a keychain access group from a
-          # `keychain-access-groups` entitlement in its code signature; without it
-          # every key-creation call fails with -34018 (errSecMissingEntitlement),
-          # which would make the whole suite self-skip (or hard-fail the couple of
-          # tests that assume a working backend). The simulator does not enforce a
-          # real signing identity, so an ad-hoc signature carrying the entitlement
-          # is enough to grant the access group. mpss does not request a specific
-          # access group, so it uses the first entry below by default.
-          #
-          # get-task-allow=true is mandatory: simulator apps are development
-          # binaries and launchd refuses to start one whose signature lacks it
-          # ("Codesigning issue", LaunchdSimError 162). The default signature the
-          # linker applies carries it; re-signing without it breaks the launch.
+          # mpss persists Secure-Enclave-backed and Keychain keys via SecItemAdd.
+          # On the simulator a process only reaches the keychain if it runs as a
+          # signed app carrying a `keychain-access-groups` entitlement; otherwise
+          # every key op fails with -34018 (errSecMissingEntitlement). Ad-hoc
+          # re-signing the built .app after the fact produces a signature the
+          # simulator runtime rejects at launch ("Codesigning issue" on spawn,
+          # "denied by service delegate" on launch), so instead let Xcode sign the
+          # app *at build time* with these entitlements -- the same path a normal
+          # Keychain-Sharing simulator build uses. get-task-allow is required for a
+          # simulator (development) binary to be launchable at all.
           ENT="$RUNNER_TEMP/mpss_tests.entitlements"
           cat > "$ENT" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -445,10 +395,57 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # codesign must run last: it seals the bundle, so no Info.plist edits after.
-          codesign --force --sign - --entitlements "$ENT" --timestamp=none "$APP"
+          # MACOSX_BUNDLE_GUI_IDENTIFIER sets CFBundleIdentifier in the generated
+          # Info.plist at configure time (CMake fills bundle keys from same-named
+          # variables), so no post-build plist edit is needed -- which matters
+          # because editing the bundle after signing would invalidate the signature.
+          cmake -S . -B "$BUILD_DIR" -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=arm64-ios-simulator \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=YES \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=YES \
+            -DMPSS_BUILD_TESTS=YES \
+            -DMPSS_BACKEND_YUBIKEY=NO \
+            -DCMAKE_MACOSX_BUNDLE=YES \
+            -DMACOSX_BUNDLE_GUI_IDENTIFIER="$BUNDLE_ID" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=YES \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS="$ENT"
+
+      - name: Build mpss_tests (.app)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" --config "${{ matrix.configuration }}" --target mpss_tests
+
+      - name: Locate app bundle
+        id: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find "$BUILD_DIR" -name 'mpss_tests.app' -type d | head -n 1 || true)
+          if [ -z "$APP" ]; then
+            echo "mpss_tests.app not found under $BUILD_DIR" >&2
+            find "$BUILD_DIR" -name 'mpss_tests*' || true
+            exit 1
+          fi
+          echo "Found app: $APP"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Verify signature and entitlements
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="${{ steps.app.outputs.app }}"
+          echo "Info.plist:"
+          plutil -p "$APP/Info.plist" || true
+          echo "Code signature:"
+          codesign -dvvv "$APP" 2>&1 || true
           echo "Embedded entitlements:"
-          codesign -d --entitlements :- "$APP" || true
+          codesign -d --entitlements :- "$APP" 2>&1 || true
 
       - name: Boot iOS simulator
         id: sim
@@ -480,51 +477,64 @@ jobs:
           CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" app)
           BIN="$CONTAINER/mpss_tests"
 
-          # Optional watchdog: use GNU timeout if the runner provides it (it is
-          # not part of a stock macOS). Without it the job-level timeout applies.
+          # Optional watchdog: GNU timeout if the runner provides it (not part of a
+          # stock macOS). Without it the job-level timeout applies.
           TO=""
           for c in timeout gtimeout; do
             if command -v "$c" >/dev/null 2>&1; then TO="$c 600"; break; fi
           done
 
-          # gtest reads its filter from the GTEST_FILTER env var; simctl forwards
-          # any SIMCTL_CHILD_-prefixed variable into the child, for both `spawn`
-          # and `launch`.
-          #
-          # Prefer `simctl spawn`: it execs the console test binary directly, with
-          # no SpringBoard UI-launch watchdog. If launchd rejects the entitled
-          # binary on spawn ("Codesigning issue"), fall back to a real app launch,
-          # which honors the app's entitlements. Neither path reliably propagates
-          # the app's exit code, so pass/fail is judged from gtest's summary lines.
-          run_gtest() {
-            local label="$1" filter="$2"
-            local log="gtest-${label}.log"
-            echo "::group::gtest ($label)"
-            set +e
-            SIMCTL_CHILD_GTEST_FILTER="$filter" $TO xcrun simctl spawn "$UDID" "$BIN" 2>&1 | tee "$log"
+          dump_sim_diagnostics() {
+            echo "::group::CoreSimulator log (tail)"
+            tail -n 80 "$HOME/Library/Logs/CoreSimulator/CoreSimulator.log" 2>/dev/null || true
+            echo "::endgroup::"
+          }
+
+          # Run the gtest binary on the booted simulator. Prefer `simctl spawn`,
+          # which execs the console binary directly; if launchd rejects it, fall
+          # back to a full `simctl launch`, which runs it as an app. Both forward
+          # trailing arguments to the binary's argv, so gtest reads --gtest_filter
+          # directly (verified: argv reaches the test binary on the simulator).
+          run_on_sim() {
+            local filter="$1" log="$2"
+            $TO xcrun simctl spawn "$UDID" "$BIN" --gtest_filter="$filter" 2>&1 | tee "$log" || true
             if grep -qE 'launchd failed|Codesigning issue' "$log"; then
               echo "spawn was rejected by launchd; retrying via simctl launch"
-              SIMCTL_CHILD_GTEST_FILTER="$filter" $TO xcrun simctl launch --console-pty \
-                --terminate-running-process "$UDID" "$BUNDLE_ID" 2>&1 | tee "$log"
+              $TO xcrun simctl launch --console "$UDID" "$BUNDLE_ID" --gtest_filter="$filter" 2>&1 | tee "$log" || true
             fi
-            set -e
-            echo "::endgroup::"
+          }
+
+          # Fail closed: a run is good only if gtest printed a PASSED summary, no
+          # FAILED line, and at least one test actually passed. The last guard
+          # catches a silently broken backend (every key test self-skips, which
+          # would otherwise look green while exercising nothing).
+          check_log() {
+            local label="$1" log="$2"
             if grep -q '\[  FAILED  \]' "$log"; then
               echo "::error::[$label] gtest reported failing tests"; return 1
             fi
             if ! grep -q '\[  PASSED  \]' "$log"; then
-              echo "::error::[$label] no gtest PASSED summary (crash, timeout, or no tests ran)"; return 1
+              echo "::error::[$label] no gtest PASSED summary (crash, timeout, or launch denied)"; return 1
             fi
-            # Guard against a silently broken backend: if the real Apple backend
-            # cannot create keys (e.g. keychain entitlement regressed), every
-            # backend test self-skips via GTEST_SKIP and the run would look green
-            # while exercising nothing. Require at least one test to actually pass.
             local passed
             passed=$(grep -oE '\[  PASSED  \] [0-9]+ test' "$log" | grep -oE '[0-9]+' | head -n1 || echo 0)
             if [ "${passed:-0}" -lt 1 ]; then
               echo "::error::[$label] 0 tests passed -- Apple backend produced no usable keys (all skipped)"; return 1
             fi
             echo "[$label] OK ($passed passed)"
+          }
+
+          run_gtest() {
+            local label="$1" filter="$2" log="gtest-${label}.log"
+            echo "::group::gtest ($label)"
+            set +e
+            run_on_sim "$filter" "$log"
+            set -e
+            echo "::endgroup::"
+            if ! check_log "$label" "$log"; then
+              dump_sim_diagnostics
+              return 1
+            fi
           }
 
           # Smoke first: the real SE + Keychain cert-chain e2e. Then the full suite.
