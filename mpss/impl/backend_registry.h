@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include "mpss/attestation.h"
 #include "mpss/mpss.h"
+#include <optional>
 #include <vector>
 
 namespace mpss::impl
@@ -36,6 +38,11 @@ class Backend
      */
     [[nodiscard]]
     virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const = 0;
+
+    [[nodiscard]]
+    virtual std::unique_ptr<KeyPair>
+    create_key(std::string_view name, Algorithm algorithm, std::optional<AttestationRequest> attestation,
+               KeyPolicy policy) const;
 
     /**
      * @brief Open an existing key pair.
@@ -77,6 +84,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
                                     KeyPolicy policy);
 
 [[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation, KeyPolicy policy);
+
+[[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name);
 
 [[nodiscard]]
@@ -92,6 +103,10 @@ bool is_algorithm_available(Algorithm algorithm);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
+
+[[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation, KeyPolicy policy);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);

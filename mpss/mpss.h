@@ -4,11 +4,13 @@
 #pragma once
 
 #include "mpss/algorithm.h"
+#include "mpss/attestation.h"
 #include "mpss/defines.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -164,6 +166,19 @@ class MPSS_DECOR KeyPair
                                            KeyPolicy policy = KeyPolicy::none);
 
     /**
+     * @brief Creates a new key pair with optional attestation evidence generation.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] attestation Optional attestation request. If present, challenge must be non-empty.
+     * @param[in] policy Backend-specific key policy.
+     * @return Key pair if created successfully, nullptr otherwise.
+     */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
+                                           std::optional<AttestationRequest> attestation,
+                                           KeyPolicy policy = KeyPolicy::none);
+
+    /**
      * @brief Creates a new key pair using a specific backend.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
@@ -173,6 +188,20 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                           KeyPolicy policy = KeyPolicy::none);
+
+    /**
+     * @brief Creates a new key pair using a specific backend with optional attestation evidence generation.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] attestation Optional attestation request. If present, challenge must be non-empty.
+     * @param[in] policy Backend-specific key policy.
+     * @return Key pair if created successfully, nullptr otherwise.
+     */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                           std::optional<AttestationRequest> attestation,
                                            KeyPolicy policy = KeyPolicy::none);
 
     /**
@@ -240,6 +269,18 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     virtual std::size_t extract_key(std::span<std::byte> public_key) const = 0;
+
+    [[nodiscard]]
+    virtual bool supports_attestation() const
+    {
+        return false;
+    }
+
+    [[nodiscard]]
+    virtual std::optional<AttestationEvidence> attestation() const
+    {
+        return std::nullopt;
+    }
 
     /**
      * @brief A convenience method to return the required public (verification) key buffer size.

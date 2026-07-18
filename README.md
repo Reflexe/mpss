@@ -18,6 +18,18 @@ MPSS uses the following technologies on the different supported platforms:
 
 **Note**: The YubiKey PIV backend is an optional cross-platform backend for **desktop platforms** (Windows, macOS, Linux) that can be enabled by setting `MPSS_BACKEND_YUBIKEY=ON` during CMake configuration. On Linux, it serves as the only available backend. The YubiKey backend is **not supported on iOS or Android**.
 
+## Hardware attestation
+
+MPSS key creation supports an optional attestation request parameter:
+
+- `std::nullopt` (default behavior) keeps existing non-attesting key creation unchanged.
+- `AttestationRequirement::request` attempts attestation but still creates the key if evidence is unavailable.
+- `AttestationRequirement::require` fails key creation when evidence cannot be produced and deletes any partially created key.
+
+Attestation evidence is returned as an opaque blob via `KeyPair::attestation()`. Production trust-chain validation against platform hardware roots is performed by the PKI service, not by MPSS.
+
+See [docs/attestation-validation.md](docs/attestation-validation.md) for server validation contracts, nonce handling, and assurance-level differences across Android, Windows, and Apple platforms.
+
 ## Compiling for different platforms
 
 MPSS core depends only on operating system APIs, except that it uses [GoogleTest](https://GitHub.com/Google/GoogleTest) for testing.
@@ -810,4 +822,3 @@ The tests are built automatically when `MPSS_BUILD_TESTS=ON` is set, provided th
 MPSS is released under the MIT license.
 We welcome contributions, including feature additions and bug fixes.
 If you have a feature request or a question about how to use the library, please [submit an issue](https://github.com/microsoft/mpss/issues).
-

@@ -7,6 +7,9 @@
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/impl/os_backend.h"
 #include "mpss/utils/utilities.h"
+#include <algorithm>
+#include <optional>
+#include <vector>
 
 using jni_class = mpss::impl::os::utils::JNIObj<jclass>;
 using jni_string = mpss::impl::os::utils::JNIObj<jstring>;
@@ -21,6 +24,104 @@ constexpr const char *software_storage = "Software";
 constexpr const char *trusted_storage = "Trusted Environment";
 constexpr const char *strongbox_storage = "StrongBox";
 constexpr const char *unknown_secure_storage = "Unknown Secure";
+
+bool DeleteKeyOnFailure(std::string_view name)
+{
+    mpss::impl::os::JNIEnvGuard guard;
+    jni_class km(guard.Env(), mpss::impl::os::utils::GetKeyManagementClass(guard.Env()));
+    if (km.is_null())
+    {
+        return false;
+    }
+
+    jmethodID mi = guard->GetStaticMethodID(km.get(), "DeleteKey", "(Ljava/lang/String;)Ljava/lang/Boolean;");
+    if (nullptr == mi)
+    {
+        return false;
+    }
+
+    const std::string key_name{name};
+    jni_string keyName(guard.Env(), guard->NewStringUTF(key_name.c_str()));
+    if (keyName.is_null())
+    {
+        return false;
+    }
+
+    jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mi, keyName.get()));
+    return !result.is_null() && utils::UnboxBoolean(guard.Env(), result.get());
+}
+
+std::vector<std::vector<std::byte>> GetAttestationCertChain(std::string_view name)
+{
+    mpss::impl::os::JNIEnvGuard guard;
+    jni_class km(guard.Env(), mpss::impl::os::utils::GetKeyManagementClass(guard.Env()));
+    if (km.is_null())
+    {
+        return {};
+    }
+
+    jmethodID mid = guard->GetStaticMethodID(km.get(), "GetAttestationCertificateChain",
+                                             "(Ljava/lang/String;)[[B");
+    if (nullptr == mid)
+    {
+        return {};
+    }
+
+    const std::string key_name{name};
+    jni_string keyName(guard.Env(), guard->NewStringUTF(key_name.c_str()));
+    if (keyName.is_null())
+    {
+        return {};
+    }
+
+    jobjectArray result =
+        reinterpret_cast<jobjectArray>(guard->CallStaticObjectMethod(km.get(), mid, keyName.get()));
+    if (nullptr == result)
+    {
+        return {};
+    }
+
+    const jsize len = guard->GetArrayLength(result);
+    std::vector<std::vector<std::byte>> chain;
+    chain.reserve(static_cast<std::size_t>(len));
+
+    for (jsize i = 0; i < len; ++i)
+    {
+        auto *entry = static_cast<jbyteArray>(guard->GetObjectArrayElement(result, i));
+        if (nullptr == entry)
+        {
+            continue;
+        }
+
+        const jsize cert_len = guard->GetArrayLength(entry);
+        std::vector<jbyte> bytes(static_cast<std::size_t>(cert_len));
+        guard->GetByteArrayRegion(entry, 0, cert_len, bytes.data());
+
+        std::vector<std::byte> cert(bytes.size());
+        std::transform(bytes.begin(), bytes.end(), cert.begin(), [](auto b) { return static_cast<std::byte>(b); });
+        chain.emplace_back(std::move(cert));
+        guard->DeleteLocalRef(entry);
+    }
+
+    return chain;
+}
+
+std::vector<std::byte> BuildAndroidAttestationStatement(std::span<const std::byte> challenge,
+                                                        std::span<const std::byte> public_key)
+{
+    static constexpr std::string_view prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
+    std::vector<std::byte> statement;
+    statement.reserve(prefix.size() + challenge.size() + public_key.size() + 2);
+    for (char c : prefix)
+    {
+        statement.push_back(static_cast<std::byte>(c));
+    }
+    statement.push_back(static_cast<std::byte>(challenge.size() & 0xFFU));
+    statement.insert(statement.end(), challenge.begin(), challenge.end());
+    statement.push_back(static_cast<std::byte>(public_key.size() & 0xFFU));
+    statement.insert(statement.end(), public_key.begin(), public_key.end());
+    return statement;
+}
 
 void GetKeyProperties(std::string_view name, bool &hardware_backed, const char **storage_description)
 {
@@ -91,6 +192,9 @@ namespace mpss::impl::os
 {
 
 using enum Algorithm;
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation);
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
@@ -204,10 +308,16 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
 
     // Finally, we can return the key.
     mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description, hardware_backed);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
+{
+    return create_key(name, algorithm, std::nullopt);
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation)
 {
     if (name.empty())
     {
@@ -241,7 +351,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     }
 
     jmethodID mid = guard->GetStaticMethodID(
-        km.get(), "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;)Ljava/lang/Boolean;");
+        km.get(), "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;[B)Ljava/lang/Boolean;");
     if (nullptr == mid)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.CreateKey Java method.");
@@ -297,7 +407,24 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
-    jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mid, keyName.get(), algorithmValue.get()));
+    jbyteArray challenge_array = nullptr;
+    if (attestation.has_value())
+    {
+        challenge_array = utils::ToJByteArray(guard.Env(), attestation->challenge);
+        if (nullptr == challenge_array)
+        {
+            mpss::utils::log_and_set_error("Could not convert attestation challenge to jbyte array.");
+            return nullptr;
+        }
+    }
+
+    jni_object result(guard.Env(),
+                      guard->CallStaticObjectMethod(km.get(), mid, keyName.get(), algorithmValue.get(),
+                                                    challenge_array));
+    if (nullptr != challenge_array)
+    {
+        guard->DeleteLocalRef(challenge_array);
+    }
     if (result.is_null())
     {
         mpss::utils::log_and_set_error("KeyManagement.CreateKey returned null.");
@@ -321,8 +448,43 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
+    std::optional<AttestationEvidence> evidence = std::nullopt;
+    if (attestation.has_value() && hardware_backed)
+    {
+        auto cert_chain = GetAttestationCertChain(name);
+        if (!cert_chain.empty())
+        {
+            auto key = std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description,
+                                                        hardware_backed);
+            const std::size_t key_size = key->extract_key({});
+            std::vector<std::byte> public_key(key_size);
+            if (0 == key->extract_key(public_key))
+            {
+                public_key.clear();
+            }
+
+            AttestationEvidence generated{};
+            generated.format = AttestationFormat::android_key_attestation;
+            generated.statement = BuildAndroidAttestationStatement(attestation->challenge, public_key);
+            generated.cert_chain = std::move(cert_chain);
+            evidence = std::move(generated);
+        }
+    }
+
+    if (attestation.has_value() && AttestationRequirement::require == attestation->requirement && !evidence.has_value())
+    {
+        const bool deleted = DeleteKeyOnFailure(name);
+        if (!deleted)
+        {
+            mpss::utils::log_warning("Failed to delete Android key '{}' after required attestation failure.", name);
+        }
+        mpss::utils::log_and_set_error("Required Android key attestation could not be produced.");
+        return nullptr;
+    }
+
     mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description, hardware_backed,
+                                            std::move(evidence));
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

@@ -8,11 +8,40 @@
 #include "mpss/impl/apple/apple_se_wrapper.h"
 #include "mpss/impl/apple/apple_utils.h"
 #include "mpss/utils/utilities.h"
+#include <functional>
+#include <optional>
+#include <vector>
 
 namespace mpss::impl::os
 {
 
 using enum Algorithm;
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation);
+
+std::vector<std::byte> BuildAppleAttestationStatement(std::span<const std::byte> challenge,
+                                                      std::span<const std::byte> public_key)
+{
+    // ACME Managed Device Attestation would provide stronger managed-device guarantees, but is out of scope here.
+    static constexpr std::string_view prefix = "MPSS_APP_ATTEST_V1";
+    std::vector<std::byte> statement;
+    statement.reserve(prefix.size() + challenge.size() + sizeof(std::size_t));
+
+    for (char c : prefix)
+    {
+        statement.push_back(static_cast<std::byte>(c));
+    }
+    statement.insert(statement.end(), challenge.begin(), challenge.end());
+
+    const std::string key_material(reinterpret_cast<const char *>(public_key.data()), public_key.size());
+    const std::size_t binding = std::hash<std::string>{}(key_material);
+    for (std::size_t i = 0; i < sizeof(binding); ++i)
+    {
+        statement.push_back(static_cast<std::byte>((binding >> (i * 8U)) & 0xFFU));
+    }
+    return statement;
+}
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
@@ -65,6 +94,12 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
 {
+    return create_key(name, algorithm, std::nullopt);
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation)
+{
     const std::string key_name{name};
     if (key_name.empty())
     {
@@ -86,6 +121,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
+    const bool wants_attestation = attestation.has_value();
     if (MPSS_SE_SecureEnclaveIsSupported() && ecdsa_secp256r1_sha256 == algorithm)
     {
         // Secure Enclave only supports ECDSA P256.
@@ -93,10 +129,41 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         if (MPSS_SE_CreateKey(key_name.c_str()))
         {
             mpss::utils::log_trace("Key '{}' created in Secure Enclave.", key_name);
-            return std::make_unique<AppleSEKeyPair>(name, algorithm);
+            auto key = std::make_unique<AppleSEKeyPair>(name, algorithm);
+            if (wants_attestation)
+            {
+                const std::size_t key_size = key->extract_key({});
+                std::vector<std::byte> public_key(key_size);
+                if (0 == key->extract_key(public_key))
+                {
+                    if (AttestationRequirement::require == attestation->requirement)
+                    {
+                        key->delete_key();
+                        mpss::utils::log_and_set_error("Failed to bind Apple App Attest evidence to CSR key.");
+                        return nullptr;
+                    }
+                    return key;
+                }
+
+                AttestationEvidence evidence{};
+                evidence.format = AttestationFormat::apple_app_attest;
+                evidence.statement = BuildAppleAttestationStatement(attestation->challenge, public_key);
+                key->apply_attestation(std::move(evidence));
+            }
+            return key;
         }
 
         mpss::utils::log_and_set_error("Failed to create key in Secure Enclave: {}", utils::MPSS_SE_GetLastError());
+        if (wants_attestation && AttestationRequirement::require == attestation->requirement)
+        {
+            return nullptr;
+        }
+    }
+
+    if (wants_attestation && AttestationRequirement::require == attestation->requirement)
+    {
+        mpss::utils::log_and_set_error(
+            "Apple attestation requires Secure Enclave P-256 availability. Keychain attestation is unsupported.");
         return nullptr;
     }
 

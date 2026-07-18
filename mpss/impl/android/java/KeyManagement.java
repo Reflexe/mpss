@@ -28,6 +28,7 @@ import java.security.Signature;
 import java.security.SignatureException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
+import java.security.cert.Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
@@ -46,7 +47,7 @@ import java.util.Arrays;
 public class KeyManagement {
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
 
-    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
+    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox, byte[] attestationChallenge) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
         if (null == keyName) {
             throw new IllegalArgumentException("keyName is null.");
         }
@@ -63,6 +64,9 @@ public class KeyManagement {
                 .setAlgorithmParameterSpec(paramSpec)
                 .setDigests(digest)
                 .setUserAuthenticationRequired(false);
+        if (null != attestationChallenge && attestationChallenge.length > 0) {
+            builder.setAttestationChallenge(attestationChallenge);
+        }
         builder.setIsStrongBoxBacked(useStrongbox);
 
         kpg.initialize(builder.build());
@@ -156,6 +160,10 @@ public class KeyManagement {
      * @return True if key was created successfully, False otherwise.
      */
     public static Boolean CreateKey(String keyName, Algorithm algorithm) {
+        return CreateKey(keyName, algorithm, null);
+    }
+
+    public static Boolean CreateKey(String keyName, Algorithm algorithm, byte[] attestationChallenge) {
         if (null == keyName) throw new IllegalArgumentException("keyName is null.");
         if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
 
@@ -177,7 +185,7 @@ public class KeyManagement {
             }
 
             try {
-                kp = CreateKey(keyName, algorithm, useStrongbox);
+                kp = CreateKey(keyName, algorithm, useStrongbox, attestationChallenge);
             } catch (StrongBoxUnavailableException ex) {
                 Log.w("MPSS", "Strong box is not available.");
             }
@@ -192,7 +200,7 @@ public class KeyManagement {
 
             // Try again without StrongBox.
             if (null == kp) {
-                kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
+                kp = CreateKey(keyName, algorithm, /* useStrongBox */ false, attestationChallenge);
             }
 
             if (null != kp) {
@@ -406,6 +414,30 @@ public class KeyManagement {
         byte[] pk = GetPublicKey(keyName);
         if (null == pk) {
             return Algorithm.undefined;
+        }
+
+        public static byte[][] GetAttestationCertificateChain(String keyName) {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+            try {
+                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                ks.load(null);
+                Certificate[] chain = ks.getCertificateChain(keyName);
+                if (null == chain || chain.length == 0) {
+                    return new byte[0][];
+                }
+
+                byte[][] out = new byte[chain.length][];
+                for (int i = 0; i < chain.length; ++i) {
+                    out[i] = chain[i].getEncoded();
+                }
+                return out;
+            } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException |
+                     java.security.cert.CertificateEncodingException ex) {
+                String msg = "Error retrieving certificate chain: " + ex.toString();
+                Log.e("MPSS", msg);
+                SetError(msg);
+                return new byte[0][];
+            }
         }
 
         switch(pk.length) {

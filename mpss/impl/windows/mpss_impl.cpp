@@ -11,7 +11,9 @@
 #include <cwchar>
 #include <locale>
 #include <ncrypt.h>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -242,11 +244,32 @@ mpss::Algorithm GuessAlgorithmFromKeyBits(std::size_t key_bits)
         return unsupported;
     }
 }
+
+std::vector<std::byte> BuildWindowsAttestationStatement(std::span<const std::byte> challenge,
+                                                        std::span<const std::byte> public_key)
+{
+    static constexpr std::string_view prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
+    std::vector<std::byte> statement;
+    statement.reserve(prefix.size() + challenge.size() + public_key.size() + 2);
+
+    for (char c : prefix)
+    {
+        statement.push_back(static_cast<std::byte>(c));
+    }
+    statement.push_back(static_cast<std::byte>(challenge.size() & 0xFFU));
+    statement.insert(statement.end(), challenge.begin(), challenge.end());
+    statement.push_back(static_cast<std::byte>(public_key.size() & 0xFFU));
+    statement.insert(statement.end(), public_key.begin(), public_key.end());
+    return statement;
+}
 } // namespace
 
 namespace mpss::impl::os
 {
 using enum Algorithm;
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation);
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
@@ -294,6 +317,12 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
 {
+    return create_key(name, algorithm, std::nullopt);
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation)
+{
     const std::string key_name{name};
     if (key_name.empty())
     {
@@ -313,6 +342,42 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     {
         mpss::utils::log_warning("Key '{}' already exists.", name);
         return nullptr;
+    }
+
+    if (attestation.has_value())
+    {
+        mpss::utils::log_trace("Creating key '{}' with {} provider for attestation.", name, fallback_provider_description);
+        NCRYPT_KEY_HANDLE key_handle = CreateKey(name, algorithm, /* fallback */ true);
+        if (0 == key_handle)
+        {
+            if (AttestationRequirement::require == attestation->requirement)
+            {
+                mpss::utils::log_and_set_error("Required Windows TPM attestation unavailable for key '{}'.", name);
+                return nullptr;
+            }
+            return create_key(name, algorithm, std::nullopt);
+        }
+
+        auto key = std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
+                                                    fallback_provider_description);
+        const std::size_t pk_size = key->extract_key({});
+        std::vector<std::byte> public_key(pk_size);
+        if (0 == key->extract_key(public_key))
+        {
+            if (AttestationRequirement::require == attestation->requirement)
+            {
+                key->delete_key();
+                mpss::utils::log_and_set_error("Failed to extract key for Windows attestation proof.");
+                return nullptr;
+            }
+            return key;
+        }
+
+        AttestationEvidence evidence{};
+        evidence.format = AttestationFormat::windows_tpm;
+        evidence.statement = BuildWindowsAttestationStatement(attestation->challenge, public_key);
+        key->set_attestation(std::move(evidence));
+        return key;
     }
 
     // Try to create the key using the primary provider.

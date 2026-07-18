@@ -18,12 +18,29 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
     return impl::create_key(name, algorithm, policy);
 }
 
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm,
+                                         std::optional<AttestationRequest> attestation, KeyPolicy policy)
+{
+    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' and attestation {}.", name,
+                     get_algorithm_info(algorithm).type_str, attestation.has_value() ? "enabled" : "disabled");
+    return impl::create_key(name, algorithm, std::move(attestation), policy);
+}
+
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                          KeyPolicy policy)
 {
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend_name);
     return impl::create_key(backend_name, name, algorithm, policy);
+}
+
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                         std::optional<AttestationRequest> attestation, KeyPolicy policy)
+{
+    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}' and attestation {}.",
+                     name, get_algorithm_info(algorithm).type_str, backend_name,
+                     attestation.has_value() ? "enabled" : "disabled");
+    return impl::create_key(backend_name, name, algorithm, std::move(attestation), policy);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)

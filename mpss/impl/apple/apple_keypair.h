@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include "mpss/attestation.h"
 #include "mpss/mpss.h"
+#include <optional>
+#include <utility>
 
 namespace mpss::impl::os
 {
@@ -31,7 +34,24 @@ class AppleKeyPairBase : public mpss::KeyPair
     [[nodiscard]]
     std::size_t extract_key(std::span<std::byte> public_key) const override;
 
+    [[nodiscard]]
+    bool supports_attestation() const override
+    {
+        return supports_attestation_;
+    }
+
+    [[nodiscard]]
+    std::optional<mpss::AttestationEvidence> attestation() const override
+    {
+        return attestation_evidence_;
+    }
+
     void release_key() override;
+
+    void apply_attestation(std::optional<mpss::AttestationEvidence> evidence)
+    {
+        set_attestation(std::move(evidence));
+    }
 
   protected:
     AppleKeyPairBase(std::string_view name, Algorithm algorithm, bool hardware_backed, const char *storage_description);
@@ -55,8 +75,16 @@ class AppleKeyPairBase : public mpss::KeyPair
 
     virtual void do_release_key() = 0;
 
+    void set_attestation(std::optional<mpss::AttestationEvidence> evidence)
+    {
+        attestation_evidence_ = std::move(evidence);
+        supports_attestation_ = true;
+    }
+
   private:
     std::string name_;
+    bool supports_attestation_{false};
+    std::optional<mpss::AttestationEvidence> attestation_evidence_;
 };
 
 } // namespace mpss::impl::os

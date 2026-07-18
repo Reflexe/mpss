@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include "mpss/attestation.h"
 #include "mpss/mpss.h"
 #include <Windows.h>
 #include <ncrypt.h>
+#include <optional>
+#include <utility>
 
 namespace mpss::impl::os
 {
@@ -35,10 +38,30 @@ class WindowsKeyPair : public mpss::KeyPair
     [[nodiscard]]
     std::size_t extract_key(std::span<std::byte> public_key) const override;
 
+    [[nodiscard]]
+    bool supports_attestation() const override
+    {
+        return supports_attestation_;
+    }
+
+    [[nodiscard]]
+    std::optional<mpss::AttestationEvidence> attestation() const override
+    {
+        return attestation_evidence_;
+    }
+
     void release_key() noexcept override;
+
+    void set_attestation(std::optional<mpss::AttestationEvidence> evidence)
+    {
+        attestation_evidence_ = std::move(evidence);
+        supports_attestation_ = true;
+    }
 
   private:
     NCRYPT_KEY_HANDLE key_handle_ = 0;
+    bool supports_attestation_{false};
+    std::optional<mpss::AttestationEvidence> attestation_evidence_;
 
     void win_release() noexcept;
 

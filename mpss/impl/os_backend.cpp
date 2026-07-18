@@ -3,6 +3,7 @@
 
 #include "mpss/impl/os_backend.h"
 #include "mpss/impl/backend_registry.h"
+#include <utility>
 
 namespace mpss::impl
 {
@@ -15,6 +16,9 @@ namespace os
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm);
 [[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation);
+[[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
@@ -25,6 +29,13 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
 std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy /*policy*/) const
 {
     return os::create_key(name, algorithm);
+}
+
+std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm,
+                                               std::optional<AttestationRequest> attestation,
+                                               KeyPolicy /*policy*/) const
+{
+    return os::create_key(name, algorithm, std::move(attestation));
 }
 
 std::unique_ptr<KeyPair> OSBackend::open_key(std::string_view name) const

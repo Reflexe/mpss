@@ -5,6 +5,7 @@
 #include "mpss/impl/apple/apple_se_wrapper.h"
 #include "mpss/impl/apple/apple_utils.h"
 #include "mpss/utils/utilities.h"
+#include <optional>
 
 namespace
 {
@@ -17,6 +18,7 @@ namespace mpss::impl::os
 AppleSEKeyPair::AppleSEKeyPair(std::string_view name, Algorithm algorithm)
     : AppleKeyPairBase{name, algorithm, /* hardware_backed */ true, storage_description}
 {
+    set_attestation(std::nullopt);
 }
 
 AppleSEKeyPair::~AppleSEKeyPair()
