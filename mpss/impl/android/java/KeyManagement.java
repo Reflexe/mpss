@@ -416,30 +416,6 @@ public class KeyManagement {
             return Algorithm.undefined;
         }
 
-        public static byte[][] GetAttestationCertificateChain(String keyName) {
-            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-            try {
-                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
-                ks.load(null);
-                Certificate[] chain = ks.getCertificateChain(keyName);
-                if (null == chain || chain.length == 0) {
-                    return new byte[0][];
-                }
-
-                byte[][] out = new byte[chain.length][];
-                for (int i = 0; i < chain.length; ++i) {
-                    out[i] = chain[i].getEncoded();
-                }
-                return out;
-            } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException |
-                     java.security.cert.CertificateEncodingException ex) {
-                String msg = "Error retrieving certificate chain: " + ex.toString();
-                Log.e("MPSS", msg);
-                SetError(msg);
-                return new byte[0][];
-            }
-        }
-
         switch(pk.length) {
             case 65:
                 return Algorithm.secp256r1;
@@ -449,6 +425,30 @@ public class KeyManagement {
                 return Algorithm.secp521r1;
             default:
                 return Algorithm.undefined;
+        }
+    }
+
+    public static byte[][] GetAttestationCertificateChain(String keyName) {
+        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+        try {
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            Certificate[] chain = ks.getCertificateChain(keyName);
+            if (null == chain || chain.length == 0) {
+                return new byte[0][];
+            }
+
+            byte[][] out = new byte[chain.length][];
+            for (int i = 0; i < chain.length; ++i) {
+                out[i] = chain[i].getEncoded();
+            }
+            return out;
+        } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException |
+                 java.security.cert.CertificateEncodingException ex) {
+            String msg = "Error retrieving certificate chain: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return new byte[0][];
         }
     }
 

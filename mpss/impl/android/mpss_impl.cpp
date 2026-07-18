@@ -48,7 +48,7 @@ bool DeleteKeyOnFailure(std::string_view name)
     }
 
     jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mi, keyName.get()));
-    return !result.is_null() && utils::UnboxBoolean(guard.Env(), result.get());
+    return !result.is_null() && mpss::impl::os::utils::UnboxBoolean(guard.Env(), result.get());
 }
 
 std::vector<std::vector<std::byte>> GetAttestationCertChain(std::string_view name)

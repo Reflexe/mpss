@@ -72,9 +72,9 @@ jobs:
         configuration: [Debug, Release]
         include:
           - configuration: Debug
-            preset: macos-x64-debug
+            preset: macos-arm64-debug
           - configuration: Release
-            preset: macos-x64-release
+            preset: macos-arm64-release
 
     steps:
       - uses: actions/checkout@v4
