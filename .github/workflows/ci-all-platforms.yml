@@ -56,11 +56,11 @@ jobs:
 
       - name: Run MPSS unit tests
         shell: bash
-        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=-*CertificateChainSerialization*"
+        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=-*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
       - name: Run MPSS E2E tests
         shell: bash
-        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=*CertificateChainSerialization*"
+        run: out/build/${{ matrix.preset }}/bin/${{ matrix.configuration }}/mpss_tests.exe "--gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
   macos:
     name: macOS ${{ matrix.configuration }}
@@ -107,11 +107,11 @@ jobs:
 
       - name: Run MPSS unit tests
         shell: bash
-        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=-*CertificateChainSerialization*"
+        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=-*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
       - name: Run MPSS E2E tests
         shell: bash
-        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=*CertificateChainSerialization*"
+        run: out/build/${{ matrix.preset }}/bin/mpss_tests "--gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
   android:
     name: Android E2E validation ${{ matrix.configuration }}
@@ -242,7 +242,7 @@ jobs:
             for file in android-e2e-x64/*; do
               adb push "$file" /data/local/tmp/
             done
-            adb shell "cd /data/local/tmp && chmod +x mpss_tests && LD_LIBRARY_PATH=/data/local/tmp ./mpss_tests --gtest_filter=*CertificateChainSerialization*"
+            adb shell "cd /data/local/tmp && chmod +x mpss_tests && LD_LIBRARY_PATH=/data/local/tmp ./mpss_tests --gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
   ios:
     name: iOS E2E validation ${{ matrix.configuration }}
@@ -322,5 +322,5 @@ jobs:
           xcrun simctl bootstatus "$SIM_UDID" -b
           xcrun simctl install "$SIM_UDID" "$APP_PATH"
           APP_CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" "$BUNDLE_ID")
-          xcrun simctl spawn "$SIM_UDID" "$APP_CONTAINER/mpss_tests" "--gtest_filter=*CertificateChainSerialization*"
+          xcrun simctl spawn "$SIM_UDID" "$APP_CONTAINER/mpss_tests" "--gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
           xcrun simctl spawn "$SIM_UDID" "$APP_CONTAINER/mpss_tests" "--gtest_filter=AttestationPolicyTest.AutoSelectPrefersManagedDeviceWhenAvailable:AttestationPolicyTest.MdmOnlyAndAppAttestOnlySelectionRules:MockPkiTest.AppleAppAttestIsMarkedAsWeakerAssurance:MockPkiTest.AcceptsAppleAcmeManagedDeviceEvidence:MockPkiTest.RejectsAppleAcmeManagedDeviceEvidenceWithoutCertChain"

@@ -38,4 +38,4 @@ ACME Managed Device Attestation is the stronger Apple managed-device alternative
 
 ## Reference implementation seam
 
-`tests/mock_pki/` is the in-process reference verifier used in tests. It is exercised by `tests/attestation_tests.cpp` (unit CI path), while OpenSSL certificate-chain serialization E2E coverage runs via `tests/mpss_openssl_e2e_test.cpp` in CI. The mock verifier performs real X.509 chain validation against configured trusted roots for Android/Windows/Apple-ACME evidence (mocking only the transport/service boundary). Production PKI integrations still own platform-root management and policy.
+`tests/mock_pki/` is the in-process reference verifier used in tests. It is exercised by `tests/attestation_tests.cpp` (unit CI path) and by the attestation full-flow E2E test in CI, while OpenSSL certificate-chain serialization E2E coverage runs via `tests/mpss_openssl_e2e_test.cpp`. The mock verifier performs real X.509 chain validation against configured trusted roots for Android/Windows/Apple-ACME evidence (mocking only the transport/service boundary). Production PKI integrations still own platform-root management and policy.

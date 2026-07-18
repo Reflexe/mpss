@@ -5,6 +5,7 @@
 #include "mpss/attestation.h"
 #include "mpss/impl/apple/attestation_policy.h"
 #include "mpss/mpss.h"
+#include "mpss/utils/scope_guard.h"
 #include "tests/mock_pki/mock_pki.h"
 #include <gtest/gtest.h>
 #include <openssl/evp.h>
@@ -266,6 +267,12 @@ MockChainBundle BuildMockChain(std::string_view root_cn, std::string_view interm
     return bundle;
 }
 
+std::string MakeUniqueE2EAttestationKeyName()
+{
+    static std::size_t counter = 0;
+    return "attestation_full_e2e_key_" + std::to_string(++counter);
+}
+
 } // namespace
 
 TEST(AttestationApiTest, EmptyChallengeFailsCreate)
@@ -313,6 +320,72 @@ TEST(AttestationPolicyTest, MdmOnlyAndAppAttestOnlySelectionRules)
               impl::os::select_apple_attestation_selection(AppleAttestationPolicy::app_attest_only, false, false));
     EXPECT_EQ(impl::os::AppleAttestationSelection::app_attest,
               impl::os::select_apple_attestation_selection(AppleAttestationPolicy::app_attest_only, true, true));
+}
+
+TEST(AttestationE2ETest, FullAttestationWithMockPkiService)
+{
+    if (!mpss::is_algorithm_available(Algorithm::ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    mock_pki::MockPkiService pki;
+    const auto challenge = pki.issue_challenge();
+
+    AttestationRequest request{};
+    request.challenge = challenge;
+    request.requirement = AttestationRequirement::request;
+
+    auto key = KeyPair::Create(MakeUniqueE2EAttestationKeyName(), Algorithm::ecdsa_secp256r1_sha256, request);
+    ASSERT_NE(nullptr, key);
+
+    SCOPE_GUARD({
+        if (nullptr != key)
+        {
+            key->delete_key();
+        }
+    });
+
+    if (!key->supports_attestation())
+    {
+        GTEST_SKIP() << "Backend does not report attestation support.";
+    }
+
+    const auto evidence = key->attestation();
+    if (!evidence.has_value())
+    {
+        GTEST_SKIP() << "Backend did not produce attestation evidence.";
+    }
+
+    if (AttestationFormat::none == evidence->format)
+    {
+        GTEST_SKIP() << "Attestation evidence format is none.";
+    }
+
+    if (!evidence->cert_chain.empty())
+    {
+        pki.set_trusted_root(evidence->format, evidence->cert_chain.back());
+    }
+    else if (AttestationFormat::apple_app_attest != evidence->format)
+    {
+        GTEST_SKIP() << "Attestation evidence does not include a certificate chain for this format.";
+    }
+
+    std::vector<std::byte> csr_public_key(key->extract_key({}));
+    ASSERT_FALSE(csr_public_key.empty());
+    ASSERT_EQ(csr_public_key.size(), key->extract_key(csr_public_key));
+
+    const auto result = pki.submit(mock_pki::MockCsr{csr_public_key}, *evidence, evidence->format);
+    EXPECT_TRUE(result.signed_cert);
+    EXPECT_FALSE(result.reject_reason.has_value());
+    if (AttestationFormat::apple_app_attest == evidence->format)
+    {
+        EXPECT_TRUE(result.weaker_assurance);
+    }
+    else
+    {
+        EXPECT_FALSE(result.weaker_assurance);
+    }
 }
 
 TEST(MockPkiTest, AcceptsAndroidEvidence)
