@@ -31,6 +31,14 @@ class OSBackend : public Backend
     std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const override;
 
     [[nodiscard]]
+    std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                        std::optional<AttestationRequest> attestation,
+                                        KeyPolicy policy) const override;
+
+    [[nodiscard]]
+    AttestationCapability attestation_capability() const override;
+
+    [[nodiscard]]
     std::unique_ptr<KeyPair> open_key(std::string_view name) const override;
 
     [[nodiscard]]

@@ -92,6 +92,13 @@ namespace mpss::impl::os
 
 using enum Algorithm;
 
+AttestationCapability attestation_capability()
+{
+    // Android attests a named key via KeyGenParameterSpec.setAttestationChallenge. Real evidence
+    // generation lands in Stage 2; the capability is reported honestly now.
+    return AttestationCapability::key_attestation;
+}
+
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
     if (name.empty())

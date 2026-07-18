@@ -463,12 +463,27 @@ export(
 # Test suite.
 if(MPSS_BUILD_TESTS)
     find_package(GTest CONFIG REQUIRED)
+    # The attestation test harness (test CA + mock PKI) uses OpenSSL directly.
+    find_package(OpenSSL 3 REQUIRED)
+
+    # Build the shared attestation verifier in-tree for the test suite to consume. Its
+    # install/export is deferred to a later stage (see docs/attestation-design.md).
+    set(mpss_attest_verify_SOURCE_FILES "")
+    add_subdirectory(mpss-attest-verify)
+    add_library(mpss_attest_verify STATIC ${mpss_attest_verify_SOURCE_FILES})
+    target_compile_features(mpss_attest_verify PUBLIC cxx_std_20)
+    target_include_directories(mpss_attest_verify PUBLIC
+        $<BUILD_INTERFACE:${mpss_INCLUDES_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    )
 
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
 
     add_executable(mpss_tests ${mpss_TESTS_FILES})
     target_link_libraries(mpss_tests PRIVATE GTest::gtest)
+    target_link_libraries(mpss_tests PRIVATE mpss_attest_verify)
+    target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
 
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.

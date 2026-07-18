@@ -14,7 +14,8 @@
     "tests": {
       "description": "Build the test suite.",
       "dependencies": [
-        "gtest"
+        "gtest",
+        "openssl"
       ]
     },
     "yubikey": {

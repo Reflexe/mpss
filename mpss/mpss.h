@@ -4,11 +4,13 @@
 #pragma once
 
 #include "mpss/algorithm.h"
+#include "mpss/attestation.h"
 #include "mpss/defines.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -164,6 +166,21 @@ class MPSS_DECOR KeyPair
                                            KeyPolicy policy = KeyPolicy::none);
 
     /**
+     * @brief Creates a new key pair, optionally requesting hardware attestation evidence.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
+     * must be non-empty, otherwise creation fails.
+     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
+     * @return Key pair if created successfully, nullptr otherwise.
+     * @note In Stage 1 no backend produces evidence yet; @ref attestation always returns nullopt.
+     */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
+                                           std::optional<AttestationRequest> attestation,
+                                           KeyPolicy policy = KeyPolicy::none);
+
+    /**
      * @brief Creates a new key pair using a specific backend.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
@@ -174,6 +191,30 @@ class MPSS_DECOR KeyPair
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                            KeyPolicy policy = KeyPolicy::none);
+
+    /**
+     * @brief Creates a new key pair using a specific backend, optionally requesting attestation.
+     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
+     * must be non-empty, otherwise creation fails.
+     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
+     * @return Key pair if created successfully, nullptr otherwise.
+     */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                           std::optional<AttestationRequest> attestation,
+                                           KeyPolicy policy = KeyPolicy::none);
+
+    /**
+     * @brief Reports what kind of attestation a backend can produce.
+     * @param[in] backend_name The backend to query (defaults to "os").
+     * @return The backend's @ref AttestationCapability, or AttestationCapability::none if the
+     * backend is unknown or cannot attest keys.
+     */
+    [[nodiscard]]
+    static AttestationCapability attestation_capability(std::string_view backend_name = "os");
 
     /**
      * @brief Opens the key pair with the given name.
@@ -240,6 +281,28 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     virtual std::size_t extract_key(std::span<std::byte> public_key) const = 0;
+
+    /**
+     * @brief Whether this key pair has real, attached attestation evidence.
+     * @return true only when @ref attestation returns evidence. Backends that do not (yet)
+     * produce evidence inherit this default of false.
+     */
+    [[nodiscard]]
+    virtual bool supports_attestation() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The attestation evidence attached to this key pair, if any.
+     * @return The evidence, or std::nullopt when none is attached. In Stage 1 no backend
+     * produces evidence, so this returns std::nullopt.
+     */
+    [[nodiscard]]
+    virtual std::optional<AttestationEvidence> attestation() const
+    {
+        return std::nullopt;
+    }
 
     /**
      * @brief A convenience method to return the required public (verification) key buffer size.

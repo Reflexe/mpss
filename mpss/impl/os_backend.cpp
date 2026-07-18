@@ -3,6 +3,7 @@
 
 #include "mpss/impl/os_backend.h"
 #include "mpss/impl/backend_registry.h"
+#include "mpss/utils/utilities.h"
 
 namespace mpss::impl
 {
@@ -19,12 +20,32 @@ std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig);
+[[nodiscard]]
+AttestationCapability attestation_capability();
 
 } // namespace os
 
 std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy /*policy*/) const
 {
     return os::create_key(name, algorithm);
+}
+
+std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm,
+                                               std::optional<AttestationRequest> attestation,
+                                               KeyPolicy /*policy*/) const
+{
+    // Stage 1: the OS backends do not emit attestation evidence yet. Create the key exactly as
+    // before; the request is ignored and the key reports supports_attestation() == false.
+    if (attestation.has_value())
+    {
+        utils::log_debug("OS backend does not produce attestation evidence yet; creating key '{}' without it.", name);
+    }
+    return os::create_key(name, algorithm);
+}
+
+AttestationCapability OSBackend::attestation_capability() const
+{
+    return os::attestation_capability();
 }
 
 std::unique_ptr<KeyPair> OSBackend::open_key(std::string_view name) const

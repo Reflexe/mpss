@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include "mpss/attestation.h"
 #include "mpss/mpss.h"
+#include <optional>
 #include <vector>
 
 namespace mpss::impl
@@ -36,6 +38,32 @@ class Backend
      */
     [[nodiscard]]
     virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const = 0;
+
+    /**
+     * @brief Create a new key pair, optionally requesting attestation evidence.
+     *
+     * The default implementation ignores the attestation request and delegates to the
+     * three-argument @ref create_key. Backends that can attest keys override this.
+     *
+     * @param[in] name The name of the key pair.
+     * @param[in] algorithm The signature algorithm to use.
+     * @param[in] attestation Optional nonce-bound attestation request.
+     * @param[in] policy Backend-specific key policy.
+     * @return Key pair if successful, nullptr otherwise.
+     */
+    [[nodiscard]]
+    virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                                std::optional<AttestationRequest> attestation, KeyPolicy policy) const;
+
+    /**
+     * @brief Report what kind of attestation this backend can produce.
+     * @return The backend's @ref AttestationCapability. Defaults to none.
+     */
+    [[nodiscard]]
+    virtual AttestationCapability attestation_capability() const
+    {
+        return AttestationCapability::none;
+    }
 
     /**
      * @brief Open an existing key pair.
@@ -77,6 +105,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
                                     KeyPolicy policy);
 
 [[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation, KeyPolicy policy);
+
+[[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name);
 
 [[nodiscard]]
@@ -92,6 +124,16 @@ bool is_algorithm_available(Algorithm algorithm);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
+
+[[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    std::optional<AttestationRequest> attestation, KeyPolicy policy);
+
+/// @brief Report what kind of attestation a backend can produce.
+/// @param[in] backend_name The backend to query.
+/// @return The backend's capability, or AttestationCapability::none if the backend is unknown.
+[[nodiscard]]
+AttestationCapability attestation_capability(std::string_view backend_name);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
