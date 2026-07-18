@@ -16,23 +16,26 @@ permissions:
 
 jobs:
   windows-probe:
-    name: Windows TPM capability
+    name: Windows TPM + VBS capability
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: TPM presence
+      - name: TPM + VBS status
+        continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           Write-Host "=== Get-Tpm ==="
-          try { Get-Tpm | Format-List TpmPresent, TpmReady, TpmEnabled, ManufacturerIdTxt, ManufacturerVersion } catch { Write-Host "Get-Tpm failed: $($_.Exception.Message)" }
-          Write-Host "=== Win32_Tpm (CIM) ==="
-          try { Get-CimInstance -Namespace 'root/cimv2/Security/MicrosoftTpm' -ClassName Win32_Tpm | Format-List IsEnabled_InitialValue, IsActivated_InitialValue, ManufacturerIdTxt, SpecVersion } catch { Write-Host "CIM query failed: $($_.Exception.Message)" }
-          Write-Host "=== certutil -csplist (KSPs) ==="
+          try { Get-Tpm | Format-List TpmPresent, TpmReady, TpmEnabled, ManufacturerIdTxt } catch { Write-Host "Get-Tpm failed: $($_.Exception.Message)" }
+          Write-Host "=== DeviceGuard / VBS ==="
+          try { Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard | Format-List VirtualizationBasedSecurityStatus, SecurityServicesConfigured, SecurityServicesRunning, AvailableSecurityProperties } catch { Write-Host "DeviceGuard query failed: $($_.Exception.Message)" }
+          Write-Host "=== KSPs ==="
           (certutil -csplist) -match 'Platform Crypto|Passport|Pluton'
 
-      - name: Create TPM-backed key via Platform Crypto Provider
+      - name: TPM key + NCryptCreateClaim probe
+        continue-on-error: true
         shell: pwsh
         run: |
           $name = "mpss_ci_probe_" + [guid]::NewGuid().ToString("N")
@@ -46,15 +49,17 @@ jobs:
           } catch {
             Write-Host "TPM_KEY_CREATE=FAILED $($_.Exception.GetType().Name): $($_.Exception.Message)"
           }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "call `"$vcvars`" && cl /nologo /EHsc ci-probe\claim_probe.cpp /Fe:claim_probe.exe && claim_probe.exe"
 
-      - name: NCryptCreateClaim probe (best-effort)
-        shell: pwsh
+      - name: VBS key + VBS claim probe
         continue-on-error: true
+        shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          Write-Host "vcvars: $vcvars"
-          cmd /c "call `"$vcvars`" && cl /nologo /EHsc ci-probe\claim_probe.cpp /Fe:claim_probe.exe && claim_probe.exe"
+          cmd /c "call `"$vcvars`" && cl /nologo /EHsc ci-probe\vbs_probe.cpp /Fe:vbs_probe.exe && vbs_probe.exe"
 
   macos-probe:
     name: macOS + iOS-Simulator capability
