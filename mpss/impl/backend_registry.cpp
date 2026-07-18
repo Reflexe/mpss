@@ -9,8 +9,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
-#include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -72,7 +70,7 @@ void register_yubikey_backend();
  * @brief Registry for managing multiple backend implementations.
  *
  * The registry allows registration of multiple backends and selection
- * of the default backend based on environment variables or system defaults.
+ * of the default backend based on platform defaults.
  * This class is an implementation detail and is not exposed in the public API.
  */
 class BackendRegistry
@@ -187,23 +185,6 @@ class BackendRegistry
 #ifdef MPSS_BACKEND_YUBIKEY
         register_yubikey_backend();
 #endif
-
-        // Check MPSS_DEFAULT_BACKEND environment variable.
-        const char *env_backend = std::getenv("MPSS_DEFAULT_BACKEND"); // NOLINT(concurrency-mt-unsafe)
-        if (nullptr != env_backend && std::strlen(env_backend) > 0)
-        {
-            const std::string requested{env_backend};
-            const auto it = backends_.find(requested);
-            if (backends_.end() != it)
-            {
-                default_backend_ = it->second;
-                initialized_.store(true, std::memory_order_release);
-                utils::log_trace("Using backend '{}' from MPSS_DEFAULT_BACKEND.", requested);
-                return;
-            }
-            utils::log_and_set_error("Requested backend '{}' not found.", requested);
-            return;
-        }
 
         // Fall back to platform default.
         const char *default_name = platform_default_backend_name();
