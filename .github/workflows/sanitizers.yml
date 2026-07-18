@@ -1,0 +1,84 @@
+name: Sanitizers
+
+# Memory-safety / UB verification for the mpss test suite. Kept in its own workflow
+# so it evolves independently of the main build+test pipeline (ci.yml).
+#
+# Linux is the only reliable full ASan+UBSan target (no Swift/ObjC in the build path,
+# and clang/gcc sanitizer support is solid). mpss has no native Linux backend, so the
+# suite is built with the YubiKey backend; the hardware-backed key tests self-skip,
+# but the backend-INDEPENDENT code — most importantly the reference-PEM binary
+# parser/encoder (mpss-openssl/provider/reference.cpp) and its bounds checks — runs
+# under the sanitizers, which is exactly the new, highest-risk code we want verified.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  asan-ubsan:
+    name: Linux ASan+UBSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pcsclite (YubiKey backend dependency)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: sanitizers-vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            sanitizers-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure (Debug, ASan + UBSan)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAN_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g"
+          cmake -S . -B build-asan -GNinja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+            -DMPSS_BUILD_TESTS=ON \
+            -DMPSS_BACKEND_YUBIKEY=ON \
+            -DMPSS_ENABLE_HARDENING=OFF \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_C_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_CXX_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-asan
+
+      - name: Run test suite under sanitizers
+        shell: bash
+        env:
+          # Leak detection is disabled: unsanitized vcpkg OpenSSL keeps intentional
+          # process-lifetime allocations that LSan would flag as false positives. We
+          # want memory-safety errors (OOB / use-after-free) and UB, not leaks.
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: build-asan/bin/mpss_tests
