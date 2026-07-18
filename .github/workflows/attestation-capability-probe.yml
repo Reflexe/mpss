@@ -61,6 +61,14 @@ jobs:
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
           cmd /c "call `"$vcvars`" && cl /nologo /EHsc ci-probe\vbs_probe.cpp /Fe:vbs_probe.exe && vbs_probe.exe"
 
+      - name: VBS root public key (global vs per-machine test)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "call `"$vcvars`" && cl /nologo /EHsc ci-probe\vbs_root_probe.cpp /Fe:vbs_root_probe.exe && vbs_root_probe.exe"
+
   macos-probe:
     name: macOS + iOS-Simulator capability
     runs-on: macos-latest
