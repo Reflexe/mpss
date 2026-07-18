@@ -239,7 +239,8 @@ jobs:
           disable-animations: true
           script: |
             adb devices
-            for file in "$GITHUB_WORKSPACE"/android-e2e-x64/*; do adb push "$file" /data/local/tmp/; done
+            REPO_ROOT="$(git rev-parse --show-toplevel)"
+            for file in "$REPO_ROOT"/android-e2e-x64/*; do adb push "$file" /data/local/tmp/; done
             adb shell "cd /data/local/tmp && chmod +x mpss_tests && LD_LIBRARY_PATH=/data/local/tmp ./mpss_tests --gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
 
   ios:
@@ -296,9 +297,10 @@ jobs:
       - name: Run iOS simulator E2E tests
         shell: bash
         run: |
-          APP_PATH="$GITHUB_WORKSPACE/build-ios-sim-${{ matrix.configuration }}/bin/${{ matrix.configuration }}/mpss_tests.app"
+          REPO_ROOT="$(git rev-parse --show-toplevel)"
+          APP_PATH="$REPO_ROOT/build-ios-sim-${{ matrix.configuration }}/bin/${{ matrix.configuration }}/mpss_tests.app"
           if [ ! -d "$APP_PATH" ]; then
-            APP_PATH=$(find "$GITHUB_WORKSPACE/build-ios-sim-${{ matrix.configuration }}" -type d -name mpss_tests.app | head -n 1)
+            APP_PATH=$(find "$REPO_ROOT/build-ios-sim-${{ matrix.configuration }}" -type d -name mpss_tests.app | head -n 1)
           fi
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "mpss_tests.app not found" >&2
