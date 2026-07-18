@@ -141,17 +141,8 @@ enum class AttestationFormat {
     none,
     android_key_attestation,      // X.509 chain, ext 1.3.6.1.4.1.11129.2.1.17
     apple_acme_managed_device,    // X.509 chain (ACME device-attest-01) — the ONLY Apple path
-    windows_tpm_claim,            // NCryptCreateClaim AUTHORITY_AND_SUBJECT / PLATFORM
-    windows_vbs_claim             // NCryptCreateClaim VBS_ROOT / VBS_IDENTITY — NOT real attestation
-};
-
-// Assurance is surfaced to the relying party so a caller can NEVER mistake VBS for
-// externally-verifiable hardware attestation. Distinct from AttestationFormat.
-enum class AttestationAssurance {
-    none,
-    hardware_root_verified,  // chained to a PUBLISHED vendor root: Android TEE/StrongBox, Windows TPM, Apple ACME
-    vbs_self_asserted,       // Windows VBS/Key Guard: key PROTECTION only; per-boot root, NOT a provenance proof
-    software                 // emulator/simulator software attestation: no hardware guarantee
+    windows_tpm_claim,            // NCryptCreateClaim AUTHORITY_AND_SUBJECT / PLATFORM (TPM; externally verifiable)
+    windows_vbs_claim             // NCryptCreateClaim VBS_ROOT / VBS_IDENTITY (VBS/Key Guard; NOT real attestation)
 };
 
 struct AttestationEvidence {
@@ -162,9 +153,11 @@ struct AttestationEvidence {
 };
 ```
 - No app-defined framing; the nonce/public key are read from the *signed* structure.
-- The verifier fills `security_level` and `AttestationAssurance` from the parsed evidence.
-- **`windows_vbs_claim` is a first-class, distinct format** — never folded into the TPM
-  format — so both the producer and the relying party always see "this is VBS."
+- The verifier fills `security_level` from the parsed evidence.
+- **The format IS the signal.** `windows_vbs_claim` is a first-class format, distinct from
+  `windows_tpm_claim` and never folded into it — so producer and relying party always see
+  "this is VBS." No separate assurance concept: a relying party that requires real
+  attestation simply refuses the `windows_vbs_claim` format.
 
 ### 6.2 Capability-scoped API
 Keep the named-key `Create(..., attestation)` for **Android/Windows** (which attest a
@@ -190,11 +183,10 @@ public:
      std::function<std::chrono::system_clock::time_point()>     clock;   // injectable (replay)
      std::function<bool(std::span<const std::byte> serial)>     is_revoked;
      AttestationSecurityLevel min_security_level;
-     bool accept_vbs_self_asserted{false};  // MUST opt in; VBS is never accepted as real attestation by default
   };
   struct Result {
      bool ok{false};
-     AttestationAssurance    assurance{AttestationAssurance::none};      // surfaced to the caller
+     AttestationFormat        format{AttestationFormat::none};   // caller distinguishes real vs VBS by this
      AttestationSecurityLevel security_level{AttestationSecurityLevel::unknown};
      std::string reason;
   };
@@ -203,10 +195,10 @@ public:
 };
 ```
 - Per-format verifiers behind one interface; injectable clock + roots + revocation.
-- **VBS is never reported as `hardware_root_verified`.** A `windows_vbs_claim` always
-  yields `assurance = vbs_self_asserted`, and `verify` **rejects it by default** unless
-  `Policy.accept_vbs_self_asserted` is set — so a relying party cannot silently accept VBS
-  as externally-verifiable hardware attestation.
+- **The format carries the distinction.** `verify` echoes the `format` in the result; a
+  relying party that requires externally-verifiable attestation refuses the
+  `windows_vbs_claim` format (it can't chain to a published root). No separate assurance
+  flag — the format alone tells the caller it is VBS, not TPM.
 - The PR #1 mock "PKI" is reduced to nonce issue/expire/replay bookkeeping + a call into
   this verifier; its ad-hoc blob parsing is deleted.
 
@@ -272,10 +264,9 @@ real evidence and CSR keys actually match.
   for the VBS attestation code path (real create→claim→parse→verify on every PR). **Not**
   presented as production-verifiable attestation.
 - **Surfacing (decision #2 — must be unmistakable):** VBS evidence is emitted only under the
-  distinct `windows_vbs_claim` format, and the verifier reports it as `vbs_self_asserted`
-  and **rejects it by default** (explicit `accept_vbs_self_asserted` opt-in required). Any
-  consumer therefore sees, unambiguously, that the evidence is VBS and is **not** proof of
-  hardware provenance.
+  **distinct `windows_vbs_claim` format** (never the TPM format). The format alone tells any
+  consumer, unambiguously, that this is VBS — not TPM and not externally-verifiable
+  provenance. A relying party requiring real attestation simply refuses that format.
 - **Test cases:** TV-1 generate→verify on hosted runner → VERIFIED (CI, self-verification,
   labeled test-only); TV-2 tampered claim → verify fails; TV-3 assert IDKS is *not* treated
   as a trust anchor by the production verifier.
@@ -346,9 +337,10 @@ device, expected nonce/level); clock pinned to capture date; roots pinned (never
 1. **Apple: ACME only.** Real Apple key attestation = ACME Managed Device Attestation on
    managed, physical Apple-Silicon devices. App Attest is **dropped** (not key attestation).
    Unmanaged Apple devices are **unsupported** for key attestation.
-2. **Windows VBS = key-protection + CI-test-lane only, and unmistakable.** VBS uses the
-   distinct `windows_vbs_claim` format; the verifier reports `vbs_self_asserted` and rejects
-   it by default (opt-in required). Never presented as proper attestation.
+2. **Windows VBS = key-protection + CI-test-lane only, and unmistakable.** The signal is the
+   **format**: VBS uses the distinct `windows_vbs_claim` format (never the TPM format), so a
+   consumer always sees it's VBS. No separate assurance concept; a relying party requiring
+   real attestation refuses that format. Never presented as proper attestation.
 3. **Real-hardware capture lanes approved** (self-hosted vTPM VM, device farm, physical
    enrolled Mac).
 4. **Windows: EC via direct `NCryptCreateClaim`** + our verifier (published EK roots). The
