@@ -323,3 +323,4 @@ jobs:
           xcrun simctl install "$SIM_UDID" "$APP_PATH"
           APP_CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" "$BUNDLE_ID")
           xcrun simctl spawn "$SIM_UDID" "$APP_CONTAINER/mpss_tests" "--gtest_filter=*CertificateChainSerialization*"
+          xcrun simctl spawn "$SIM_UDID" "$APP_CONTAINER/mpss_tests" "--gtest_filter=AttestationPolicyTest.AutoSelectPrefersManagedDeviceWhenAvailable:AttestationPolicyTest.MdmOnlyAndAppAttestOnlySelectionRules:MockPkiTest.AppleAppAttestIsMarkedAsWeakerAssurance:MockPkiTest.AcceptsAppleAcmeManagedDeviceEvidence:MockPkiTest.RejectsAppleAcmeManagedDeviceEvidenceWithoutCertChain"
