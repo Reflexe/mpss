@@ -1,0 +1,9 @@
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# Native libraries are cross-compiled and staged by CI, never committed.
+src/main/jniLibs/

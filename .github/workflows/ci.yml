@@ -140,8 +140,10 @@ jobs:
         run: cmake --build "out/build/${{ matrix.preset }}"
 
   # -------------------------------------------------------------------------
-  # Android: cross-compile the shared libraries for both shipped ABIs. Build
-  # only (no emulator gate). Mirrors the proven Azure DevOps recipe.
+  # Android: build a static test shim, stage it into a tiny instrumented app,
+  # and RUN the gtest suite on an emulator against the real Keystore backend
+  # (the backend needs a JVM, bound in JNI_OnLoad, so a bare binary can't run
+  # it). Also cross-compiles the shipped arm64-v8a libs as a packaging guard.
   # -------------------------------------------------------------------------
   android:
     name: Android ${{ matrix.configuration }}
@@ -154,21 +156,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # JDK 21: supported by Gradle 8.7 + AGP 8.5.2, and the shipped Android
+      # CMake compiles the mpss JAR with `--release 21` (a JDK 17 javac cannot).
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
+      # KVM permissions for the hardware-accelerated emulator; without this the
+      # emulator cannot start on the hosted runner.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Cache vcpkg archives
         uses: actions/cache@v4
         with:
           path: ~/.cache/vcpkg/archives
-          key: android-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}
+          key: android-vcpkg-${{ hashFiles('vcpkg.json', 'tests/android/jni/vcpkg.json') }}-${{ matrix.configuration }}
           restore-keys: |
-            android-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            android-vcpkg-${{ hashFiles('vcpkg.json', 'tests/android/jni/vcpkg.json') }}-
             android-vcpkg-
 
-      - name: Resolve Android NDK and API level
+      # API 28 platform for the mpss JAR compile (add_jar uses android-<version>.jar).
+      - name: Install Android platform 28
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-28" > /dev/null
+
+      - name: Resolve Android NDK
         id: ndk
         shell: bash
         run: |
@@ -179,13 +198,7 @@ jobs:
             NDK_ROOT=$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)
           fi
           [ -d "$NDK_ROOT" ] || { echo "Android NDK not found" >&2; exit 1; }
-          if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
-            API=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
-          else
-            API=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
-          fi
           echo "ndk=$NDK_ROOT" >> "$GITHUB_OUTPUT"
-          echo "api=$API" >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap vcpkg
         shell: bash
@@ -197,26 +210,95 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
 
-      - name: Build shared libraries (x86_64 + arm64-v8a)
+      # Static x86_64 (API 28) build, installed so the shim can find_package it.
+      # MPSS_ALLOW_ANDROID_STATIC opts past the shared-only guard for the harness.
+      - name: Build and install static mpss (x86_64, API 28)
         shell: bash
         run: |
           set -euo pipefail
-          build_abi() {
-            local abi="$1" triplet="$2"
-            cmake -S . -B "build-$abi" -GNinja \
-              -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
-              -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
-              -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
-              -DCMAKE_SYSTEM_NAME=Android \
-              -DCMAKE_SYSTEM_VERSION="${{ steps.ndk.outputs.api }}" \
-              -DCMAKE_ANDROID_ARCH_ABI="$abi" \
-              -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
-              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-              -DVCPKG_TARGET_TRIPLET="$triplet"
-            cmake --build "build-$abi"
-          }
-          build_abi x86_64 x64-android
-          build_abi arm64-v8a arm64-android
+          cmake -S . -B build-x86_64 -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+            -DMPSS_ALLOW_ANDROID_STATIC=ON \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-android
+          cmake --build build-x86_64
+          cmake --install build-x86_64 --prefix "$PWD/install-x86_64"
+
+      # One shared object with the whole stack statically linked -> a single
+      # OpenSSL instance in the process.
+      - name: Build JNI test shim (x86_64, API 28)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tests/android/jni -B build-jni -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-android \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -Dmpss_ROOT="$PWD/install-x86_64"
+          cmake --build build-jni
+
+      - name: Stage jniLibs (shim + libc++_shared)
+        shell: bash
+        run: |
+          set -euo pipefail
+          abidir=tests/android/src/main/jniLibs/x86_64
+          mkdir -p "$abidir"
+          cp build-jni/libmpss_tests_jni.so "$abidir/"
+          libcxx=$(find "${{ steps.ndk.outputs.ndk }}" -name libc++_shared.so -path '*x86_64*' | head -n1)
+          [ -n "$libcxx" ] || { echo "x86_64 libc++_shared.so not found" >&2; exit 1; }
+          cp "$libcxx" "$abidir/"
+          ls -l "$abidir"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Run instrumented tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            cd tests/android
+            adb logcat -c || true
+            set +e
+            gradle connectedDebugAndroidTest --stacktrace --no-daemon
+            status=$?
+            echo "===== logcat (MpssTests / TestRunner) ====="
+            adb logcat -d -s MpssTests:V TestRunner:I AndroidRuntime:E DEBUG:F | tail -n 500
+            exit $status
+
+      # Shipping guard: the arm64-v8a shared libraries must still cross-compile.
+      - name: Build shipped shared mpss (arm64-v8a, API 28)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-arm64 -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=28 \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=arm64-android
+          cmake --build build-arm64
 
   # -------------------------------------------------------------------------
   # iOS: build the XCFrameworks (device + simulator slices) via the project's

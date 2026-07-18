@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.application' version '8.5.2'
+}
+
+android {
+    namespace 'com.microsoft.research.mpss.test.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.microsoft.research.mpss.test.app'
+        minSdk 28
+        targetSdk 34
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // Reuse the shipped Keystore backend Java so the app classloader exposes the
+    // classes the native backend resolves via FindClass.
+    sourceSets.main.java.srcDirs += '../../mpss/impl/android/java'
+}
+
+dependencies {
+    androidTestImplementation 'androidx.test:core:1.5.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+}

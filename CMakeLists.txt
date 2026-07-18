@@ -12,6 +12,11 @@ option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
+# Opt-in escape hatch for the internal Android instrumented-app test harness,
+# which statically links the whole stack into a single .so. Off by default, so
+# every shipped Android build keeps the shared-libraries-only guard below.
+option(MPSS_ALLOW_ANDROID_STATIC "Allow static Android libraries (test harness only)." NO)
+
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
 # default to building shared libraries. Explicit -D options take precedence.
 if(BUILD_SHARED_LIBS)
@@ -252,8 +257,11 @@ if(MPSS_BUILD_MPSS_OPENSSL_STATIC OR MPSS_BUILD_MPSS_OPENSSL_SHARED)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Android")
-    if(MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_OPENSSL_STATIC)
-        # Android does not support static libraries.
+    if((MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_OPENSSL_STATIC) AND NOT MPSS_ALLOW_ANDROID_STATIC)
+        # Android ships shared libraries plus a JAR; static archives are only
+        # produced for the internal instrumented-app test harness, which
+        # aggregates the whole stack into a single .so (opt in with
+        # MPSS_ALLOW_ANDROID_STATIC).
         message(FATAL_ERROR "Static libraries are not supported on Android.")
     endif()
 
