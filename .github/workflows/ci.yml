@@ -185,7 +185,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-28" > /dev/null
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          # `yes` gets SIGPIPE once sdkmanager stops reading; keep it out of
+          # pipefail so the step reflects sdkmanager's exit, not the broken pipe.
+          set +o pipefail
+          yes | "$SDKMGR" "platforms;android-28" > /dev/null
+          set -o pipefail
 
       - name: Resolve Android NDK
         id: ndk
@@ -245,7 +250,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-android \
             -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
-            -Dmpss_ROOT="$PWD/install-x86_64"
+            -Dmpss_ROOT="$PWD/install-x86_64" \
+            -Dmpss_DIR="$PWD/install-x86_64/lib/cmake/mpss"
           cmake --build build-jni
 
       - name: Stage jniLibs (shim + libc++_shared)
