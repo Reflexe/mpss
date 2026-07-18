@@ -300,6 +300,89 @@ TEST_F(MPSS, GetKeySmallBuffer521)
     GetKeySmallBuffer(ecdsa_secp521r1_sha512, "521");
 }
 
+#ifdef _WIN32
+// Scenario: On Windows the creation ladder prefers the TPM-backed Platform Crypto Provider and falls back to VBS.
+// Expected behavior: creation succeeds and reports a hardware-backed storage tier (TPM or VBS).
+TEST_F(MPSS, WindowsTieredCreationReportsStorage)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_tiered_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> handle = MPSS::CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    const mpss::KeyInfo info = handle->key_info();
+    ASSERT_NE(nullptr, info.storage_description);
+    const std::string storage_description = info.storage_description;
+
+    const bool is_tpm = storage_description == "TPM Protection";
+    const bool is_vbs = storage_description == "Virtualization Based Security";
+    EXPECT_TRUE(is_tpm || is_vbs) << "Unexpected storage description: " << storage_description;
+    EXPECT_TRUE(info.is_hardware_backed);
+
+    handle->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: A Windows key is created, its handle released, and then reopened by name.
+// Expected behavior: the reopened key reports the same storage tier as it did at creation.
+TEST_F(MPSS, WindowsReopenStorageReporting)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_reopen_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> created = MPSS::CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, created);
+    ASSERT_NE(nullptr, created->key_info().storage_description);
+    const std::string created_description = created->key_info().storage_description;
+    const bool created_hardware_backed = created->key_info().is_hardware_backed;
+    created->release_key();
+
+    std::unique_ptr<mpss::KeyPair> reopened = mpss::KeyPair::Open(key_name);
+    ASSERT_NE(nullptr, reopened);
+    ASSERT_NE(nullptr, reopened->key_info().storage_description);
+    EXPECT_EQ(created_description, std::string(reopened->key_info().storage_description));
+    EXPECT_EQ(created_hardware_backed, reopened->key_info().is_hardware_backed);
+
+    reopened->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: On a host without the primary tier (TPM), the create ladder's primary attempt fails
+//           internally before the fallback tier succeeds, previously leaving a stale thread-local error.
+// Expected behavior: a successful create leaves no error; get_error() is empty right after Create succeeds.
+TEST_F(MPSS, WindowsSuccessfulCreateClearsStaleError)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_no_stale_error_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> created = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, created);
+    EXPECT_TRUE(mpss::get_error().empty()) << "Successful create left a stale error: " << mpss::get_error();
+
+    created->release_key();
+    MPSS::DeleteKey(key_name);
+}
+#endif
+
 void VerifyStandaloneSignature(Algorithm algorithm, std::string_view suffix, std::size_t hash_size)
 {
     if (!mpss::is_algorithm_available(algorithm))
