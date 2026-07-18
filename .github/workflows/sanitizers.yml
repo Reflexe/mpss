@@ -14,6 +14,12 @@ name: Sanitizers
 #   real exercised code (the Windows backend + the provider using real keys). MSVC has
 #   no UBSan, so this job is ASan-only. Docs:
 #   https://learn.microsoft.com/en-us/cpp/sanitizers/asan
+#
+# * macOS ASan+UBSan (Apple Clang): the hosted macOS runner has a live Secure Enclave
+#   backend, so the key/provider tests RUN here too — this is the strongest target
+#   (real backend + both sanitizers). Sanitizer flags are gated to the C-family
+#   languages; the Apple backend's Swift is left uninstrumented and the runtime is
+#   pulled in at link time.
 on:
   pull_request:
   push:
@@ -141,3 +147,55 @@ jobs:
           $env:PATH = "$($msvc.FullName)\bin\Hostx64\x64;$env:PATH"
           & "out/build/win-vs2022-x64/bin/Release/mpss_tests.exe"
           exit $LASTEXITCODE
+
+  asan-ubsan-macos:
+    name: macOS ASan+UBSan
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: sanitizers-macos-vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            sanitizers-macos-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      # Sanitizer flags are gated to the C-family languages only; the Apple backend's
+      # Swift is left uninstrumented (swiftc has no -fsanitize=undefined) and the
+      # runtime is linked into the executable.
+      - name: Configure (Debug, ASan + UBSan)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAN_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g"
+          cmake -S . --preset macos-arm64-debug \
+            -DMPSS_ENABLE_HARDENING=OFF \
+            -DCMAKE_C_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_CXX_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_OBJC_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_OBJCXX_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        shell: bash
+        run: cmake --build out/build/macos-arm64-debug
+
+      - name: Run test suite under sanitizers
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: out/build/macos-arm64-debug/bin/mpss_tests
