@@ -239,19 +239,11 @@ jobs:
           disable-animations: true
           script: |
             adb devices
-            REPO_ROOT="${GITHUB_WORKSPACE:-$PWD}"
-            [ -d "$REPO_ROOT/android-e2e-x64" ] || { echo "android-e2e-x64 directory not found under '$REPO_ROOT'" >&2; ls -la "$REPO_ROOT" || true; exit 1; }
-            ls -la "$REPO_ROOT/android-e2e-x64"
-            FILE_COUNT=$(find "$REPO_ROOT/android-e2e-x64" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')
-            [ "${FILE_COUNT:-0}" -gt 0 ] || { echo "No Android E2E runtime artifacts found in '$REPO_ROOT/android-e2e-x64'" >&2; exit 1; }
-            find "$REPO_ROOT/android-e2e-x64" -mindepth 1 -maxdepth 1 -type f -exec adb push {} /data/local/tmp/ \;
-            set +e
-            timeout 20m adb shell "cd /data/local/tmp && chmod +x mpss_tests && LD_LIBRARY_PATH=/data/local/tmp ./mpss_tests --gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*"
-            status=$?
-            set -e
-            [ "$status" -eq 0 ] || { echo "Android E2E test command failed with status $status. Dumping logcat tail..." >&2; adb logcat -d | tail -n 400 || true; }
-            [ "$status" -ne 124 ] || echo "Android E2E tests timed out after 20 minutes." >&2
-            exit $status
+            [ -d "${{ github.workspace }}/android-e2e-x64" ] || { echo "android-e2e-x64 directory not found under '${{ github.workspace }}'" >&2; ls -la "${{ github.workspace }}" || true; exit 1; }
+            ls -la "${{ github.workspace }}/android-e2e-x64"
+            find "${{ github.workspace }}/android-e2e-x64" -mindepth 1 -maxdepth 1 -type f | grep -q . || { echo "No Android E2E runtime artifacts found in '${{ github.workspace }}/android-e2e-x64'" >&2; exit 1; }
+            find "${{ github.workspace }}/android-e2e-x64" -mindepth 1 -maxdepth 1 -type f -exec adb push {} /data/local/tmp/ \;
+            timeout 20m adb shell "cd /data/local/tmp && chmod +x mpss_tests && LD_LIBRARY_PATH=/data/local/tmp ./mpss_tests --gtest_filter=*CertificateChainSerialization*:*FullAttestationWithMockPkiService*" || { code=$?; echo "Android E2E test command failed with status $code. Dumping logcat tail..." >&2; [ "$code" -ne 124 ] || echo "Android E2E tests timed out after 20 minutes." >&2; adb logcat -d | tail -n 400 || true; exit "$code"; }
 
   ios:
     name: iOS E2E validation ${{ matrix.configuration }}
