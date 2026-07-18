@@ -411,6 +411,7 @@ jobs:
             -DMPSS_BACKEND_YUBIKEY=NO \
             -DCMAKE_MACOSX_BUNDLE=YES \
             -DMACOSX_BUNDLE_GUI_IDENTIFIER="$BUNDLE_ID" \
+            -DCMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=YES \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS="$ENT"
@@ -444,8 +445,16 @@ jobs:
           plutil -p "$APP/Info.plist" || true
           echo "Code signature:"
           codesign -dvvv "$APP" 2>&1 || true
+          ENT_OUT=$(codesign -d --entitlements :- "$APP" 2>&1 || true)
           echo "Embedded entitlements:"
-          codesign -d --entitlements :- "$APP" 2>&1 || true
+          echo "$ENT_OUT"
+          # Fail closed: if build-time signing didn't embed the keychain entitlement,
+          # every key op returns -34018 and the e2e run below is meaningless. Assert
+          # the signature is valid and the entitlement is present rather than only
+          # printing it, so a signing regression fails here with a clear message.
+          codesign -v "$APP" || { echo "::error::mpss_tests.app is not validly signed"; exit 1; }
+          echo "$ENT_OUT" | grep -q 'keychain-access-groups' \
+            || { echo "::error::keychain-access-groups entitlement missing from signed app"; exit 1; }
 
       - name: Boot iOS simulator
         id: sim
@@ -495,12 +504,17 @@ jobs:
           # back to a full `simctl launch`, which runs it as an app. Both forward
           # trailing arguments to the binary's argv, so gtest reads --gtest_filter
           # directly (verified: argv reaches the test binary on the simulator).
+          # The spawn attempt is kept in its own log so a launchd/codesigning
+          # rejection stays visible even after the launch fallback runs.
           run_on_sim() {
             local filter="$1" log="$2"
-            $TO xcrun simctl spawn "$UDID" "$BIN" --gtest_filter="$filter" 2>&1 | tee "$log" || true
-            if grep -qE 'launchd failed|Codesigning issue' "$log"; then
-              echo "spawn was rejected by launchd; retrying via simctl launch"
+            local spawn_log="${log%.log}-spawn.log"
+            $TO xcrun simctl spawn "$UDID" "$BIN" --gtest_filter="$filter" 2>&1 | tee "$spawn_log" || true
+            if grep -qE 'launchd failed|Codesigning issue' "$spawn_log"; then
+              echo "spawn was rejected by launchd (see above); retrying via simctl launch"
               $TO xcrun simctl launch --console "$UDID" "$BUNDLE_ID" --gtest_filter="$filter" 2>&1 | tee "$log" || true
+            else
+              cp "$spawn_log" "$log"
             fi
           }
 
