@@ -8,7 +8,9 @@ android {
 
     defaultConfig {
         applicationId 'com.microsoft.research.mpss.test.app'
-        minSdk 28
+        // Match the native libs' min API (CMAKE_SYSTEM_VERSION=34): the backend
+        // Java needs API 31+ to compile and android.jar is tied to that level.
+        minSdk 34
         targetSdk 34
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
