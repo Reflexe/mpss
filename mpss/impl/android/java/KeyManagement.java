@@ -443,8 +443,7 @@ public class KeyManagement {
                 out[i] = chain[i].getEncoded();
             }
             return out;
-        } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException |
-                 java.security.cert.CertificateEncodingException ex) {
+        } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
             String msg = "Error retrieving certificate chain: " + ex.toString();
             Log.e("MPSS", msg);
             SetError(msg);

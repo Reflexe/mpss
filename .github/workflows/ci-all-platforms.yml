@@ -19,10 +19,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            preset: win-vs2022-x64
+            preset: win-vs2026-x64
             configuration: Release
           - os: windows-latest
-            preset: win-vs2022-x64
+            preset: win-vs2026-x64
             configuration: Debug
 
     steps:
@@ -255,6 +255,8 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} \
             -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=arm64-ios-sim \
+            -DVCPKG_HOST_TRIPLET=arm64-ios \
             -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
             -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
             -DMPSS_BUILD_TESTS=ON
