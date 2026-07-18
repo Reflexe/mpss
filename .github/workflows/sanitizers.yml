@@ -95,7 +95,11 @@ jobs:
           # Ref: https://clang.llvm.org/docs/LeakSanitizer.html
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: build-asan/bin/mpss_tests
+        # Restricted to backend-INDEPENDENT tests: mpss has no native Linux backend, so
+        # it is built with the YubiKey backend, whose key tests FAIL (not skip) without a
+        # physical key. The backend-free reference-PEM codec + digest tests are what we
+        # want sanitized here anyway.
+        run: build-asan/bin/mpss_tests "--gtest_filter=MPSSDigest.*:ReferenceCodec.*"
 
   asan-windows:
     name: Windows ASan
@@ -124,13 +128,16 @@ jobs:
 
       # Release config: MSVC ASan is incompatible with /RTC and incremental linking,
       # both of which the Debug config enables by default. Release has neither.
+      # Run in pwsh, not bash: git-bash's MSYS path conversion mangles the leading-slash
+      # /fsanitize=address flag into a bogus path.
       - name: Configure (Release + ASan)
-        shell: bash
+        shell: pwsh
         run: |
-          cmake -S . --preset win-vs2022-x64 \
-            -DMPSS_ENABLE_HARDENING=OFF \
-            -DCMAKE_C_FLAGS="/fsanitize=address" \
-            -DCMAKE_CXX_FLAGS="/fsanitize=address"
+          cmake -S . --preset win-vs2022-x64 `
+            -DMPSS_ENABLE_HARDENING=OFF `
+            -DCMAKE_TRY_COMPILE_CONFIGURATION=Release `
+            "-DCMAKE_C_FLAGS=/fsanitize=address" `
+            "-DCMAKE_CXX_FLAGS=/fsanitize=address"
 
       - name: Build
         shell: bash
