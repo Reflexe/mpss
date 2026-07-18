@@ -5,8 +5,8 @@
 #import <Security/Security.h>
 
 #include "mpss/log_c.h"
-#include <cstdlib>
-#include <cstring>
+#include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 // Global dictionary to store SecKeyRef instances.
@@ -110,7 +110,7 @@ int GetKeyBitSize(int signatureType) {
   }
 
   bool GetBoolEnvVar(const char *name) {
-    const char *value = std::getenv(name);
+    const char *value = getenv(name);
     if (value == NULL) {
       return false;
     }
