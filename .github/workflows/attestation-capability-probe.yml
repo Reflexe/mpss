@@ -96,3 +96,9 @@ jobs:
           echo "=== iOS Simulator probe output ==="
           xcrun simctl spawn "$UDID" "$PWD/se_probe_ios" || true
           xcrun simctl delete "$UDID" || true
+
+      - name: macOS enrollment + device-attestation capability
+        continue-on-error: true
+        run: |
+          chmod +x ci-probe/macos_enroll_probe.sh
+          ./ci-probe/macos_enroll_probe.sh
