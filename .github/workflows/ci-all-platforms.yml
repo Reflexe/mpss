@@ -252,11 +252,11 @@ jobs:
           cmake -S . -B build-ios-sim-${{ matrix.configuration }} -GXcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} \
             -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=arm64-ios-sim \
-            -DVCPKG_HOST_TRIPLET=arm64-ios \
+            -DVCPKG_TARGET_TRIPLET=x64-ios \
+            -DVCPKG_HOST_TRIPLET=arm64-osx \
             -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
             -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
             -DMPSS_BUILD_TESTS=ON
