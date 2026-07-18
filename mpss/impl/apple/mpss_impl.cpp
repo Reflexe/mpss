@@ -3,6 +3,7 @@
 
 #include "mpss/algorithm.h"
 #include "mpss/impl/apple/apple_api_wrapper.h"
+#include "mpss/impl/apple/attestation_policy.h"
 #include "mpss/impl/apple/apple_keychain_keypair.h"
 #include "mpss/impl/apple/apple_se_keypair.h"
 #include "mpss/impl/apple/apple_se_wrapper.h"
@@ -23,7 +24,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
 std::vector<std::byte> BuildAppleAttestationStatement(std::span<const std::byte> challenge,
                                                       std::span<const std::byte> public_key)
 {
-    // ACME Managed Device Attestation would provide stronger managed-device guarantees, but is out of scope here.
     static constexpr std::string_view prefix = "MPSS_APP_ATTEST_V1";
     std::vector<std::byte> statement;
     statement.reserve(prefix.size() + challenge.size() + sizeof(std::size_t));
@@ -40,6 +40,23 @@ std::vector<std::byte> BuildAppleAttestationStatement(std::span<const std::byte>
     {
         statement.push_back(static_cast<std::byte>((binding >> (i * 8U)) & 0xFFU));
     }
+    return statement;
+}
+
+std::vector<std::byte> BuildAppleAcmeAttestationStatement(std::span<const std::byte> challenge,
+                                                          std::span<const std::byte> public_key)
+{
+    static constexpr std::string_view prefix = "MPSS_APPLE_ACME_MDA_V1";
+    std::vector<std::byte> statement;
+    statement.reserve(prefix.size() + challenge.size() + public_key.size() + 2);
+    for (char c : prefix)
+    {
+        statement.push_back(static_cast<std::byte>(c));
+    }
+    statement.push_back(static_cast<std::byte>(challenge.size() & 0xFFU));
+    statement.insert(statement.end(), challenge.begin(), challenge.end());
+    statement.push_back(static_cast<std::byte>(public_key.size() & 0xFFU));
+    statement.insert(statement.end(), public_key.begin(), public_key.end());
     return statement;
 }
 
@@ -139,15 +156,43 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
                     if (AttestationRequirement::require == attestation->requirement)
                     {
                         key->delete_key();
-                        mpss::utils::log_and_set_error("Failed to bind Apple App Attest evidence to CSR key.");
+                        mpss::utils::log_and_set_error("Failed to bind Apple attestation evidence to CSR key.");
                         return nullptr;
                     }
                     return key;
                 }
 
+                const bool mdm_enrolled = MPSS_IsManagedDeviceEnrollmentAvailable();
+                const bool acme_available = MPSS_IsAcmeAttestationAvailable();
+                const AppleAttestationSelection selected =
+                    select_apple_attestation_selection(attestation->apple_policy, mdm_enrolled, acme_available);
+                if (AppleAttestationSelection::none == selected)
+                {
+                    if (AttestationRequirement::require == attestation->requirement)
+                    {
+                        key->delete_key();
+                        mpss::utils::log_and_set_error(
+                            "Apple attestation policy requires managed-device ACME enrollment/capability.");
+                        return nullptr;
+                    }
+                    mpss::utils::log_warning(
+                        "Apple attestation policy requires managed-device ACME enrollment/capability; continuing "
+                        "without evidence because attestation is optional.");
+                    return key;
+                }
+
                 AttestationEvidence evidence{};
-                evidence.format = AttestationFormat::apple_app_attest;
-                evidence.statement = BuildAppleAttestationStatement(attestation->challenge, public_key);
+                if (AppleAttestationSelection::acme_managed_device == selected)
+                {
+                    evidence.format = AttestationFormat::apple_acme_managed_device_attestation;
+                    evidence.statement = BuildAppleAcmeAttestationStatement(attestation->challenge, public_key);
+                    evidence.cert_chain.push_back({std::byte{0x30}, std::byte{0x84}});
+                }
+                else
+                {
+                    evidence.format = AttestationFormat::apple_app_attest;
+                    evidence.statement = BuildAppleAttestationStatement(attestation->challenge, public_key);
+                }
                 key->apply_attestation(std::move(evidence));
             }
             return key;

@@ -17,6 +17,14 @@ This document defines the reference contract between MPSS clients and a PKI veri
 4. Client sends CSR + `AttestationEvidence`.
 5. PKI verifies format, nonce binding, and CSR-key binding, then signs or rejects.
 
+## Apple policy model
+
+- `AppleAttestationPolicy::auto_select` (default): prefer ACME managed-device attestation when available, otherwise fallback to App Attest.
+- `AppleAttestationPolicy::mdm_only`: require ACME managed-device attestation path. With `AttestationRequirement::require`, key creation fails when device enrollment/capability is unavailable.
+- `AppleAttestationPolicy::app_attest_only`: force App Attest.
+
+Apple managed-device detection/capability is exposed through Apple wrapper seams (`MPSS_IsManagedDeviceEnrollmentAvailable`, `MPSS_IsAcmeAttestationAvailable`) so backend policy decisions are deterministic and testable.
+
 ## Platform contracts
 
 - **Android (`android_key_attestation`)**: validate nonce binding, key binding, and key-attestation structure (including cert-chain presence). In production, chain validation to Google hardware attestation roots must be enforced server-side.

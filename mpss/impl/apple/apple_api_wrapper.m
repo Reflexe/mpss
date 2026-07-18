@@ -5,6 +5,9 @@
 #import <Security/Security.h>
 
 #include "mpss/log_c.h"
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 
 // Global dictionary to store SecKeyRef instances.
 static dispatch_queue_t _keyStoreQueue; // NOLINT(bugprone-reserved-identifier)
@@ -104,6 +107,15 @@ int GetKeyBitSize(int signatureType) {
   default:
     mpss_log_warning("Unsupported signature type.");
     return -1;
+  }
+
+  bool GetBoolEnvVar(const char *name) {
+    const char *value = std::getenv(name);
+    if (value == NULL) {
+      return false;
+    }
+    return strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0 ||
+           strcasecmp(value, "yes") == 0 || strcasecmp(value, "on") == 0;
   }
 }
 
@@ -517,5 +529,17 @@ const char *MPSS_GetLastError() {
     }
 
     return NULL;
+  }
+}
+
+bool MPSS_IsManagedDeviceEnrollmentAvailable() {
+  @autoreleasepool {
+    return GetBoolEnvVar("MPSS_APPLE_MDM_ENROLLED");
+  }
+}
+
+bool MPSS_IsAcmeAttestationAvailable() {
+  @autoreleasepool {
+    return GetBoolEnvVar("MPSS_APPLE_ACME_ATTESTATION_AVAILABLE");
   }
 }

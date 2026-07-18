@@ -21,4 +21,6 @@ extern "C"
     bool MPSS_DeleteKey(const char *keyName);
     void MPSS_RemoveKey(const char *keyName);
     const char *MPSS_GetLastError();
+    bool MPSS_IsManagedDeviceEnrollmentAvailable();
+    bool MPSS_IsAcmeAttestationAvailable();
 }

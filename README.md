@@ -25,6 +25,10 @@ MPSS key creation supports an optional attestation request parameter:
 - `std::nullopt` (default behavior) keeps existing non-attesting key creation unchanged.
 - `AttestationRequirement::request` attempts attestation but still creates the key if evidence is unavailable.
 - `AttestationRequirement::require` fails key creation when evidence cannot be produced and deletes any partially created key.
+- Apple policy can be selected per request via `AttestationRequest::apple_policy`:
+  - `AppleAttestationPolicy::auto_select` (default): use managed-device ACME attestation when available, else App Attest.
+  - `AppleAttestationPolicy::mdm_only`: use managed-device ACME only; with `require`, key creation fails if MDM/ACME is unavailable.
+  - `AppleAttestationPolicy::app_attest_only`: always use App Attest.
 
 Attestation evidence is returned as an opaque blob via `KeyPair::attestation()`. Production trust-chain validation against platform hardware roots is performed by the PKI service, not by MPSS.
 For Apple managed-device flows, the test suite also includes a mock PKI proof-of-concept attestation format (`apple_acme_managed_device_attestation`) to validate server-side seams in CI.

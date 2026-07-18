@@ -3,6 +3,7 @@
 
 #include "mpss/algorithm.h"
 #include "mpss/attestation.h"
+#include "mpss/impl/apple/attestation_policy.h"
 #include "mpss/mpss.h"
 #include "tests/mock_pki/mock_pki.h"
 #include <gtest/gtest.h>
@@ -72,6 +73,37 @@ TEST(AttestationApiTest, EmptyChallengeFailsCreate)
     {
         key->delete_key();
     }
+}
+
+TEST(AttestationApiTest, ApplePolicyDefaultsToAutoSelect)
+{
+    AttestationRequest request{};
+    request.challenge = {std::byte{0x01}};
+    EXPECT_EQ(AppleAttestationPolicy::auto_select, request.apple_policy);
+}
+
+TEST(AttestationPolicyTest, AutoSelectPrefersAcmeOnlyWhenManagedDevicePathIsAvailable)
+{
+    EXPECT_EQ(impl::os::AppleAttestationSelection::acme_managed_device,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::auto_select, true, true));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::app_attest,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::auto_select, true, false));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::app_attest,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::auto_select, false, true));
+}
+
+TEST(AttestationPolicyTest, MdmOnlyAndAppAttestOnlySelectionRules)
+{
+    EXPECT_EQ(impl::os::AppleAttestationSelection::none,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::mdm_only, false, true));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::none,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::mdm_only, true, false));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::acme_managed_device,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::mdm_only, true, true));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::app_attest,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::app_attest_only, false, false));
+    EXPECT_EQ(impl::os::AppleAttestationSelection::app_attest,
+              impl::os::select_apple_attestation_selection(AppleAttestationPolicy::app_attest_only, true, true));
 }
 
 TEST(MockPkiTest, AcceptsAndroidEvidence)
@@ -157,6 +189,22 @@ TEST(MockPkiTest, AcceptsAppleAcmeManagedDeviceEvidence)
     EXPECT_TRUE(result.signed_cert);
     EXPECT_FALSE(result.reject_reason.has_value());
     EXPECT_FALSE(result.weaker_assurance);
+}
+
+TEST(MockPkiTest, RejectsAppleAcmeManagedDeviceEvidenceWithoutCertChain)
+{
+    mock_pki::MockPkiService pki;
+    const auto challenge = pki.issue_challenge();
+    const std::vector<std::byte> public_key{std::byte{0x04}, std::byte{0x31}, std::byte{0x32}};
+
+    AttestationEvidence evidence{};
+    evidence.format = AttestationFormat::apple_acme_managed_device_attestation;
+    evidence.statement = BuildStatement("MPSS_APPLE_ACME_MDA_V1", challenge, public_key);
+
+    const auto result = pki.submit(mock_pki::MockCsr{public_key}, evidence,
+                                   AttestationFormat::apple_acme_managed_device_attestation);
+    ASSERT_TRUE(result.reject_reason.has_value());
+    EXPECT_EQ(mock_pki::RejectReason::invalid_structure, *result.reject_reason);
 }
 
 } // namespace mpss::tests

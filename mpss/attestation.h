@@ -33,10 +33,18 @@ enum class AttestationRequirement
     require
 };
 
+enum class AppleAttestationPolicy
+{
+    auto_select,
+    mdm_only,
+    app_attest_only
+};
+
 struct AttestationRequest
 {
     std::vector<std::byte> challenge;
     AttestationRequirement requirement{AttestationRequirement::request};
+    AppleAttestationPolicy apple_policy{AppleAttestationPolicy::auto_select};
 };
 
 } // namespace mpss
