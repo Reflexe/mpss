@@ -454,23 +454,27 @@ jobs:
           # empty on the simulator; it is kept only for diagnostics.
           echo "Code-signature entitlements (expected empty on simulator):"
           codesign -d --entitlements :- "$APP" 2>&1 || true
-          # Read the entitlements that actually take effect: the __entitlements
-          # Mach-O section. Fall back to the on-disk file Xcode sectcreates from
-          # if the section extraction yields nothing.
-          echo "Embedded __entitlements section (simulator runtime source):"
-          SIM_ENTS=$(otool -X -s __TEXT __entitlements "$BIN" 2>/dev/null | xxd -r -p 2>/dev/null || true)
-          if [ -z "$SIM_ENTS" ]; then
-            XCENT=$(find "$BUILD_DIR" -name 'mpss_tests.app-Simulated.xcent' | head -n1 || true)
-            [ -n "$XCENT" ] && SIM_ENTS=$(cat "$XCENT" || true)
+          # Verify the entitlements that actually take effect on the simulator. They
+          # come from mpss_tests.app-Simulated.xcent, which Xcode sectcreates into the
+          # binary's __TEXT,__entitlements section. Check that plain-XML file directly
+          # (with grep -a) rather than extracting the raw Mach-O section into a shell
+          # variable -- command substitution truncates at the first NUL byte, so the
+          # DER-adjacent section bytes make that unreliable.
+          XCENT=$(find "$BUILD_DIR" -path '*mpss_tests.build*' -name 'mpss_tests.app-Simulated.xcent' | head -n1 || true)
+          if [ -z "$XCENT" ]; then
+            echo "::error::mpss_tests.app-Simulated.xcent not found; cannot verify simulator entitlements"; exit 1
           fi
-          echo "$SIM_ENTS"
-          # Fail closed: without keychain-access-groups the app gets no keychain
-          # access group and every key op returns -34018, making the e2e run below
-          # meaningless. Assert the app is validly signed and the entitlement is
-          # actually embedded where the simulator reads it.
+          echo "Simulator entitlements ($XCENT):"
+          cat "$XCENT"
+          # Fail closed: assert the app is validly signed, the binary actually carries
+          # the __entitlements section, and that section's source grants
+          # keychain-access-groups. Without it the app gets no keychain access group
+          # and every key op returns -34018, making the e2e run below meaningless.
           codesign -v "$APP" || { echo "::error::mpss_tests.app is not validly signed"; exit 1; }
-          echo "$SIM_ENTS" | grep -q 'keychain-access-groups' \
-            || { echo "::error::keychain-access-groups not embedded in the app's __entitlements section"; exit 1; }
+          otool -l "$BIN" | grep -q '__entitlements' \
+            || { echo "::error::binary has no __TEXT,__entitlements section"; exit 1; }
+          grep -aq 'keychain-access-groups' "$XCENT" \
+            || { echo "::error::keychain-access-groups not in the app's simulator entitlements"; exit 1; }
 
       - name: Boot iOS simulator
         id: sim
