@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "tests/mock_pki/mock_pki.h"
+#include "mpss/utils/utilities.h"
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -20,6 +21,48 @@ constexpr std::string_view android_prefix = "MPSS_ANDROID_KEY_ATTESTATION_V1";
 constexpr std::string_view windows_prefix = "MPSS_WINDOWS_TPM_ATTESTATION_V1";
 constexpr std::string_view apple_prefix = "MPSS_APP_ATTEST_V1";
 constexpr std::string_view apple_acme_prefix = "MPSS_APPLE_ACME_MDA_V1";
+
+constexpr std::string_view to_string(AttestationFormat format)
+{
+    switch (format)
+    {
+    case AttestationFormat::none:
+        return "none";
+    case AttestationFormat::windows_tpm:
+        return "windows_tpm";
+    case AttestationFormat::android_key_attestation:
+        return "android_key_attestation";
+    case AttestationFormat::apple_app_attest:
+        return "apple_app_attest";
+    case AttestationFormat::apple_acme_managed_device_attestation:
+        return "apple_acme_managed_device_attestation";
+    default:
+        return "unknown";
+    }
+}
+
+constexpr std::string_view to_string(RejectReason reason)
+{
+    switch (reason)
+    {
+    case RejectReason::missing_evidence:
+        return "missing_evidence";
+    case RejectReason::wrong_format:
+        return "wrong_format";
+    case RejectReason::invalid_structure:
+        return "invalid_structure";
+    case RejectReason::nonce_not_found:
+        return "nonce_not_found";
+    case RejectReason::nonce_expired:
+        return "nonce_expired";
+    case RejectReason::nonce_replayed:
+        return "nonce_replayed";
+    case RejectReason::public_key_mismatch:
+        return "public_key_mismatch";
+    default:
+        return "unknown";
+    }
+}
 
 using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
 using EVPKeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
@@ -105,6 +148,7 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const std::optional<Atte
 {
     if (!evidence.has_value())
     {
+        mpss::utils::log_warning("Mock PKI rejected CSR: missing attestation evidence.");
         return {false, RejectReason::missing_evidence, false};
     }
     return submit(csr, *evidence, expected_format);
@@ -113,9 +157,15 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const std::optional<Atte
 SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidence &evidence,
                                     AttestationFormat expected_format)
 {
+    const auto reject = [&](RejectReason reason) {
+        mpss::utils::log_warning("Mock PKI rejected attestation (expected={}, actual={}): {}.",
+                                 to_string(expected_format), to_string(evidence.format), to_string(reason));
+        return SubmitResult{false, reason, false};
+    };
+
     if (AttestationFormat::none == evidence.format || expected_format != evidence.format)
     {
-        return {false, RejectReason::wrong_format, false};
+        return reject(RejectReason::wrong_format);
     }
 
     std::vector<std::byte> challenge;
@@ -124,52 +174,52 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
     {
         if (evidence.cert_chain.empty())
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         const std::span<const char> prefix_chars{android_prefix.data(), android_prefix.size()};
         if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge,
                                      attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
     }
     else if (AttestationFormat::windows_tpm == evidence.format)
     {
         if (evidence.cert_chain.empty())
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         const std::span<const char> prefix_chars{windows_prefix.data(), windows_prefix.size()};
         if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge,
                                      attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
     }
     else if (AttestationFormat::apple_app_attest == evidence.format)
     {
         if (evidence.statement.size() <= apple_prefix.size())
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         if (!std::equal(apple_prefix.begin(), apple_prefix.end(),
                         reinterpret_cast<const char *>(evidence.statement.data())))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         challenge.assign(evidence.statement.begin() + static_cast<std::ptrdiff_t>(apple_prefix.size()),
                          evidence.statement.end() - static_cast<std::ptrdiff_t>(sizeof(std::size_t)));
         if (evidence.statement.size() < apple_prefix.size() + sizeof(std::size_t))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
 
         const std::string csr_key(reinterpret_cast<const char *>(csr.public_key.data()), csr.public_key.size());
@@ -184,7 +234,7 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
         }
         if (encoded_binding != expected_binding)
         {
-            return {false, RejectReason::public_key_mismatch, false};
+            return reject(RejectReason::public_key_mismatch);
         }
         attested_public_key = csr.public_key;
     }
@@ -192,39 +242,41 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const AttestationEvidenc
     {
         if (evidence.cert_chain.empty())
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         const std::span<const char> prefix_chars{apple_acme_prefix.data(), apple_acme_prefix.size()};
         if (!parse_challenge_and_key(evidence.statement, std::as_bytes(prefix_chars), challenge, attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
         if (!verify_cert_chain(evidence.cert_chain, evidence.format, attested_public_key))
         {
-            return {false, RejectReason::invalid_structure, false};
+            return reject(RejectReason::invalid_structure);
         }
     }
 
     const auto nonce_it = outstanding_.find(nonce_key(challenge));
     if (outstanding_.end() == nonce_it)
     {
-        return {false, RejectReason::nonce_not_found, false};
+        return reject(RejectReason::nonce_not_found);
     }
     if (nonce_it->second.used)
     {
-        return {false, RejectReason::nonce_replayed, false};
+        return reject(RejectReason::nonce_replayed);
     }
     if (std::chrono::steady_clock::now() > nonce_it->second.expires_at)
     {
-        return {false, RejectReason::nonce_expired, false};
+        return reject(RejectReason::nonce_expired);
     }
     if (attested_public_key != csr.public_key)
     {
-        return {false, RejectReason::public_key_mismatch, false};
+        return reject(RejectReason::public_key_mismatch);
     }
 
     nonce_it->second.used = true;
     const bool weaker_assurance = AttestationFormat::apple_app_attest == evidence.format;
+    mpss::utils::log_info("Mock PKI accepted attestation (format={}, weaker_assurance={}).", to_string(evidence.format),
+                          weaker_assurance ? "true" : "false");
     return {true, std::nullopt, weaker_assurance};
 }
 

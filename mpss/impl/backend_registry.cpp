@@ -37,6 +37,26 @@ std::string random_string(std::size_t length)
     return result;
 }
 
+constexpr std::string_view to_string(mpss::AttestationFormat format)
+{
+    using enum mpss::AttestationFormat;
+    switch (format)
+    {
+    case none:
+        return "none";
+    case windows_tpm:
+        return "windows_tpm";
+    case android_key_attestation:
+        return "android_key_attestation";
+    case apple_app_attest:
+        return "apple_app_attest";
+    case apple_acme_managed_device_attestation:
+        return "apple_acme_managed_device_attestation";
+    default:
+        return "unknown";
+    }
+}
+
 } // namespace
 
 namespace mpss::impl
@@ -480,13 +500,14 @@ std::unique_ptr<KeyPair> Backend::create_key(std::string_view name, Algorithm al
         return key;
     }
 
-    if (key->attestation().has_value())
+    if (const auto attestation_evidence = key->attestation(); attestation_evidence.has_value())
     {
-        utils::log_trace("Backend '{}' produced attestation evidence for key '{}'.", key->backend_name(), name);
+        utils::log_info("Attestation produced for key '{}' on backend '{}' (format={}).", name, key->backend_name(),
+                        to_string(attestation_evidence->format));
     }
     else
     {
-        utils::log_debug("Backend '{}' did not produce attestation evidence for key '{}'.", key->backend_name(), name);
+        utils::log_warning("No attestation evidence produced for key '{}' on backend '{}'.", name, key->backend_name());
     }
 
     if (AttestationRequirement::require == attestation->requirement && !key->attestation().has_value())
