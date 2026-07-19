@@ -15,6 +15,12 @@ namespace os
 // These are implemented in each platform's mpss_impl.cpp.
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm);
+#if defined(__ANDROID__)
+// Android needs the request forwarded to bind the challenge at key creation; other backends ignore it.
+[[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    const std::optional<AttestationRequest> &attestation);
+#endif
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
@@ -29,12 +35,17 @@ std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm 
                                                std::optional<AttestationRequest> attestation,
                                                KeyPolicy /*policy*/) const
 {
+#if defined(__ANDROID__)
+    // Android binds the challenge into hardware key attestation evidence at key creation.
+    return os::create_key(name, algorithm, attestation);
+#else
     // Evidence generation is not implemented yet; the request is ignored.
     if (attestation.has_value())
     {
         utils::log_debug("OS backend does not produce attestation evidence yet; creating key '{}' without it.", name);
     }
     return os::create_key(name, algorithm);
+#endif
 }
 
 AttestationCapability OSBackend::attestation_capability() const
