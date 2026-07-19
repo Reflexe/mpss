@@ -559,7 +559,8 @@ jobs:
           }
 
           run_gtest() {
-            local label="$1" filter="$2" log="gtest-${label}.log"
+            local label="$1" filter="$2"
+            local log="gtest-${label}.log"
             echo "::group::gtest ($label)"
             set +e
             run_on_sim "$filter" "$log"
