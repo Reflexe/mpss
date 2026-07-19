@@ -35,31 +35,24 @@ permissions:
 jobs:
   asan-ubsan:
     name: Linux ASan+UBSan
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install pcsclite (YubiKey backend dependency)
         run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
 
       - name: Cache vcpkg archives
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/vcpkg/archives
-          key: sanitizers-vcpkg-${{ hashFiles('vcpkg.json') }}
+          key: sanitizers-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ env.ImageVersion }}
           restore-keys: |
             sanitizers-vcpkg-
 
-      - name: Bootstrap vcpkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
-          git clone https://github.com/microsoft/vcpkg.git
-          git -C vcpkg checkout "$BASELINE"
-          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
 
       - name: Configure (Debug, ASan + UBSan)
         shell: bash
@@ -105,27 +98,20 @@ jobs:
   asan-windows:
     name: Windows ASan
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Cache vcpkg archives
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/AppData/Local/vcpkg/archives
-          key: sanitizers-win-vcpkg-${{ hashFiles('vcpkg.json') }}
+          key: sanitizers-win-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ env.ImageVersion }}
           restore-keys: |
             sanitizers-win-vcpkg-
 
-      - name: Bootstrap vcpkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
-          git clone https://github.com/microsoft/vcpkg.git
-          git -C vcpkg checkout "$BASELINE"
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
 
       # Release config: MSVC ASan is incompatible with /RTC and incremental linking,
       # both of which the Debug config enables by default. Release has neither.
