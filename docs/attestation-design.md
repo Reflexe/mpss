@@ -198,8 +198,7 @@ public:
 ### 6.4 Public-key encoding
 Verifier compares keys in **one canonical encoding: DER `SubjectPublicKeyInfo`**. Each
 backend's `extract_key()` (raw uncompressed EC point today) is normalized to SPKI so
-real evidence and CSR keys actually match. SPKI is key-type-agnostic, so the same
-comparison covers both EC and RSA keys.
+real evidence and CSR keys actually match.
 
 ---
 
@@ -227,14 +226,14 @@ comparison covers both EC and RSA keys.
 ### 7.2 Windows — TPM (production-verifiable lane)
 - **Mechanism (measured):** `MS_PLATFORM_KEY_STORAGE_PROVIDER` + `NCryptCreateClaim`
   (`AUTHORITY_AND_SUBJECT` = TPM AIK-signed key attributes; `PLATFORM` = PCR quote), nonce
-  via buffer type 49. Both EC P-256 (1703-byte claim) and RSA-2048 (2853-byte claim) work.
-  Verify is **off-device**: parse the claim + AIK/EK chain to a **pinned manufacturer root**
-  (`TrustedTpm.cab`).
-- **Algorithm (decision #4):** use **EC and RSA** via **direct `NCryptCreateClaim`** (both
-  measured to work: EC P-256 = 1703-byte claim, RSA-2048 = 2853-byte claim) + our own
-  verifier against published EK roots. The Windows Server **AD CS enterprise-CA**
-  key-attestation flow stays **out of scope** — it needs a domain-joined enterprise CA and
-  is redundant since our verifier already validates the claim against `TrustedTpm.cab`.
+  via buffer type 49. EC P-256 works (1703-byte claim). Verify is **off-device**: parse
+  the claim + AIK/EK chain to a **pinned manufacturer root** (`TrustedTpm.cab`).
+- **Algorithm (decision #4):** use **EC** via **direct `NCryptCreateClaim`** (measured to
+  work: EC P-256 = 1703-byte claim) + our own verifier against published EK roots. mpss is
+  **EC-only** — the `Algorithm` enum exposes only ECDSA P-256/384/521, so RSA is not in
+  scope. The Windows Server **AD CS enterprise-CA** key-attestation flow also stays **out of
+  scope** — it needs a domain-joined enterprise CA and is redundant since our verifier
+  already validates the claim against `TrustedTpm.cab`.
 - **Trust:** subject → AIK (bound to EK via `TPM2_ActivateCredential`) → EK cert → mfr root.
 - **Real generation** must call `NCryptCreateClaim` with the nonce buffer (buffer type 49);
   a key alone, without a claim, is not attestation.
@@ -353,10 +352,10 @@ every PR with a pinned clock and pinned roots.
    real attestation refuses that format. Never presented as proper attestation.
 3. **Real-hardware capture lanes approved** (self-hosted vTPM VM, device farm, physical
    enrolled Mac).
-4. **Windows: EC and RSA via direct `NCryptCreateClaim`** + our verifier (published EK
-   roots). Both key types produce a working claim (measured: EC P-256 = 1703 bytes,
-   RSA-2048 = 2853 bytes). The AD CS enterprise-CA path stays **out of scope** (redundant
-   with our verifier + heavy).
+4. **Windows: EC via direct `NCryptCreateClaim`** + our verifier (published EK roots). mpss
+   is **EC-only** — the `Algorithm` enum exposes only ECDSA P-256/384/521, so RSA is out of
+   scope; the measured EC P-256 claim is 1703 bytes. The AD CS enterprise-CA path stays
+   **out of scope** (redundant with our verifier + heavy).
 
 ---
 
