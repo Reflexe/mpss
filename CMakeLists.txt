@@ -12,6 +12,10 @@ option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
+# Win32 NCrypt mock tests (Windows + static backend only). A build toggle for the
+# gmock-win32 mock-test executable and its FetchContent download.
+option(MPSS_BUILD_WIN32_MOCK_TESTS "Build the gmock-win32 NCrypt mock test executable." YES)
+
 # Test-harness escape hatch for the Android static guard below. Off by default.
 option(MPSS_ALLOW_ANDROID_STATIC "Allow static Android libraries (test harness only)." NO)
 
@@ -475,6 +479,35 @@ if(MPSS_BUILD_TESTS)
         target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})
     elseif(TARGET ${mpss_TARGET})
         target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
+    endif()
+
+    # gmock-win32 mocks the free NCrypt functions the Windows backend calls, by
+    # patching the running executable's import table. Two constraints shape how it
+    # is wired in:
+    #   * IAT patching only reaches calls compiled into the executable itself, so it
+    #     works only against a statically-linked backend (a shared mpss.dll keeps its
+    #     NCrypt calls in the DLL's own import table).
+    #   * The patch/restore machinery is process-global and conflicts with the
+    #     OpenSSL provider's algorithm-probing path when they share a process. The
+    #     mock tests therefore live in their own executable that does not link the
+    #     OpenSSL provider.
+    if(WIN32 AND MPSS_BUILD_MPSS_CORE_STATIC AND MPSS_BUILD_WIN32_MOCK_TESTS AND TARGET ${mpss_TARGET})
+        include(FetchContent)
+        FetchContent_Declare(gmock_win32_fetch
+            GIT_REPOSITORY https://github.com/smalti/gmock-win32.git
+            GIT_TAG 8f7ac8325a6ab4f93bb959621c8e700304b6f739 # 1.3.0
+        )
+        # Upstream ships no CMakeLists, so this only downloads the sources.
+        FetchContent_MakeAvailable(gmock_win32_fetch)
+
+        add_library(gmock_win32 STATIC "${gmock_win32_fetch_SOURCE_DIR}/src/gmock-win32.cpp")
+        target_include_directories(gmock_win32 PUBLIC "${gmock_win32_fetch_SOURCE_DIR}/include")
+        target_link_libraries(gmock_win32 PUBLIC GTest::gmock)
+        target_compile_features(gmock_win32 PUBLIC cxx_std_20)
+
+        add_executable(mpss_win32_mock_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/mpss_win32_mock_tests.cpp")
+        target_link_libraries(mpss_win32_mock_tests PRIVATE ${mpss_TARGET} GTest::gtest GTest::gmock gmock_win32)
+        target_include_directories(mpss_win32_mock_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

@@ -84,6 +84,14 @@ jobs:
           fi
           "$BIN"
 
+          # The Win32 NCrypt mock tests are a separate executable, built only for the
+          # static Windows preset. Run it too when present.
+          MOCK_BIN="out/build/${{ matrix.preset }}/bin/${{ matrix.bindir }}mpss_win32_mock_tests"
+          [ "$RUNNER_OS" = "Windows" ] && MOCK_BIN="${MOCK_BIN}.exe"
+          if [ -f "$MOCK_BIN" ]; then
+            "$MOCK_BIN"
+          fi
+
   # -------------------------------------------------------------------------
   # Linux (GCC): mpss has no native Linux backend, so we build with the YubiKey
   # backend enabled. This is our GCC / libstdc++ portability guard. Build only:
