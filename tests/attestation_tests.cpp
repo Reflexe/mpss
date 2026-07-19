@@ -26,9 +26,8 @@ using mpss::tests::mock_pki::MockCsr;
 using mpss::tests::mock_pki::MockPkiService;
 using mpss::tests::mock_pki::RejectReason;
 
-// A minimal concrete KeyPair that overrides only the pure-virtual methods, leaving the
-// attestation accessors at their base defaults. Lets us assert the Stage 1 contract
-// (no evidence attached) without needing any hardware backend.
+// Overrides only the pure-virtual methods, leaving the attestation accessors at their base
+// defaults, so the no-evidence contract is testable without a hardware backend.
 class NoEvidenceKeyPair : public mpss::KeyPair
 {
   public:

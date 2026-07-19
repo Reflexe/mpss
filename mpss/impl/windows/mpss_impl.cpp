@@ -250,8 +250,7 @@ using enum Algorithm;
 
 AttestationCapability attestation_capability()
 {
-    // Windows attests a named key via NCryptCreateClaim (TPM/VBS). Real evidence generation
-    // lands in Stage 3; the capability is reported honestly now.
+    // Windows attests a named key via NCryptCreateClaim (TPM/VBS); generation not implemented yet.
     return AttestationCapability::key_attestation;
 }
 

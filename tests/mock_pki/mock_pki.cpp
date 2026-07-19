@@ -43,8 +43,7 @@ std::vector<std::byte> MockPkiService::issue_challenge()
 
 std::string MockPkiService::nonce_key(std::span<const std::byte> nonce)
 {
-    // Unambiguous fixed-width hex: exactly two hex digits per byte, so distinct byte sequences
-    // always map to distinct keys (fixes PR #1's collision-prone unpadded hex).
+    // Fixed-width two hex digits per byte so distinct nonces never collide.
     static constexpr char hex_digits[] = "0123456789abcdef";
     std::string out;
     out.reserve(nonce.size() * 2);
@@ -87,7 +86,7 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const std::optional<Atte
         return SubmitResult{false, RejectReason::wrong_format, {}};
     }
 
-    // Nonce bookkeeping. The nonce is supplied explicitly; nothing is parsed from the evidence.
+    // Nonce supplied explicitly, never parsed from the evidence.
     const auto it = outstanding_.find(nonce_key(nonce));
     if (outstanding_.end() == it)
     {
@@ -102,10 +101,9 @@ SubmitResult MockPkiService::submit(const MockCsr &csr, const std::optional<Atte
         return SubmitResult{false, RejectReason::nonce_expired, {}};
     }
 
-    // Spend the nonce on presentation so replay is detectable regardless of the verifier outcome.
+    // Spend the nonce on presentation so replay is caught even if verification fails.
     it->second.used = true;
 
-    // Delegate all evidence verification to the shared verifier.
     const mpss::attest::AttestationVerifier verifier = make_verifier();
     mpss::attest::AttestationVerifier::Result result = verifier.verify(*evidence, nonce, csr.public_key);
     if (!result.ok)

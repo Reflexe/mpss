@@ -161,8 +161,7 @@ class MPSS_DECOR KeyPair
      * must be non-empty, otherwise creation fails.
      * @return Key pair if the key pair was created successfully, a null pointer otherwise.
      * @note The name must be unique. If a key pair with the same name already exists, the
-     * function will return a null pointer. In Stage 1 no backend produces evidence yet; @ref
-     * attestation always returns nullopt.
+     * function will return a null pointer.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
@@ -261,8 +260,7 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief Whether this key pair has real, attached attestation evidence.
-     * @return true only when @ref attestation returns evidence. Backends that do not (yet)
-     * produce evidence inherit this default of false.
+     * @return true only when @ref attestation returns evidence.
      */
     [[nodiscard]]
     virtual bool supports_attestation() const
@@ -272,8 +270,7 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief The attestation evidence attached to this key pair, if any.
-     * @return The evidence, or std::nullopt when none is attached. In Stage 1 no backend
-     * produces evidence, so this returns std::nullopt.
+     * @return The evidence, or std::nullopt when none is attached.
      */
     [[nodiscard]]
     virtual std::optional<AttestationEvidence> attestation() const

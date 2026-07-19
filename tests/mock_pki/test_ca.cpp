@@ -15,7 +15,6 @@ using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
 using EvpKeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
 using X509ExtPtr = std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)>;
 
-// One year, in seconds.
 constexpr long one_year_seconds = 31536000L;
 
 std::vector<std::byte> serialize_cert(X509 *cert)
@@ -78,8 +77,7 @@ bool add_basic_constraints(X509 *cert, X509 *issuer, bool is_ca)
     return 1 == X509_add_ext(cert, ext.get(), -1);
 }
 
-// Build an X.509 certificate. When issuer_cert is null the certificate is self-signed with
-// subject_key (used for a root CA).
+// A null issuer_cert means self-signed with subject_key (a root CA).
 X509Ptr build_certificate(EVP_PKEY *subject_key, X509 *issuer_cert, EVP_PKEY *issuer_key, std::string_view common_name,
                           bool is_ca, long serial)
 {

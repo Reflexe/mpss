@@ -11,9 +11,8 @@ namespace mpss::attest
 namespace
 {
 
-// Stage 1 ships per-format verifier stubs only. Each returns a clean "not implemented"
-// result echoing the format, so callers can already distinguish real vs VBS formats and
-// Stages 2-4 have a single, obvious insertion point per format.
+// Per-format stubs; Stages 2-4 fill these in. Each echoes the format so callers still
+// distinguish real formats from VBS.
 AttestationVerifier::Result not_implemented(AttestationFormat format)
 {
     return AttestationVerifier::Result{/* ok */ false, format,

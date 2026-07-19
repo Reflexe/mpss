@@ -38,7 +38,7 @@ enum class RejectReason
     nonce_not_found,
     nonce_expired,
     nonce_replayed,
-    verifier_rejected // the shared verifier declined (in Stage 1: "not implemented")
+    verifier_rejected // the shared verifier declined
 };
 
 /**
@@ -49,8 +49,8 @@ struct SubmitResult
     bool signed_cert{false};
     std::optional<RejectReason> reject_reason;
 
-    // Populated whenever the shared verifier was actually consulted (i.e. after the nonce
-    // bookkeeping passed). Lets tests assert that submit() delegates verification.
+    // Populated once the verifier is consulted (after nonce checks pass), so tests can
+    // assert submit() delegates verification.
     mpss::attest::AttestationVerifier::Result verifier_result;
 };
 
@@ -58,9 +58,8 @@ struct SubmitResult
  * @brief A reduced mock PKI: nonce issue/expire/replay bookkeeping plus a call into the shared
  * @ref mpss::attest::AttestationVerifier.
  *
- * It performs NO home-grown blob parsing: the nonce is provided explicitly by the caller (as a
- * real relying party would track the challenge it issued), and all evidence verification is
- * delegated to the shared verifier. Nonces are keyed by an unambiguous zero-padded hex encoding.
+ * The nonce is supplied by the caller and never parsed from the evidence; all evidence
+ * verification is delegated to the shared verifier (no home-grown blob parsing).
  */
 class MockPkiService
 {
@@ -69,27 +68,20 @@ class MockPkiService
 
     explicit MockPkiService(std::chrono::seconds ttl = std::chrono::seconds{60});
 
-    /**
-     * @brief Issue a fresh random nonce and remember it as outstanding.
-     */
     std::vector<std::byte> issue_challenge();
 
-    /**
-     * @brief Pin a trust anchor for a format; forwarded to the verifier policy.
-     */
     void set_trusted_root(AttestationFormat format, TrustAnchor anchor);
 
     /**
-     * @brief Override the clock used for nonce expiry (for deterministic tests).
+     * @brief Override the clock used for nonce expiry, for deterministic tests.
      */
     void set_clock(Clock clock);
 
     /**
      * @brief Submit a CSR with evidence bound to @p nonce, expected to be @p expected_format.
      *
-     * The nonce is passed explicitly and never parsed out of the evidence. A nonce that passes
-     * the freshness checks is spent (single-use) regardless of the verifier's decision, so replay
-     * is detectable even while the Stage 1 verifier only reports "not implemented".
+     * A nonce passing the freshness checks is spent (single-use), so replay is caught even
+     * while the verifier only reports "not implemented".
      */
     SubmitResult submit(const MockCsr &csr, const std::optional<AttestationEvidence> &evidence,
                         std::span<const std::byte> nonce, AttestationFormat expected_format);

@@ -79,8 +79,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
                                                     std::optional<AttestationRequest> attestation,
                                                     KeyPolicy policy) const
 {
-    // YubiKey PIV cannot produce nonce-bound hardware key attestation evidence, so the
-    // request is threaded through and ignored; the resulting key reports no attestation.
+    // YubiKey PIV cannot attest keys; the request is ignored.
     if (attestation.has_value())
     {
         mpss::utils::log_debug("YubiKey backend does not produce attestation evidence; creating key '{}' without it.",

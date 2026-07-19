@@ -16,9 +16,6 @@ namespace mpss::attest
 
 /**
  * @brief A pinned trust anchor for a given attestation format.
- *
- * In Stage 1 this simply carries the DER bytes of a root certificate (or raw public key).
- * Later stages parse and chain evidence to these anchors.
  */
 struct TrustAnchor
 {
@@ -29,29 +26,23 @@ struct TrustAnchor
 /**
  * @brief Platform-agnostic verifier for hardware key-attestation evidence.
  *
- * A single interface fronts per-format verifiers, each of which validates evidence against
- * the correct pinned vendor roots, checks nonce freshness, and enforces revocation/expiry.
- * The result echoes the evidence @ref AttestationFormat so a relying party can distinguish
- * externally-verifiable formats from the VBS test-lane format.
- *
- * Stage 1 ships the skeleton only: every per-format verifier is a stub that reports
- * "not implemented". Real per-format logic lands in Stages 2-4.
+ * A single interface fronts per-format verifiers; the result echoes the evidence
+ * @ref AttestationFormat so a relying party can refuse the VBS test-lane format.
+ * Stages 2-4 supply the per-format logic; the current verifiers are stubs.
  */
 class AttestationVerifier
 {
   public:
     /**
-     * @brief Injectable policy for verification (roots, clock, revocation, minimum level).
+     * @brief Injectable verification inputs.
      */
     struct Policy
     {
-        /** @brief Returns the pinned trust anchors for a given format. */
         std::function<std::vector<TrustAnchor>(AttestationFormat)> roots;
 
-        /** @brief Injectable clock, so captured vectors can be replayed offline. */
+        /** @brief Injectable clock so captured vectors can be replayed offline. */
         std::function<std::chrono::system_clock::time_point()> clock;
 
-        /** @brief Returns true if the certificate/claim serial is revoked. */
         std::function<bool(std::span<const std::byte> serial)> is_revoked;
     };
 
@@ -60,13 +51,11 @@ class AttestationVerifier
      */
     struct Result
     {
-        /** @brief True only if the evidence verified fully against the policy. */
         bool ok{false};
 
-        /** @brief The evidence format (lets the caller distinguish real vs VBS). */
+        /** @brief Echoed so the caller can distinguish real formats from VBS. */
         AttestationFormat format{AttestationFormat::none};
 
-        /** @brief Human-readable explanation, especially on failure. */
         std::string reason;
     };
 
@@ -76,10 +65,7 @@ class AttestationVerifier
 
     /**
      * @brief Verifies attestation evidence against the configured policy.
-     * @param[in] evidence The evidence to verify.
-     * @param[in] expected_nonce The nonce the relying party expects to be bound in the evidence.
-     * @param[in] expected_pubkey The public key (canonical DER SubjectPublicKeyInfo) the evidence must attest.
-     * @return A @ref Result whose @c ok is true only on full success.
+     * @param[in] expected_pubkey Canonical DER SubjectPublicKeyInfo the evidence must attest.
      */
     [[nodiscard]]
     Result verify(const AttestationEvidence &evidence, std::span<const std::byte> expected_nonce,

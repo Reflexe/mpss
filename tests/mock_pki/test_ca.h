@@ -17,8 +17,7 @@ using EvpKeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 /**
  * @brief A generated EC P-256 key with its DER SubjectPublicKeyInfo.
  *
- * This is a test-only helper (an OpenSSL "test CA") for building real X.509 material to
- * exercise the attestation plumbing. Real per-platform evidence generation is not part of it.
+ * Test-only OpenSSL "test CA" material; not real per-platform evidence generation.
  */
 struct TestKey
 {
@@ -48,21 +47,18 @@ struct TestCert
 
 /**
  * @brief Generate a fresh EC P-256 key pair.
- * @return A @ref TestKey; check @c valid() for success.
  */
 [[nodiscard]]
 TestKey generate_ec_key();
 
 /**
  * @brief Create a self-signed root CA certificate for @p key.
- * @return A DER @ref TestCert; check @c valid() for success.
  */
 [[nodiscard]]
 TestCert create_root(const TestKey &key, std::string_view common_name);
 
 /**
  * @brief Create a leaf certificate for @p subject signed by @p issuer_key / @p issuer_cert.
- * @return A DER @ref TestCert; check @c valid() for success.
  */
 [[nodiscard]]
 TestCert create_leaf(const TestKey &subject, const TestKey &issuer_key, const TestCert &issuer_cert,

@@ -29,8 +29,7 @@ std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm 
                                                std::optional<AttestationRequest> attestation,
                                                KeyPolicy /*policy*/) const
 {
-    // Stage 1: the OS backends do not emit attestation evidence yet. Create the key exactly as
-    // before; the request is ignored and the key reports supports_attestation() == false.
+    // Evidence generation is not implemented yet; the request is ignored.
     if (attestation.has_value())
     {
         utils::log_debug("OS backend does not produce attestation evidence yet; creating key '{}' without it.", name);
