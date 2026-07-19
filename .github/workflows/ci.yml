@@ -415,6 +415,10 @@ jobs:
           echo "Device type: $DT"
           UDID=$(xcrun simctl create mpss-ios-sim "$DT" "$RT")
           echo "UDID: $UDID"
+          # Record the UDID for the always() cleanup step now, before booting:
+          # a boot failure exits this step, and if the output weren't already
+          # written the teardown couldn't find (and delete) the created device.
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           # Booting a freshly-created simulator can transiently fail on hosted
           # runners; retry a few times (clean shutdown between attempts) before
           # failing, so infra flakiness alone doesn't red this required check.
@@ -432,7 +436,6 @@ jobs:
             xcrun simctl list devices >&2 || true
             exit 1
           fi
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Run e2e tests on simulator
         shell: bash

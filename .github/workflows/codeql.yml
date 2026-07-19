@@ -26,6 +26,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # Only strictly required if this repo becomes private, but matches the
+      # official CodeQL starter template and keeps the job robust to that change.
+      actions: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
