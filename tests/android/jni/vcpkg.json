@@ -1,0 +1,9 @@
+{
+  "name": "mpss-tests-jni",
+  "version": "1.2.3",
+  "dependencies": [
+    "gtest",
+    "openssl"
+  ],
+  "builtin-baseline": "003cb58a3c2cd943c348901481fca78d665308e2"
+}

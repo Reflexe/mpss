@@ -1,0 +1,9 @@
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# Cross-compiled and staged by CI, never committed.
+src/main/jniLibs/

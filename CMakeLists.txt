@@ -12,6 +12,9 @@ option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
+# Test-harness escape hatch for the Android static guard below. Off by default.
+option(MPSS_ALLOW_ANDROID_STATIC "Allow static Android libraries (test harness only)." NO)
+
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
 # default to building shared libraries. Explicit -D options take precedence.
 if(BUILD_SHARED_LIBS)
@@ -252,9 +255,16 @@ if(MPSS_BUILD_MPSS_OPENSSL_STATIC OR MPSS_BUILD_MPSS_OPENSSL_SHARED)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Android")
-    if(MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_OPENSSL_STATIC)
-        # Android does not support static libraries.
-        message(FATAL_ERROR "Static libraries are not supported on Android.")
+    if((MPSS_BUILD_MPSS_CORE_STATIC OR MPSS_BUILD_MPSS_OPENSSL_STATIC) AND NOT MPSS_ALLOW_ANDROID_STATIC)
+        # An Android app can only load shared objects, so the shipped mpss is
+        # always .so + a JAR and a standalone static .a is not a usable artifact
+        # - hence this guard. The instrumented-app test harness is the one
+        # exception: it links the static archives *into* a single .so
+        # (libmpss_tests_jni.so) that the app loads, so static is safe there. It
+        # opts in via MPSS_ALLOW_ANDROID_STATIC; every shipped build leaves it OFF.
+        message(FATAL_ERROR
+            "Static libraries are not supported on Android except for the internal "
+            "instrumented-app test harness; set MPSS_ALLOW_ANDROID_STATIC=ON to opt in.")
     endif()
 
     # CMAKE_SYSTEM_VERSION contains the Android API level.
