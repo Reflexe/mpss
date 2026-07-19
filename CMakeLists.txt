@@ -262,7 +262,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Android")
         # exception: it links the static archives *into* a single .so
         # (libmpss_tests_jni.so) that the app loads, so static is safe there. It
         # opts in via MPSS_ALLOW_ANDROID_STATIC; every shipped build leaves it OFF.
-        message(FATAL_ERROR "Static libraries are not supported on Android.")
+        message(FATAL_ERROR
+            "Static libraries are not supported on Android except for the internal "
+            "instrumented-app test harness; set MPSS_ALLOW_ANDROID_STATIC=ON to opt in.")
     endif()
 
     # CMAKE_SYSTEM_VERSION contains the Android API level.

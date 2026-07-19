@@ -4,8 +4,10 @@
 package com.microsoft.research.mpss.test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 
 import android.content.Context;
+import java.io.File;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -24,7 +26,8 @@ public class NativeInstrumentedTest {
     @Test
     public void nativeGtestSuitePasses() {
         Context context = ApplicationProvider.getApplicationContext();
-        String workingDir = context.getCacheDir().getAbsolutePath();
-        assertEquals(0, NativeTests.run(workingDir));
+        File cacheDir = context.getCacheDir();
+        assertNotNull("App cache dir is unavailable; cannot supply a working directory.", cacheDir);
+        assertEquals(0, NativeTests.run(cacheDir.getAbsolutePath()));
     }
 }

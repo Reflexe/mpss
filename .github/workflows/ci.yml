@@ -185,6 +185,9 @@ jobs:
           set -euo pipefail
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           [ -n "$SDK_ROOT" ] || { echo "Android SDK not found (ANDROID_SDK_ROOT/ANDROID_HOME unset)" >&2; exit 1; }
+          # The mpss JAR build reads $ENV{ANDROID_HOME} (root CMakeLists.txt), so
+          # export it for later steps on runners that only set ANDROID_SDK_ROOT.
+          [ -n "${ANDROID_HOME:-}" ] || echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           # `yes` gets SIGPIPE once sdkmanager stops reading; keep it out of
           # pipefail so the step reflects sdkmanager's exit, not the broken pipe.
