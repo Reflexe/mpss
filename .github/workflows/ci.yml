@@ -183,7 +183,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          [ -n "$SDK_ROOT" ] || { echo "Android SDK not found (ANDROID_SDK_ROOT/ANDROID_HOME unset)" >&2; exit 1; }
+          SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           # `yes` gets SIGPIPE once sdkmanager stops reading; keep it out of
           # pipefail so the step reflects sdkmanager's exit, not the broken pipe.
           set +o pipefail
