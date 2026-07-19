@@ -476,4 +476,9 @@ if(MPSS_BUILD_TESTS)
     elseif(TARGET ${mpss_TARGET})
         target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
     endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # The Windows tests call CNG (NCrypt*) directly to verify the key export policy.
+        target_link_libraries(mpss_tests PRIVATE ncrypt)
+    endif()
 endif()
