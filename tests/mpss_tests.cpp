@@ -379,6 +379,34 @@ bool TryExportWindowsPrivateKey(const std::wstring &key_name, LPCWSTR provider_n
                                               &private_key_size, 0);
 }
 
+// Reopen a key by name in a provider and read its export policy. Returns true and sets policy_out only
+// if the key could be reopened and the property read.
+bool TryReadExportPolicy(const std::wstring &key_name, LPCWSTR provider_name, DWORD &policy_out)
+{
+    mpss::impl::os::NcryptHandle provider;
+    if (ERROR_SUCCESS != ::NCryptOpenStorageProvider(provider.put(), provider_name, 0))
+    {
+        return false;
+    }
+
+    mpss::impl::os::NcryptHandle key;
+    if (ERROR_SUCCESS != ::NCryptOpenKey(provider.get(), key.put(), key_name.c_str(), 0, 0))
+    {
+        return false;
+    }
+
+    DWORD policy = 0;
+    DWORD output_size = 0;
+    if (ERROR_SUCCESS != ::NCryptGetProperty(key.get(), NCRYPT_EXPORT_POLICY_PROPERTY,
+                                             reinterpret_cast<PBYTE>(&policy), sizeof(policy), &output_size, 0))
+    {
+        return false;
+    }
+
+    policy_out = policy;
+    return true;
+}
+
 // Scenario: On Windows the creation ladder prefers the TPM-backed Platform Crypto Provider, then VBS, then a software key.
 // Expected behavior: creation succeeds and the storage tier matches the hardware-backed flag.
 TEST_F(MPSS, WindowsTieredCreationReportsStorage)
@@ -494,6 +522,13 @@ TEST_F(MPSS, WindowsCreatedKeyRefusesPrivateExport)
     exported = TryExportWindowsPrivateKey(wide_name, MS_PLATFORM_KEY_STORAGE_PROVIDER, opened) || exported;
     EXPECT_TRUE(opened);
     EXPECT_FALSE(exported);
+
+    // The export policy must also read back as non-exportable (0) wherever the key lives.
+    DWORD export_policy = 0xFFFFFFFF;
+    const bool policy_read = TryReadExportPolicy(wide_name, MS_KEY_STORAGE_PROVIDER, export_policy) ||
+                             TryReadExportPolicy(wide_name, MS_PLATFORM_KEY_STORAGE_PROVIDER, export_policy);
+    EXPECT_TRUE(policy_read);
+    EXPECT_EQ(0u, export_policy);
 
     MPSS::DeleteKey(key_name);
 }
