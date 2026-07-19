@@ -118,6 +118,11 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
         return 0;
     }
 
+    if (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)
+    {
+        return 0;
+    }
+
     // Get the algorithm info.
     const mpss::AlgorithmInfo info = pkey->key_pair->algorithm_info();
     const std::string_view type_str = info.type_str;
