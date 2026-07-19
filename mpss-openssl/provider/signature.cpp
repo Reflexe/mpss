@@ -146,7 +146,7 @@ extern "C" int mpss_signature_get_ctx_params(void *ctx, OSSL_PARAM params[])
             break;
         }
 
-        if (1 != X509_ALGOR_set0(alg, obj, V_ASN1_NULL, nullptr))
+        if (1 != X509_ALGOR_set0(alg, obj, V_ASN1_UNDEF, nullptr))
         {
             break;
         }
