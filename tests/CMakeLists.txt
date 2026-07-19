@@ -78,3 +78,8 @@ endif()
 # Add the parent directory to the include path so that test-local headers
 # (included via paths like "mpss/../tests/...") resolve correctly.
 target_include_directories(mpss_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # The Windows tests call CNG (NCrypt*) directly to verify the key export policy.
+    target_link_libraries(mpss_tests PRIVATE ncrypt)
+endif()
