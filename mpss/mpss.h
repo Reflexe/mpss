@@ -153,59 +153,36 @@ class MPSS_DECOR KeyPair
     }
 
     /**
-     * @brief Creates a new key pair with the given name and algorithm.
-     * @param[in] name The name of the key pair. Must not exceed 64 characters.
-     * @param[in] algorithm The signature algorithm to use.
-     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
-     * @return Key pair if the key pair was created successfully, a null pointer otherwise.
-     * @note The name must be unique. If a key pair with the same name already exists, the
-     * function will return a null pointer.
-     */
-    [[nodiscard]]
-    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
-                                           KeyPolicy policy = KeyPolicy::none);
-
-    /**
      * @brief Creates a new key pair, optionally requesting hardware attestation evidence.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
+     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
      * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
      * must be non-empty, otherwise creation fails.
-     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
-     * @return Key pair if created successfully, nullptr otherwise.
-     * @note In Stage 1 no backend produces evidence yet; @ref attestation always returns nullopt.
+     * @return Key pair if the key pair was created successfully, a null pointer otherwise.
+     * @note The name must be unique. If a key pair with the same name already exists, the
+     * function will return a null pointer. In Stage 1 no backend produces evidence yet; @ref
+     * attestation always returns nullopt.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
-                                           std::optional<AttestationRequest> attestation,
-                                           KeyPolicy policy = KeyPolicy::none);
-
-    /**
-     * @brief Creates a new key pair using a specific backend.
-     * @param[in] name The name of the key pair. Must not exceed 64 characters.
-     * @param[in] algorithm The signature algorithm to use.
-     * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
-     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
-     * @return Key pair if created successfully, nullptr otherwise.
-     */
-    [[nodiscard]]
-    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           std::optional<AttestationRequest> attestation = std::nullopt);
 
     /**
      * @brief Creates a new key pair using a specific backend, optionally requesting attestation.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
      * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
      * must be non-empty, otherwise creation fails.
-     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
      * @return Key pair if created successfully, nullptr otherwise.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                           std::optional<AttestationRequest> attestation,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           std::optional<AttestationRequest> attestation = std::nullopt);
 
     /**
      * @brief Reports what kind of attestation a backend can produce.

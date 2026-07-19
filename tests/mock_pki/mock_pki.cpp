@@ -71,7 +71,6 @@ mpss::attest::AttestationVerifier MockPkiService::make_verifier() const
     };
     policy.clock = [] { return std::chrono::system_clock::now(); };
     policy.is_revoked = [](std::span<const std::byte>) { return false; };
-    policy.min_security_level = AttestationSecurityLevel::unknown;
     return mpss::attest::AttestationVerifier{std::move(policy)};
 }
 

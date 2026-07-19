@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace mpss::tests
@@ -70,7 +71,7 @@ std::vector<std::byte> make_bytes(std::size_t count, std::byte value)
 // --- Capability reporting ---
 
 // Scenario: querying the OS backend's attestation capability on each platform.
-// Expected behavior: Windows/Android report key_attestation, Apple reports device_identity,
+// Expected behavior: Windows/Android/Apple all report key_attestation (they attest the key),
 // and platforms without a registered OS backend report none.
 TEST(AttestationCapabilityTest, OsBackendReportsExpectedCapability)
 {
@@ -78,7 +79,7 @@ TEST(AttestationCapabilityTest, OsBackendReportsExpectedCapability)
 #if defined(_WIN32)
     EXPECT_EQ(cap, mpss::AttestationCapability::key_attestation);
 #elif defined(__APPLE__)
-    EXPECT_EQ(cap, mpss::AttestationCapability::device_identity);
+    EXPECT_EQ(cap, mpss::AttestationCapability::key_attestation);
 #elif defined(__ANDROID__)
     EXPECT_EQ(cap, mpss::AttestationCapability::key_attestation);
 #else
@@ -109,7 +110,7 @@ TEST(AttestationApiTest, EmptyChallengeRejectedDefaultBackend)
 {
     mpss::AttestationRequest request; // challenge is empty
     std::unique_ptr<mpss::KeyPair> key = mpss::KeyPair::Create(
-        "mpss_att_empty_default", mpss::Algorithm::ecdsa_secp256r1_sha256, std::move(request));
+        "mpss_att_empty_default", mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none, std::move(request));
     EXPECT_EQ(nullptr, key);
 }
 
@@ -118,8 +119,9 @@ TEST(AttestationApiTest, EmptyChallengeRejectedDefaultBackend)
 TEST(AttestationApiTest, EmptyChallengeRejectedExplicitBackend)
 {
     mpss::AttestationRequest request; // challenge is empty
-    std::unique_ptr<mpss::KeyPair> key = mpss::KeyPair::Create(
-        "mpss_att_empty_explicit", mpss::Algorithm::ecdsa_secp256r1_sha256, "os", std::move(request));
+    std::unique_ptr<mpss::KeyPair> key =
+        mpss::KeyPair::Create("mpss_att_empty_explicit", mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+                              mpss::KeyPolicy::none, std::move(request));
     EXPECT_EQ(nullptr, key);
 }
 
@@ -290,7 +292,9 @@ TEST(MockPkiTest, FreshEvidenceReachesVerifier)
 
     mpss::AttestationEvidence evidence;
     evidence.format = mpss::AttestationFormat::android_key_attestation;
-    evidence.cert_chain = {leaf.der, root.der};
+    evidence.payload = mpss::CertChain{leaf.der, root.der};
+    ASSERT_TRUE(std::holds_alternative<mpss::CertChain>(evidence.payload));
+    EXPECT_EQ(std::get<mpss::CertChain>(evidence.payload).size(), 2U);
 
     const MockCsr csr{leaf_key.spki_der};
     const auto result = pki.submit(csr, evidence, nonce, mpss::AttestationFormat::android_key_attestation);

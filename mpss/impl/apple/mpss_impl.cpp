@@ -17,9 +17,9 @@ using enum Algorithm;
 AttestationCapability attestation_capability()
 {
     // The only real Apple key-attestation path is ACME Managed Device Attestation, which attests
-    // device identity. Stage 1 reports this statically; the runtime managed/unmanaged refinement
-    // (returning none on unmanaged devices) lands in Stage 4.
-    return AttestationCapability::device_identity;
+    // the key itself (device-attest-01). Stage 1 reports this statically; the runtime
+    // managed/unmanaged refinement (returning none on unmanaged devices) lands in Stage 4.
+    return AttestationCapability::key_attestation;
 }
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)

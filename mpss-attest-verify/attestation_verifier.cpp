@@ -16,7 +16,7 @@ namespace
 // Stages 2-4 have a single, obvious insertion point per format.
 AttestationVerifier::Result not_implemented(AttestationFormat format)
 {
-    return AttestationVerifier::Result{/* ok */ false, format, AttestationSecurityLevel::unknown,
+    return AttestationVerifier::Result{/* ok */ false, format,
                                        "attestation verification for this format is not implemented in Stage 1"};
 }
 
@@ -65,8 +65,7 @@ AttestationVerifier::Result AttestationVerifier::verify(const AttestationEvidenc
     switch (evidence.format)
     {
     case AttestationFormat::none:
-        return Result{/* ok */ false, AttestationFormat::none, AttestationSecurityLevel::unknown,
-                      "no attestation evidence"};
+        return Result{/* ok */ false, AttestationFormat::none, "no attestation evidence"};
     case AttestationFormat::android_key_attestation:
         return verify_android_key_attestation(evidence, expected_nonce, expected_pubkey, policy_);
     case AttestationFormat::apple_acme_managed_device:
@@ -77,7 +76,7 @@ AttestationVerifier::Result AttestationVerifier::verify(const AttestationEvidenc
         return verify_windows_vbs_claim(evidence, expected_nonce, expected_pubkey, policy_);
     }
 
-    return Result{/* ok */ false, evidence.format, AttestationSecurityLevel::unknown, "unknown attestation format"};
+    return Result{/* ok */ false, evidence.format, "unknown attestation format"};
 }
 
 } // namespace mpss::attest

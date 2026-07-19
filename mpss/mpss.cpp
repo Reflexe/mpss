@@ -11,15 +11,8 @@
 namespace mpss
 {
 
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
-{
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
-                     get_algorithm_info(algorithm).type_str);
-    return impl::create_key(name, algorithm, policy);
-}
-
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm,
-                                         std::optional<AttestationRequest> attestation, KeyPolicy policy)
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                         std::optional<AttestationRequest> attestation)
 {
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' and attestation {}.", name,
                      get_algorithm_info(algorithm).type_str, attestation.has_value() ? "requested" : "not requested");
@@ -32,15 +25,7 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
 }
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                         KeyPolicy policy)
-{
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
-                     get_algorithm_info(algorithm).type_str, backend_name);
-    return impl::create_key(backend_name, name, algorithm, policy);
-}
-
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                         std::optional<AttestationRequest> attestation, KeyPolicy policy)
+                                         KeyPolicy policy, std::optional<AttestationRequest> attestation)
 {
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}' and attestation {}.",
                      name, get_algorithm_info(algorithm).type_str, backend_name,

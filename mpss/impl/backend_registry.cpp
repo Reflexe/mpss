@@ -279,39 +279,6 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
 
 // Explicit-backend functions - the real implementations.
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
-                                    KeyPolicy policy)
-{
-    if (name.empty())
-    {
-        utils::log_warning("Key name cannot be empty.");
-        return nullptr;
-    }
-    if (name.size() > max_key_name_length)
-    {
-        utils::log_warning("Key name exceeds maximum length of {} characters.", max_key_name_length);
-        return nullptr;
-    }
-
-    BackendRegistry &registry = BackendRegistry::Instance();
-    const std::shared_ptr<Backend> backend = registry.get_backend(backend_name);
-    if (nullptr == backend)
-    {
-        utils::log_and_set_error("Backend '{}' not found.", backend_name);
-        return nullptr;
-    }
-
-    utils::log_trace("Creating key '{}' with algorithm '{}' using backend '{}'.", name,
-                     get_algorithm_info(algorithm).type_str, backend->name());
-    auto key = backend->create_key(name, algorithm, policy);
-    if (nullptr != key)
-    {
-        utils::log_trace("Key '{}' created on backend '{}'.", name, backend->name());
-        BackendNameSetter::set(*key, backend->name());
-    }
-    return key;
-}
-
-std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
                                     std::optional<AttestationRequest> attestation, KeyPolicy policy)
 {
     if (name.empty())
@@ -396,17 +363,6 @@ bool verify(std::string_view backend_name, std::span<const std::byte> hash, std:
 }
 
 // Default-backend functions - delegate to the explicit-backend overloads.
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
-{
-    const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
-    if (nullptr == backend)
-    {
-        utils::log_and_set_error("No default backend available for creating key '{}'.", name);
-        return nullptr;
-    }
-    return create_key(backend->name(), name, algorithm, policy);
-}
-
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
                                     std::optional<AttestationRequest> attestation, KeyPolicy policy)
 {
@@ -470,18 +426,6 @@ const char *get_default_backend_name()
     return "";
 }
 
-std::unique_ptr<KeyPair> Backend::create_key(std::string_view name, Algorithm algorithm,
-                                             std::optional<AttestationRequest> attestation, KeyPolicy policy) const
-{
-    // Stage 1: backends do not produce attestation evidence yet. Honour the key creation
-    // and ignore the request; the resulting key reports supports_attestation() == false.
-    if (attestation.has_value())
-    {
-        utils::log_debug("Backend does not produce attestation evidence yet; creating key '{}' without it.", name);
-    }
-    return create_key(name, algorithm, policy);
-}
-
 bool Backend::is_algorithm_available(Algorithm algorithm) const
 {
     const AlgorithmInfo info = get_algorithm_info(algorithm);
@@ -492,7 +436,7 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
 
     // Sample a random name for a key and try creating it.
     const std::string random_key = "MPSS_TEST_KEY_" + random_string(16) + "_CAN_DELETE";
-    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none);
+    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, std::nullopt, KeyPolicy::none);
 
     // Could we even create a key?
     if (nullptr == key)

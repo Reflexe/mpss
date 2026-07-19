@@ -30,20 +30,9 @@ class Backend
     virtual const char *name() const = 0;
 
     /**
-     * @brief Create a new key pair.
-     * @param[in] name The name of the key pair.
-     * @param[in] algorithm The signature algorithm to use.
-     * @param[in] policy Backend-specific key policy.
-     * @return Key pair if successful, nullptr otherwise.
-     */
-    [[nodiscard]]
-    virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const = 0;
-
-    /**
      * @brief Create a new key pair, optionally requesting attestation evidence.
      *
-     * The default implementation ignores the attestation request and delegates to the
-     * three-argument @ref create_key. Backends that can attest keys override this.
+     * Backends that cannot attest keys thread the request through and ignore it.
      *
      * @param[in] name The name of the key pair.
      * @param[in] algorithm The signature algorithm to use.
@@ -53,7 +42,8 @@ class Backend
      */
     [[nodiscard]]
     virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
-                                                std::optional<AttestationRequest> attestation, KeyPolicy policy) const;
+                                                std::optional<AttestationRequest> attestation,
+                                                KeyPolicy policy) const = 0;
 
     /**
      * @brief Report what kind of attestation this backend can produce.
@@ -102,10 +92,6 @@ class Backend
 // Explicit-backend functions. The default-backend overloads below delegate to these.
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
-                                    KeyPolicy policy);
-
-[[nodiscard]]
-std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
                                     std::optional<AttestationRequest> attestation, KeyPolicy policy);
 
 [[nodiscard]]
@@ -121,9 +107,6 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm);
 // Default-backend overloads that resolve the default backend and delegate to the above.
 [[nodiscard]]
 bool is_algorithm_available(Algorithm algorithm);
-
-[[nodiscard]]
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,

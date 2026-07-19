@@ -25,11 +25,6 @@ AttestationCapability attestation_capability();
 
 } // namespace os
 
-std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy /*policy*/) const
-{
-    return os::create_key(name, algorithm);
-}
-
 std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm,
                                                std::optional<AttestationRequest> attestation,
                                                KeyPolicy /*policy*/) const

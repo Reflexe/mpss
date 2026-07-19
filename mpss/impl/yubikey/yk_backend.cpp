@@ -75,8 +75,18 @@ bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm) const
     return 0 != utils::mpss_to_yk_algorithm(algorithm);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const
+std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm,
+                                                    std::optional<AttestationRequest> attestation,
+                                                    KeyPolicy policy) const
 {
+    // YubiKey PIV cannot produce nonce-bound hardware key attestation evidence, so the
+    // request is threaded through and ignored; the resulting key reports no attestation.
+    if (attestation.has_value())
+    {
+        mpss::utils::log_debug("YubiKey backend does not produce attestation evidence; creating key '{}' without it.",
+                               name);
+    }
+
     const std::string key_name{name};
     if (key_name.empty())
     {

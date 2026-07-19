@@ -53,9 +53,6 @@ class AttestationVerifier
 
         /** @brief Returns true if the certificate/claim serial is revoked. */
         std::function<bool(std::span<const std::byte> serial)> is_revoked;
-
-        /** @brief The minimum acceptable hardware security level. */
-        AttestationSecurityLevel min_security_level{AttestationSecurityLevel::unknown};
     };
 
     /**
@@ -68,9 +65,6 @@ class AttestationVerifier
 
         /** @brief The evidence format (lets the caller distinguish real vs VBS). */
         AttestationFormat format{AttestationFormat::none};
-
-        /** @brief The security level parsed from the evidence. */
-        AttestationSecurityLevel security_level{AttestationSecurityLevel::unknown};
 
         /** @brief Human-readable explanation, especially on failure. */
         std::string reason;

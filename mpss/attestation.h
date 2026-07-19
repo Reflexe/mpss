@@ -5,6 +5,7 @@
 
 #include "mpss/defines.h"
 #include <cstddef>
+#include <variant>
 #include <vector>
 
 namespace mpss
@@ -33,21 +34,6 @@ enum class AttestationFormat
 };
 
 /**
- * @brief The hardware security level the attested key was generated and protected at.
- */
-enum class AttestationSecurityLevel
-{
-    /** @brief Not determined / not parsed yet. */
-    unknown,
-    /** @brief Software only (e.g. an emulator's public root); not secure. */
-    software,
-    /** @brief Trusted Execution Environment. */
-    tee,
-    /** @brief Dedicated secure element (e.g. StrongBox). */
-    strongbox
-};
-
-/**
  * @brief Whether attestation is merely requested (best-effort) or strictly required.
  */
 enum class AttestationRequirement
@@ -73,25 +59,27 @@ struct AttestationRequest
     AttestationRequirement requirement{AttestationRequirement::request};
 };
 
+/** @brief A DER-encoded X.509 certificate chain, leaf-first (Android Key Attestation, Apple ACME). */
+using CertChain = std::vector<std::vector<std::byte>>;
+
+/** @brief An opaque Windows NCrypt claim blob (TPM or VBS). */
+using NCryptClaim = std::vector<std::byte>;
+
 /**
  * @brief Vendor-signed attestation evidence for a newly created key.
  *
  * There is no application-defined framing: the nonce and public key are read from the
- * signed structure (X.509 chain or NCrypt claim), never from an app-defined blob.
+ * signed structure (X.509 chain or NCrypt claim), never from an app-defined blob. The
+ * @ref payload variant carries the format-appropriate representation; @c std::monostate
+ * corresponds to @ref AttestationFormat::none.
  */
 struct AttestationEvidence
 {
     /** @brief The concrete evidence format. Also the signal for how to verify it. */
     AttestationFormat format{AttestationFormat::none};
 
-    /** @brief DER-encoded X.509 certificate chain (Android, Apple ACME). Leaf first. */
-    std::vector<std::vector<std::byte>> cert_chain;
-
-    /** @brief Opaque vendor claim blob (Windows NCrypt TPM/VBS claim). */
-    std::vector<std::byte> blob;
-
-    /** @brief Security level parsed from the evidence by the verifier. */
-    AttestationSecurityLevel security_level{AttestationSecurityLevel::unknown};
+    /** @brief The signed evidence: a cert chain (Android/Apple) or an NCrypt claim (Windows). */
+    std::variant<std::monostate, CertChain, NCryptClaim> payload;
 };
 
 /**
@@ -101,12 +89,8 @@ enum class AttestationCapability
 {
     /** @brief The backend cannot attest keys. */
     none,
-    /** @brief The backend attests a named key (Android, Windows). */
-    key_attestation,
-    /** @brief The backend attests an app instance (reserved; not used in Stage 1). */
-    app_instance,
-    /** @brief The backend attests device identity (Apple ACME managed device). */
-    device_identity
+    /** @brief The backend attests the key itself (Android, Apple ACME, Windows). */
+    key_attestation
 };
 
 } // namespace mpss

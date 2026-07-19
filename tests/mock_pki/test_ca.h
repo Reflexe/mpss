@@ -28,7 +28,7 @@ struct TestKey
     [[nodiscard]]
     bool valid() const
     {
-        return nullptr != pkey;
+        return nullptr != pkey && !spki_der.empty();
     }
 };
 
