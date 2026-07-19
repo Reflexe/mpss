@@ -415,27 +415,9 @@ jobs:
           echo "Device type: $DT"
           UDID=$(xcrun simctl create mpss-ios-sim "$DT" "$RT")
           echo "UDID: $UDID"
-          # Record the UDID for the always() cleanup step now, before booting:
-          # a boot failure exits this step, and if the output weren't already
-          # written the teardown couldn't find (and delete) the created device.
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          # Booting a freshly-created simulator can transiently fail on hosted
-          # runners; retry a few times (clean shutdown between attempts) before
-          # failing, so infra flakiness alone doesn't red this required check.
-          booted=0
-          for attempt in 1 2 3; do
-            if xcrun simctl boot "$UDID" && xcrun simctl bootstatus "$UDID" -b; then
-              booted=1; break
-            fi
-            echo "::warning::iOS simulator boot attempt ${attempt} failed; retrying"
-            xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
-            sleep 5
-          done
-          if [ "$booted" -ne 1 ]; then
-            echo "::error::iOS simulator failed to boot after 3 attempts" >&2
-            xcrun simctl list devices >&2 || true
-            exit 1
-          fi
 
       - name: Run e2e tests on simulator
         shell: bash
