@@ -150,42 +150,6 @@ NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description
     return 0;
 }
 
-// Fail closed against a KSP that ignores the export policy: require the policy to read back 0 and
-// the private-key export to fail, so create_key never returns an exportable key.
-bool VerifyNonExportable(NCRYPT_KEY_HANDLE key_handle)
-{
-    DWORD export_policy = 0;
-    DWORD output_size = 0;
-    SECURITY_STATUS status = ::NCryptGetProperty(key_handle, NCRYPT_EXPORT_POLICY_PROPERTY,
-                                                 reinterpret_cast<PBYTE>(&export_policy), sizeof(export_policy),
-                                                 &output_size, /* dwFlags */ 0);
-    if (ERROR_SUCCESS != status)
-    {
-        mpss::utils::log_and_set_error("NCryptGetProperty (export policy) failed with error code {}.",
-                                       mpss::utils::to_hex(status));
-        return false;
-    }
-
-    if (sizeof(export_policy) != output_size || 0 != export_policy)
-    {
-        mpss::utils::log_and_set_error("Export policy is not enforced.");
-        return false;
-    }
-
-    DWORD private_key_size = 0;
-    status = ::NCryptExportKey(key_handle, /* hExportKey */ 0, BCRYPT_ECCPRIVATE_BLOB,
-                               /* pParameterList */ nullptr, /* pbOutput */ nullptr,
-                               /* cbOutput */ 0, &private_key_size, /* dwFlags */ 0);
-    if (ERROR_SUCCESS == status)
-    {
-        mpss::utils::log_and_set_error("NCryptExportKey unexpectedly exported the private key.");
-        return false;
-    }
-
-    mpss::utils::log_trace("Private-key export correctly refused with error code {}.", mpss::utils::to_hex(status));
-    return true;
-}
-
 NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bool fallback, DWORD create_flags)
 {
     mpss::impl::os::crypto_params const *const crypto = mpss::impl::os::utils::get_crypto_params(algorithm);
@@ -241,12 +205,6 @@ NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bo
     if (ERROR_SUCCESS != status)
     {
         mpss::utils::log_and_set_error("NCryptFinalizeKey failed with error code {}.", mpss::utils::to_hex(status));
-        return 0;
-    }
-
-    // Fail closed if the KSP did not actually make the key non-exportable. The guard deletes it.
-    if (!VerifyNonExportable(key_handle))
-    {
         return 0;
     }
 
