@@ -3,16 +3,32 @@
 
 #include "mpss-openssl/api.h"
 #include "mpss/key_policy.h"
+#include "openssl_raii.h"
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
+#include <openssl/asn1.h>
+#include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>
 #include <openssl/core.h>
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/objects.h>
+#include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
+#include <openssl/x509.h>
 #include <random>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace
 {
@@ -89,10 +105,234 @@ class MPSSDigest : public ::testing::Test
     }
 };
 
+constexpr const char *mpss_p256_algorithm = "ecdsa_secp256r1_sha256";
+
+using mpss_openssl::testing::EvpPkeyCtxPtr;
+using mpss_openssl::testing::EvpPkeyPtr;
+using mpss_openssl::testing::X509ReqPtr;
+
+bool HasParam(const OSSL_PARAM *params, const char *name)
+{
+    return nullptr != params && nullptr != OSSL_PARAM_locate_const(params, name);
+}
+
+class MPSSProvider : public ::testing::Test
+{
+  protected:
+    OSSL_LIB_CTX *mpss_libctx = nullptr;
+    OSSL_PROVIDER *mpss_prov = nullptr;
+    OSSL_PROVIDER *default_prov = nullptr;
+    std::vector<std::string> key_names;
+
+    void SetUp() override
+    {
+        mpss_libctx = OSSL_LIB_CTX_new();
+        ASSERT_NE(nullptr, mpss_libctx);
+
+        ASSERT_NE(0, OSSL_PROVIDER_add_builtin(mpss_libctx, "mpss", OSSL_provider_init));
+        mpss_prov = OSSL_PROVIDER_load(mpss_libctx, "mpss");
+        ASSERT_NE(nullptr, mpss_prov);
+        default_prov = OSSL_PROVIDER_load(mpss_libctx, "default");
+        ASSERT_NE(nullptr, default_prov);
+    }
+
+    void TearDown() override
+    {
+        for (const std::string &key_name : key_names)
+        {
+            mpss_delete_key(key_name.c_str());
+        }
+
+        if (nullptr != mpss_prov)
+        {
+            ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
+            mpss_prov = nullptr;
+        }
+        if (nullptr != default_prov)
+        {
+            ASSERT_NE(0, OSSL_PROVIDER_unload(default_prov));
+            default_prov = nullptr;
+        }
+        if (nullptr != mpss_libctx)
+        {
+            OSSL_LIB_CTX_free(mpss_libctx);
+            mpss_libctx = nullptr;
+        }
+    }
+
+    std::string MakeKeyName(std::string_view label)
+    {
+        static std::atomic<std::uint64_t> counter{0};
+        const auto ticks = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+
+        // Backends cap key names at 64 characters, so keep the generated name well under that:
+        // a short prefix, a truncated label, and a compact uniqueness suffix (a monotonic
+        // counter plus the low digits of the clock so names stay distinct across test runs).
+        std::string key_name = "mpss_ossl_" + std::string(label.substr(0, 16)) + "_" +
+                               std::to_string(ticks % 1000000000000ULL) + "_" + std::to_string(++counter);
+        mpss_delete_key(key_name.c_str());
+        key_names.push_back(key_name);
+        return key_name;
+    }
+
+    EvpPkeyPtr GenerateKey(const std::string &key_name)
+    {
+        EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss"));
+        if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
+        {
+            return nullptr;
+        }
+
+        OSSL_PARAM params[] = {
+            OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0),
+            OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(mpss_p256_algorithm), 0),
+            OSSL_PARAM_END};
+        if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
+        {
+            return nullptr;
+        }
+
+        EVP_PKEY *pkey = nullptr;
+        if (1 != EVP_PKEY_generate(ctx.get(), &pkey))
+        {
+            return nullptr;
+        }
+        return EvpPkeyPtr(pkey);
+    }
+};
+
 } // namespace
 
 namespace mpss_openssl::tests
 {
+
+// Scenario: the MPSS provider signs an X.509 request with ECDSA P-256/SHA-256.
+// Expected behavior: the signature AlgorithmIdentifier uses ecdsa-with-SHA256 with absent parameters.
+TEST_F(MPSSProvider, EcdsaSignatureAlgorithmIdentifierOmitsParameters)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("algid");
+    EvpPkeyPtr pkey = GenerateKey(key_name);
+    if (nullptr == pkey)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    X509ReqPtr req(X509_REQ_new());
+    ASSERT_NE(nullptr, req);
+    ASSERT_EQ(1, X509_REQ_set_version(req.get(), 0L));
+    ASSERT_EQ(1, X509_REQ_set_pubkey(req.get(), pkey.get()));
+
+    // Fetch SHA-256 from this fixture's libctx so the whole sign path stays in one OSSL_LIB_CTX.
+    EVP_MD *sha256 = EVP_MD_fetch(mpss_libctx, "SHA256", nullptr);
+    ASSERT_NE(nullptr, sha256);
+    const int sign_rc = X509_REQ_sign(req.get(), pkey.get(), sha256);
+    EVP_MD_free(sha256);
+    ASSERT_GT(sign_rc, 0);
+
+    // Coverage: a signature emitted with absent AlgorithmIdentifier parameters must still verify.
+    EXPECT_EQ(1, X509_REQ_verify(req.get(), pkey.get()));
+
+    const ASN1_BIT_STRING *signature = nullptr;
+    const X509_ALGOR *algorithm = nullptr;
+    X509_REQ_get0_signature(req.get(), &signature, &algorithm);
+    ASSERT_NE(nullptr, signature);
+    ASSERT_GT(ASN1_STRING_length(signature), 0);
+    ASSERT_NE(nullptr, algorithm);
+
+    const ASN1_OBJECT *algorithm_object = nullptr;
+    int parameter_type = V_ASN1_UNDEF;
+    const void *parameter_value = nullptr;
+    X509_ALGOR_get0(&algorithm_object, &parameter_type, &parameter_value, algorithm);
+    ASSERT_NE(nullptr, algorithm_object);
+    EXPECT_EQ(NID_ecdsa_with_SHA256, OBJ_obj2nid(algorithm_object));
+    EXPECT_EQ(V_ASN1_UNDEF, parameter_type);
+    EXPECT_EQ(nullptr, parameter_value);
+}
+
+// Scenario: an MPSS key is exported through the public EVP data API with each subset selection.
+// Expected behavior: export yields exactly the components named by the selection and never the private key.
+TEST_F(MPSSProvider, KeymgmtExportHonorsSelection)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("export_select");
+    EvpPkeyPtr pkey = GenerateKey(key_name);
+    if (nullptr == pkey)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    // Empty selection: neither component is exported.
+    OSSL_PARAM *none = nullptr;
+    EVP_PKEY_todata(pkey.get(), 0, &none);
+    EXPECT_FALSE(HasParam(none, OSSL_PKEY_PARAM_PUB_KEY));
+    EXPECT_FALSE(HasParam(none, OSSL_PKEY_PARAM_GROUP_NAME));
+    OSSL_PARAM_free(none);
+
+    // Parameters only: the group name, but not the public key.
+    OSSL_PARAM *params = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_todata(pkey.get(), OSSL_KEYMGMT_SELECT_ALL_PARAMETERS, &params));
+    EXPECT_TRUE(HasParam(params, OSSL_PKEY_PARAM_GROUP_NAME));
+    EXPECT_FALSE(HasParam(params, OSSL_PKEY_PARAM_PUB_KEY));
+    OSSL_PARAM_free(params);
+
+    // Public key only: the public key, but not the group name.
+    OSSL_PARAM *pub = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_todata(pkey.get(), OSSL_KEYMGMT_SELECT_PUBLIC_KEY, &pub));
+    EXPECT_TRUE(HasParam(pub, OSSL_PKEY_PARAM_PUB_KEY));
+    EXPECT_FALSE(HasParam(pub, OSSL_PKEY_PARAM_GROUP_NAME));
+    OSSL_PARAM_free(pub);
+
+    // Public key and parameters together: both components.
+    OSSL_PARAM *both = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_todata(pkey.get(), OSSL_KEYMGMT_SELECT_PUBLIC_KEY | OSSL_KEYMGMT_SELECT_ALL_PARAMETERS,
+                                 &both));
+    EXPECT_TRUE(HasParam(both, OSSL_PKEY_PARAM_PUB_KEY));
+    EXPECT_TRUE(HasParam(both, OSSL_PKEY_PARAM_GROUP_NAME));
+    OSSL_PARAM_free(both);
+
+    // A keypair request never releases private-key material. Do not rely on EVP_PKEY_todata's exact
+    // refusal semantics; assert only that no private key is ever returned.
+    OSSL_PARAM *keypair = nullptr;
+    EVP_PKEY_todata(pkey.get(), EVP_PKEY_KEYPAIR, &keypair);
+    EXPECT_FALSE(HasParam(keypair, OSSL_PKEY_PARAM_PRIV_KEY));
+    OSSL_PARAM_free(keypair);
+}
+
+// Scenario: OpenSSL asks an MPSS EC key for its standard group name parameter.
+// Expected behavior: OSSL_PKEY_PARAM_GROUP_NAME is gettable and returns prime256v1.
+TEST_F(MPSSProvider, KeymgmtAdvertisesGroupName)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("group_name");
+    EvpPkeyPtr pkey = GenerateKey(key_name);
+    if (nullptr == pkey)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    const OSSL_PARAM *gettable = EVP_PKEY_gettable_params(pkey.get());
+    ASSERT_NE(nullptr, gettable);
+    EXPECT_TRUE(HasParam(gettable, OSSL_PKEY_PARAM_GROUP_NAME));
+
+    char group_name[80] = {};
+    std::size_t group_name_len = 0;
+    ASSERT_EQ(1, EVP_PKEY_get_group_name(pkey.get(), group_name, sizeof(group_name), &group_name_len));
+    EXPECT_STREQ(SN_X9_62_prime256v1, group_name);
+    EXPECT_EQ(std::strlen(group_name), group_name_len);
+}
 
 TEST_F(MPSSDigest, SHA256)
 {
