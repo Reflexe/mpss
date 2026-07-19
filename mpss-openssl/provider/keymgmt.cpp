@@ -185,19 +185,27 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
                                            OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, nullptr, 0),
                                            OSSL_PARAM_END};
 
-    static const OSSL_PARAM *types_array[] = {no_types, param_types, key_types, all_types};
-
-    std::size_t types_idx = 0;
-    if (selection & OSSL_KEYMGMT_SELECT_ALL_PARAMETERS)
+    // Private-key material is never exportable.
+    if (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)
     {
-        types_idx += 1;
-    }
-    if (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY)
-    {
-        types_idx += 1;
+        return no_types;
     }
 
-    return types_array[types_idx];
+    const bool want_params = (selection & OSSL_KEYMGMT_SELECT_ALL_PARAMETERS) != 0;
+    const bool want_public = (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
+    if (want_params && want_public)
+    {
+        return all_types;
+    }
+    if (want_public)
+    {
+        return key_types;
+    }
+    if (want_params)
+    {
+        return param_types;
+    }
+    return no_types;
 }
 
 extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] void *provctx)
