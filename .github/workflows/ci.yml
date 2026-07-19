@@ -203,6 +203,17 @@ jobs:
             NDK_ROOT=$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)
           fi
           [ -d "$NDK_ROOT" ] || { echo "Android NDK not found" >&2; exit 1; }
+          # The build pins CMAKE_SYSTEM_VERSION=34; fail fast with a clear message
+          # if this NDK can't target API 34, rather than on an opaque toolchain error.
+          if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
+            MAX_API=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
+          else
+            MAX_API=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
+          fi
+          if [ -z "$MAX_API" ] || [ "$MAX_API" -lt 34 ]; then
+            echo "NDK at $NDK_ROOT supports max API ${MAX_API:-unknown}, but this build targets API 34." >&2
+            exit 1
+          fi
           echo "ndk=$NDK_ROOT" >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap vcpkg
