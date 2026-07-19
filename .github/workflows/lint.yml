@@ -1,0 +1,32 @@
+name: Lint
+
+# clang-format verification using the clang-format preinstalled on the runner
+# image. NOT yet a required check -- promote once it has a green baseline (the
+# repo may need a one-time format pass, and clang-format output is version
+# sensitive, so the version is pinned below).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Run clang-format
+        shell: bash
+        run: |
+          set -euo pipefail
+          CF=clang-format-18
+          command -v "$CF" >/dev/null 2>&1 || CF=clang-format
+          "$CF" --version
+          mapfile -t files < <(git ls-files '*.c' '*.cpp' '*.h' '*.hpp' '*.m' '*.mm')
+          if [ ${#files[@]} -eq 0 ]; then echo "No source files found" >&2; exit 1; fi
+          "$CF" --dry-run --Werror "${files[@]}"
