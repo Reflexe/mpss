@@ -70,8 +70,9 @@ class MPSS : public ::testing::Test
         }
         else
         {
-            mpss::GetLogger()->info("Key {} created in {}. Hardware backed: {}", name,
-                                    handle->key_info().storage_description, handle->key_info().is_hardware_backed);
+            mpss::GetLogger()->info("Key {} created in {}. Protection: {}", name,
+                                    handle->key_info().storage_description,
+                                    mpss::to_string(handle->key_info().protection));
         }
         return handle;
     }
@@ -405,7 +406,7 @@ bool TryReadExportPolicy(const std::wstring &key_name, LPCWSTR provider_name, DW
 }
 
 // Scenario: On Windows the creation ladder prefers the TPM-backed Platform Crypto Provider, then VBS, then a software key.
-// Expected behavior: creation succeeds and the storage tier matches the hardware-backed flag.
+// Expected behavior: creation succeeds and the reported protection level matches the storage tier.
 TEST_F(MPSS, WindowsTieredCreationReportsStorage)
 {
     const char *const backend = mpss::get_default_backend_name();
@@ -424,11 +425,21 @@ TEST_F(MPSS, WindowsTieredCreationReportsStorage)
     ASSERT_NE(nullptr, info.storage_description);
     const std::string storage_description = info.storage_description;
 
-    const bool is_hardware_desc =
-        storage_description == "TPM Protection" || storage_description == "Virtualization Based Security";
-    const bool is_software_desc = storage_description == "Software Protection";
-    EXPECT_TRUE(is_hardware_desc || is_software_desc) << "Unexpected storage description: " << storage_description;
-    EXPECT_EQ(is_hardware_desc, info.is_hardware_backed);
+    mpss::KeyProtection expected_protection = mpss::KeyProtection::Software;
+    if (storage_description == "TPM Protection")
+    {
+        expected_protection = mpss::KeyProtection::Hardware;
+    }
+    else if (storage_description == "Virtualization Based Security")
+    {
+        expected_protection = mpss::KeyProtection::Mixed;
+    }
+    else
+    {
+        EXPECT_EQ("Software Protection", storage_description) << "Unexpected storage description: " << storage_description;
+    }
+    EXPECT_EQ(expected_protection, info.protection)
+        << "protection=" << mpss::to_string(info.protection) << " description=" << storage_description;
 
     handle->release_key();
     MPSS::DeleteKey(key_name);
@@ -451,14 +462,14 @@ TEST_F(MPSS, WindowsReopenStorageReporting)
     ASSERT_NE(nullptr, created);
     ASSERT_NE(nullptr, created->key_info().storage_description);
     const std::string created_description = created->key_info().storage_description;
-    const bool created_hardware_backed = created->key_info().is_hardware_backed;
+    const mpss::KeyProtection created_protection = created->key_info().protection;
     created->release_key();
 
     std::unique_ptr<mpss::KeyPair> reopened = mpss::KeyPair::Open(key_name);
     ASSERT_NE(nullptr, reopened);
     ASSERT_NE(nullptr, reopened->key_info().storage_description);
     EXPECT_EQ(created_description, std::string(reopened->key_info().storage_description));
-    EXPECT_EQ(created_hardware_backed, reopened->key_info().is_hardware_backed);
+    EXPECT_EQ(created_protection, reopened->key_info().protection);
 
     reopened->release_key();
     MPSS::DeleteKey(key_name);
@@ -531,7 +542,7 @@ TEST_F(MPSS, WindowsCreatedKeyRefusesPrivateExport)
 }
 
 // Scenario: a plain software key (created without VBS) is opened through mpss.
-// Expected behavior: mpss reports "Software Protection" and is_hardware_backed == false.
+// Expected behavior: mpss reports "Software Protection" and protection == Software.
 TEST_F(MPSS, WindowsSoftwareKeyReportsSoftwareStorage)
 {
     const char *const backend = mpss::get_default_backend_name();
@@ -549,14 +560,14 @@ TEST_F(MPSS, WindowsSoftwareKeyReportsSoftwareStorage)
     ASSERT_NE(nullptr, handle);
     ASSERT_NE(nullptr, handle->key_info().storage_description);
     EXPECT_EQ("Software Protection", std::string(handle->key_info().storage_description));
-    EXPECT_FALSE(handle->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::KeyProtection::Software, handle->key_info().protection);
 
     handle->release_key();
     MPSS::DeleteKey(key_name);
 }
 
 // Scenario: a VBS-isolated key (created with the require_vbs flag) is opened through mpss.
-// Expected behavior: mpss reports "Virtualization Based Security" and is_hardware_backed == true.
+// Expected behavior: mpss reports "Virtualization Based Security" and protection == Mixed.
 TEST_F(MPSS, WindowsVbsKeyReportsVbsStorage)
 {
     const char *const backend = mpss::get_default_backend_name();
@@ -581,7 +592,7 @@ TEST_F(MPSS, WindowsVbsKeyReportsVbsStorage)
     ASSERT_NE(nullptr, handle);
     ASSERT_NE(nullptr, handle->key_info().storage_description);
     EXPECT_EQ("Virtualization Based Security", std::string(handle->key_info().storage_description));
-    EXPECT_TRUE(handle->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::KeyProtection::Mixed, handle->key_info().protection);
 
     handle->release_key();
     MPSS::DeleteKey(key_name);

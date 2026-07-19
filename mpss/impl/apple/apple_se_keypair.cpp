@@ -15,7 +15,7 @@ namespace mpss::impl::os
 {
 
 AppleSEKeyPair::AppleSEKeyPair(std::string_view name, Algorithm algorithm)
-    : AppleKeyPairBase{name, algorithm, /* hardware_backed */ true, storage_description}
+    : AppleKeyPairBase{name, algorithm, KeyProtection::Hardware, storage_description}
 {
 }
 

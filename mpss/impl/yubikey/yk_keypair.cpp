@@ -12,7 +12,7 @@ namespace mpss::impl::yubikey
 {
 
 YubiKeyKeyPair::YubiKeyKeyPair(std::string_view name, Algorithm algorithm, std::uint8_t slot, std::uint32_t serial)
-    : KeyPair{algorithm, /* hardware_backed */ true, "YubiKey PIV"}, name_{name}, slot_{slot}, serial_{serial}
+    : KeyPair{algorithm, mpss::KeyProtection::Hardware, "YubiKey PIV"}, name_{name}, slot_{slot}, serial_{serial}
 {
 }
 

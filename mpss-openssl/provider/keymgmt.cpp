@@ -278,7 +278,7 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gettable_params([[maybe_unused]] void 
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
-                                     OSSL_PARAM_int("is_hardware_backed", nullptr),
+                                     OSSL_PARAM_utf8_string("key_protection", nullptr, 0),
                                      OSSL_PARAM_utf8_string("storage_description", nullptr, 0),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_BITS, nullptr),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_SECURITY_BITS, nullptr),
@@ -341,8 +341,8 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
     {
         return 0;
     }
-    if ((p = OSSL_PARAM_locate(params, "is_hardware_backed")) &&
-        !OSSL_PARAM_set_int(p, key->key_pair->key_info().is_hardware_backed ? 1 : 0))
+    if ((p = OSSL_PARAM_locate(params, "key_protection")) &&
+        !OSSL_PARAM_set_utf8_string(p, mpss::to_string(key->key_pair->key_info().protection)))
     {
         return 0;
     }

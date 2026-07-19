@@ -459,15 +459,17 @@ TEST(MPSS_OpenSSL, GetKeyDescriptors)
 
     // Query gettable parameters
     OSSL_PARAM get_params[4];
-    int is_hw = -1;
+    char key_protection[32] = {0};
     char storage_desc[256] = {0};
-    get_params[0] = OSSL_PARAM_construct_int("is_hardware_backed", &is_hw);
+    get_params[0] = OSSL_PARAM_construct_utf8_string("key_protection", key_protection, sizeof(key_protection));
     get_params[1] = OSSL_PARAM_construct_utf8_string("storage_description", storage_desc, sizeof(storage_desc));
     get_params[2] = OSSL_PARAM_END;
 
     ASSERT_EQ(1, EVP_PKEY_get_params(pkey, get_params));
-    // is_hardware_backed should be 0 or 1
-    ASSERT_TRUE(0 == is_hw || 1 == is_hw);
+    // key_protection should be one of the canonical names
+    const std::string protection = key_protection;
+    ASSERT_TRUE(protection == "hardware" || protection == "mixed" || protection == "software")
+        << "Unexpected key_protection: " << protection;
     // storage_description should not be empty
     ASSERT_GT(strlen(storage_desc), 0);
 
