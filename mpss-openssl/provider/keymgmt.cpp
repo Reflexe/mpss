@@ -276,6 +276,7 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gettable_params([[maybe_unused]] void 
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_SECURITY_BITS, nullptr),
                                      OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, nullptr, 0),
                                      OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_DEFAULT_DIGEST, nullptr, 0),
+                                     OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, nullptr, 0),
                                      OSSL_PARAM_END};
 
     return ret;
@@ -304,6 +305,7 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
     std::int32_t security_bits = 0;
     const std::string mandatory_digest{key->hash_name.value_or("")};
     const std::string default_digest{key->hash_name.value_or("")};
+    const std::string group_name{key->group_name.value_or("")};
 
     if (key->has_valid_key())
     {
@@ -356,6 +358,10 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
     }
     if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_DEFAULT_DIGEST)) &&
         !OSSL_PARAM_set_utf8_string(p, default_digest.data()))
+    {
+        return 0;
+    }
+    if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_GROUP_NAME)) && !OSSL_PARAM_set_utf8_string(p, group_name.c_str()))
     {
         return 0;
     }
