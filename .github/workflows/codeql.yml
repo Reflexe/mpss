@@ -32,6 +32,10 @@ jobs:
       - name: Install pcsclite (YubiKey backend dependency)
         run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
 
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
       - name: Cache vcpkg archives
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
