@@ -90,8 +90,7 @@ TEST(AttestationCapabilityTest, OsBackendReportsExpectedCapability)
 // Expected behavior: the query reports none rather than failing.
 TEST(AttestationCapabilityTest, UnknownBackendReportsNone)
 {
-    EXPECT_EQ(mpss::KeyPair::attestation_capability("this-backend-does-not-exist"),
-              mpss::AttestationCapability::none);
+    EXPECT_EQ(mpss::KeyPair::attestation_capability("this-backend-does-not-exist"), mpss::AttestationCapability::none);
 }
 
 // Scenario: the capability query defaults its backend argument to "os".
@@ -152,8 +151,9 @@ TEST(AttestationVerifierTest, NoneEvidenceIsRejected)
     EXPECT_FALSE(result.reason.empty());
 }
 
-// Scenario: verifying evidence for each real format against the Stage 1 skeleton.
-// Expected behavior: every per-format verifier reports "not implemented" and echoes the format.
+// Scenario: verifying evidence for the formats whose per-format verifier is still a Stage 1 skeleton.
+// Expected behavior: each remaining stub reports "not implemented" and echoes the format. The Windows
+// TPM and VBS verifiers are implemented in Stage 3 and are covered by their own dedicated tests.
 TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
 {
     const mpss::attest::AttestationVerifier verifier;
@@ -161,8 +161,7 @@ TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
     const std::vector<std::byte> pubkey = make_bytes(8, std::byte{0x22});
 
     for (const mpss::AttestationFormat format :
-         {mpss::AttestationFormat::android_key_attestation, mpss::AttestationFormat::apple_acme_managed_device,
-          mpss::AttestationFormat::windows_tpm_claim, mpss::AttestationFormat::windows_vbs_claim})
+         {mpss::AttestationFormat::android_key_attestation, mpss::AttestationFormat::apple_acme_managed_device})
     {
         mpss::AttestationEvidence evidence;
         evidence.format = format;

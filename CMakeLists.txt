@@ -485,6 +485,12 @@ if(MPSS_BUILD_TESTS)
     target_link_libraries(mpss_tests PRIVATE mpss_attest_verify)
     target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # The Windows attestation E2E test drives the CNG claim APIs (NCryptCreateClaim /
+        # NCryptVerifyClaim) directly for the on-runner VBS create -> claim -> verify round trip.
+        target_link_libraries(mpss_tests PRIVATE ncrypt crypt32)
+    endif()
+
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.
         target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})

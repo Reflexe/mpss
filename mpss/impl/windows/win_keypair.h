@@ -6,6 +6,8 @@
 #include "mpss/mpss.h"
 #include <Windows.h>
 #include <ncrypt.h>
+#include <optional>
+#include <utility>
 
 namespace mpss::impl::os
 {
@@ -14,8 +16,9 @@ class WindowsKeyPair : public mpss::KeyPair
 {
   public:
     WindowsKeyPair(mpss::Algorithm algorithm, NCRYPT_KEY_HANDLE handle, bool hardware_backed,
-                   const char *storage_description)
-        : mpss::KeyPair(algorithm, hardware_backed, storage_description), key_handle_(handle)
+                   const char *storage_description, std::optional<mpss::AttestationEvidence> evidence = std::nullopt)
+        : mpss::KeyPair(algorithm, hardware_backed, storage_description), key_handle_(handle),
+          evidence_(std::move(evidence))
     {
     }
 
@@ -35,10 +38,23 @@ class WindowsKeyPair : public mpss::KeyPair
     [[nodiscard]]
     std::size_t extract_key(std::span<std::byte> public_key) const override;
 
+    [[nodiscard]]
+    bool supports_attestation() const override
+    {
+        return evidence_.has_value();
+    }
+
+    [[nodiscard]]
+    std::optional<mpss::AttestationEvidence> attestation() const override
+    {
+        return evidence_;
+    }
+
     void release_key() noexcept override;
 
   private:
     NCRYPT_KEY_HANDLE key_handle_ = 0;
+    std::optional<mpss::AttestationEvidence> evidence_;
 
     void win_release() noexcept;
 

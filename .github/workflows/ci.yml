@@ -515,3 +515,87 @@ jobs:
             xcrun simctl shutdown "$UDID" || true
             xcrun simctl delete "$UDID" || true
           fi
+
+  # -------------------------------------------------------------------------
+  # Windows VBS / Key Guard attestation E2E. This is the one real hardware key
+  # attestation that GENERATES and VERIFIES on a hosted runner: the windows-2022
+  # image runs VBS (Key Guard) even with no TPM, so NCryptCreateClaim(VBS_ROOT)
+  # -> NCryptVerifyClaim round-trips for real here -- verified from a real CI log
+  # (the desktop windows-2022 job runs this exact test and reports
+  # "[  OK  ] WindowsVbsE2ETest.GenerateVerifyRoundTrip", not SKIPPED). VBS is
+  # NOT externally verifiable (per-machine/per-boot root), so this is a CI test
+  # lane, not production trust -- the shared cross-platform verifier still refuses
+  # the windows_vbs_claim format. A skip of the VBS round trip is treated as a
+  # failure, because VBS is present on this hosted image, so the gate never
+  # silently no-ops.
+  #
+  # Pinned to windows-2022 (not windows-latest) on purpose: the win-vs2022-x64
+  # preset uses the "Visual Studio 17 2022" generator, but GitHub's windows-latest
+  # now maps to the Windows Server 2025 image, which ships Visual Studio 2026 (v18)
+  # and no VS 2022 -- so `cmake --preset win-vs2022-x64` fails at configure there
+  # ("Generator Visual Studio 17 2022 could not find any instance of Visual
+  # Studio."). This keeps the job on the same toolchain/image as every other
+  # Windows job in this workflow.
+  # -------------------------------------------------------------------------
+  windows-vbs-attestation:
+    name: Windows VBS attestation E2E ${{ matrix.configuration }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: windows-2022-vcpkg-${{ hashFiles('vcpkg.json') }}-win-vs2022-x64
+          restore-keys: |
+            windows-2022-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            windows-2022-vcpkg-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout "$BASELINE"
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . --preset win-vs2022-x64
+
+      - name: Build test suite
+        shell: bash
+        run: cmake --build out/build/win-vs2022-x64 --config "${{ matrix.configuration }}" --target mpss_tests
+
+      - name: Run VBS create -> claim -> verify E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="out/build/win-vs2022-x64/bin/${{ matrix.configuration }}/mpss_tests.exe"
+          if [ ! -f "$BIN" ]; then
+            echo "Test binary not found at $BIN" >&2
+            find out/build/win-vs2022-x64/bin -name 'mpss_tests*' -maxdepth 2 || true
+            exit 1
+          fi
+          # The full Windows attestation surface: real VBS/TPM generation through the backend, the
+          # on-runner VBS create->claim->verify round trip, and the shared cross-platform verifiers.
+          "$BIN" --gtest_filter='WindowsVbsE2ETest.*:WindowsAttestedCreateE2ETest.*:WindowsVbsVerifierTest.*:WindowsTpmVerifierTest.*' 2>&1 | tee gtest.log
+          # VBS (Key Guard) is present on the hosted windows-2022 image, so the VBS round trip MUST
+          # actually run. Treat a skip as a failure so a broken generation/verify path can never
+          # hide behind a skip.
+          if grep -Eq '\[  SKIPPED \] .*WindowsVbsE2ETest\.GenerateVerifyRoundTrip' gtest.log; then
+            echo "::error::VBS create->claim->verify E2E was skipped on the hosted windows-2022 runner (VBS/Key Guard expected to be available)"
+            exit 1
+          fi
+          grep -q '\[  PASSED  \]' gtest.log || { echo "::error::no gtest PASSED summary (crash or no tests ran)"; exit 1; }
+          if grep -q '\[  FAILED  \]' gtest.log; then
+            echo "::error::gtest reported failing tests"; exit 1
+          fi

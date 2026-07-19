@@ -13,6 +13,8 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         list(APPEND mpss_TESTS_FILES
             "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/attestation_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/attestation_windows_verifier_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/attestation_windows_e2e_tests.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/mock_pki/mock_pki.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/mock_pki/test_ca.cpp"
         )
