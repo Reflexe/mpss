@@ -305,4 +305,69 @@ TEST(MockPkiTest, FreshEvidenceReachesVerifier)
     EXPECT_FALSE(result.verifier_result.ok);
 }
 
+// --- Central AttestationRequirement::require enforcement ---
+//
+// The fail-closed net lives in KeyPair::Create behind the backend registry, so exercising it
+// needs a real backend that creates a key (Stage 1 backends never attest). These follow the
+// repo convention of gating backend-dependent tests on is_algorithm_available and are kept out
+// of the backend-free sanitizer filter.
+
+// Scenario: attestation is required but the backend produces no evidence (the Stage 1 state).
+// Expected behavior: Create returns nullptr and leaves no key behind in storage.
+TEST(AttestationRequireTest, RequireWithoutEvidenceFailsClosed)
+{
+    if (!mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "No backend can create the test key on this runner";
+    }
+
+    const std::string key_name = "mpss_att_require_no_evidence";
+    if (auto existing = mpss::KeyPair::Open(key_name))
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+
+    mpss::AttestationRequest request;
+    request.challenge = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+    request.requirement = mpss::AttestationRequirement::require;
+
+    auto key = mpss::KeyPair::Create(key_name, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                     std::move(request));
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name));
+}
+
+// Scenario: attestation is only requested (best-effort) on a backend that produces no evidence.
+// Expected behavior: the key is created and reports supports_attestation() == false.
+TEST(AttestationRequireTest, RequestWithoutEvidenceKeepsKey)
+{
+    if (!mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "No backend can create the test key on this runner";
+    }
+
+    const std::string key_name = "mpss_att_request_no_evidence";
+    if (auto existing = mpss::KeyPair::Open(key_name))
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+
+    mpss::AttestationRequest request;
+    request.challenge = {std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C}, std::byte{0x0D}};
+    request.requirement = mpss::AttestationRequirement::request;
+
+    auto key = mpss::KeyPair::Create(key_name, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                     std::move(request));
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_FALSE(key->supports_attestation());
+    EXPECT_TRUE(key->delete_key());
+}
+
+// Scenario #3 (require + a backend that DOES attest -> key returned) is not covered here: no
+// Stage 1 backend produces evidence, and injecting a fake attesting backend would need the
+// non-exported registry API, breaking the shared-library build. It lands with the first real
+// attesting backend in a later stage.
+
 } // namespace mpss::tests
