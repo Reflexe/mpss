@@ -90,8 +90,7 @@ TEST(AttestationCapabilityTest, OsBackendReportsExpectedCapability)
 // Expected behavior: the query reports none rather than failing.
 TEST(AttestationCapabilityTest, UnknownBackendReportsNone)
 {
-    EXPECT_EQ(mpss::KeyPair::attestation_capability("this-backend-does-not-exist"),
-              mpss::AttestationCapability::none);
+    EXPECT_EQ(mpss::KeyPair::attestation_capability("this-backend-does-not-exist"), mpss::AttestationCapability::none);
 }
 
 // Scenario: the capability query defaults its backend argument to "os".
@@ -152,8 +151,9 @@ TEST(AttestationVerifierTest, NoneEvidenceIsRejected)
     EXPECT_FALSE(result.reason.empty());
 }
 
-// Scenario: verifying evidence for each real format against the Stage 1 skeleton.
-// Expected behavior: every per-format verifier reports "not implemented" and echoes the format.
+// Scenario: verifying evidence for each still-stubbed format against the Stage 1 skeleton.
+// Expected behavior: the not-yet-implemented per-format verifiers report "not implemented" and echo
+// the format. apple_acme_managed_device is implemented in Stage 4 and is covered separately below.
 TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
 {
     const mpss::attest::AttestationVerifier verifier;
@@ -161,8 +161,8 @@ TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
     const std::vector<std::byte> pubkey = make_bytes(8, std::byte{0x22});
 
     for (const mpss::AttestationFormat format :
-         {mpss::AttestationFormat::android_key_attestation, mpss::AttestationFormat::apple_acme_managed_device,
-          mpss::AttestationFormat::windows_tpm_claim, mpss::AttestationFormat::windows_vbs_claim})
+         {mpss::AttestationFormat::android_key_attestation, mpss::AttestationFormat::windows_tpm_claim,
+          mpss::AttestationFormat::windows_vbs_claim})
     {
         mpss::AttestationEvidence evidence;
         evidence.format = format;
@@ -172,6 +172,24 @@ TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
         EXPECT_EQ(result.format, format); // the format is echoed so callers can distinguish real vs VBS
         EXPECT_NE(result.reason.find("not implemented"), std::string::npos);
     }
+}
+
+// Scenario: the apple_acme_managed_device format is implemented in Stage 4, not a stub.
+// Expected behavior: it rejects malformed evidence with a real reason (never "not implemented"),
+// still echoing the format. Full positive/negative coverage lives in attestation_apple_acme_tests.
+TEST(AttestationVerifierTest, AppleAcmeFormatIsImplemented)
+{
+    const mpss::attest::AttestationVerifier verifier;
+    const std::vector<std::byte> nonce = make_bytes(8, std::byte{0x11});
+    const std::vector<std::byte> pubkey = make_bytes(8, std::byte{0x22});
+
+    mpss::AttestationEvidence evidence;
+    evidence.format = mpss::AttestationFormat::apple_acme_managed_device; // empty chain
+
+    const mpss::attest::AttestationVerifier::Result result = verifier.verify(evidence, nonce, pubkey);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.format, mpss::AttestationFormat::apple_acme_managed_device);
+    EXPECT_EQ(result.reason.find("not implemented"), std::string::npos);
 }
 
 // --- Reduced mock PKI: nonce bookkeeping + a call into the shared verifier ---

@@ -11,6 +11,7 @@ endif()
 # stage (see docs/attestation-design.md, staged rollout).
 list(APPEND mpss_attest_verify_SOURCE_FILES
     "${CMAKE_CURRENT_LIST_DIR}/attestation_verifier.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/verify_apple_acme.cpp"
 )
 
 # Update the source list in the parent scope.

@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-attest-verify/attestation_verifier.h"
+#include "mpss-attest-verify/verify_apple_acme.h"
 #include <span>
 #include <utility>
 
@@ -27,12 +28,12 @@ AttestationVerifier::Result verify_android_key_attestation(const AttestationEvid
     return not_implemented(AttestationFormat::android_key_attestation);
 }
 
-AttestationVerifier::Result verify_apple_acme_managed_device(const AttestationEvidence & /*evidence*/,
-                                                             std::span<const std::byte> /*nonce*/,
-                                                             std::span<const std::byte> /*pubkey*/,
-                                                             const AttestationVerifier::Policy & /*policy*/)
+AttestationVerifier::Result verify_apple_acme_managed_device(const AttestationEvidence &evidence,
+                                                             std::span<const std::byte> nonce,
+                                                             std::span<const std::byte> pubkey,
+                                                             const AttestationVerifier::Policy &policy)
 {
-    return not_implemented(AttestationFormat::apple_acme_managed_device);
+    return apple::verify_apple_acme_managed_device(evidence, nonce, pubkey, policy);
 }
 
 AttestationVerifier::Result verify_windows_tpm_claim(const AttestationEvidence & /*evidence*/,
