@@ -68,7 +68,7 @@ bool add_basic_constraints(X509 *cert, X509 *issuer, bool is_ca)
     X509V3_CTX ctx;
     X509V3_set_ctx(&ctx, issuer, cert, nullptr, nullptr, 0);
     X509ExtPtr ext{X509V3_EXT_conf_nid(nullptr, &ctx, NID_basic_constraints,
-                                       is_ca ? const_cast<char *>("critical,CA:TRUE") : const_cast<char *>("CA:FALSE")),
+                                       is_ca ? "critical,CA:TRUE" : "CA:FALSE"),
                    X509_EXTENSION_free};
     if (nullptr == ext)
     {
