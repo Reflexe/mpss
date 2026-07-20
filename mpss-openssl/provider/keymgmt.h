@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <mpss/mpss.h>
 #include <openssl/core.h>
@@ -10,9 +11,15 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mpss_openssl::provider
 {
+
+struct mpss_key_reference
+{
+    std::string key_name;
+};
 
 struct mpss_key
 {
