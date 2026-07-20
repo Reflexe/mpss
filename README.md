@@ -749,7 +749,7 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_key_name` | UTF-8 string | The key's persistent name. |
 | `mpss_algorithm` | UTF-8 string | The key's algorithm suite (canonical form). |
 | `mpss_backend` | UTF-8 string | The backend that created or opened the key. |
-| `is_hardware_backed` | int | `1` if the key is stored in hardware (e.g., Secure Enclave, YubiKey), `0` otherwise. |
+| `key_protection` | UTF-8 string | Canonical protection level of the key: `hardware` (TPM, Secure Enclave, YubiKey), `mixed` (hardware-assisted isolation such as Windows VBS), or `software`. |
 | `storage_description` | UTF-8 string | Human-readable description of the storage location (e.g., `"Keychain"`, `"YubiKey PIV"`). |
 
 The standard OpenSSL parameters `OSSL_PKEY_PARAM_BITS`, `OSSL_PKEY_PARAM_SECURITY_BITS`, `OSSL_PKEY_PARAM_MANDATORY_DIGEST`, and `OSSL_PKEY_PARAM_DEFAULT_DIGEST` are also supported.
