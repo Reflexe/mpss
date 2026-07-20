@@ -20,5 +20,5 @@ extern "C"
     bool MPSS_GetPublicKey(const char *keyName, std::uint8_t *pk, std::size_t *pkSize);
     bool MPSS_DeleteKey(const char *keyName);
     void MPSS_RemoveKey(const char *keyName);
-    const char *MPSS_GetLastError();
+    std::size_t MPSS_GetLastError(char *error, std::size_t errorSize);
 }

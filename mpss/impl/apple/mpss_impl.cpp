@@ -107,7 +107,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return std::make_unique<AppleKeychainKeyPair>(name, algorithm);
     }
 
-    mpss::utils::log_and_set_error("Failed to create key in keychain: {}", MPSS_GetLastError());
+    mpss::utils::log_and_set_error("Failed to create key in keychain: {}", utils::MPSS_GetLastError());
     return nullptr;
 }
 

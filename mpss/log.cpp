@@ -12,16 +12,29 @@ namespace mpss
 
 std::shared_ptr<Logger> GetOrSetLogger(std::shared_ptr<Logger> new_logger)
 {
-    static std::shared_mutex mtx;
-    static std::shared_ptr<Logger> logger = NewDefaultLogger();
+    // Immortal singleton state: heap-allocated once and never destroyed, so the global logger stays
+    // valid even when MPSS is called from a host's static/global destructor during process exit. This
+    // avoids the static destruction-order fiasco (a host static destroyed after this one would otherwise
+    // lock a destroyed mutex / read a destroyed shared_ptr). Consequence: ~Logger does not run at exit,
+    // so a custom logger's flush/close handlers are not auto-invoked on shutdown -- call mpss_log_close()
+    // (or Logger::close()) for a deterministic final flush. The one-time allocation is reclaimed by the
+    // OS at process exit.
+    struct State
+    {
+        std::shared_mutex mtx;
+        std::shared_ptr<Logger> logger;
+    };
+    static State &state =
+        *new State{.logger = NewDefaultLogger()}; // NOLINT(cppcoreguidelines-owning-memory) - intentional immortal singleton, never freed.
+
     if (nullptr != new_logger)
     {
-        std::unique_lock lock{mtx};
-        logger = std::move(new_logger);
-        return logger;
+        std::unique_lock lock{state.mtx};
+        state.logger = std::move(new_logger);
+        return state.logger;
     }
-    std::shared_lock lock{mtx};
-    return logger;
+    std::shared_lock lock{state.mtx};
+    return state.logger;
 }
 
 void Logger::log(LogLevel level, const std::string &msg) const

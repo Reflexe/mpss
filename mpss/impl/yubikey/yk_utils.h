@@ -36,7 +36,8 @@ SecureByteVector get_mgm_key_from_env();
  *
  * If the YubiKey PIN policy field (bits 0-3) is non-zero, maps the value to the corresponding
  * ykpiv constant. Otherwise, falls back to the MPSS_YUBIKEY_PINPOLICY environment variable,
- * then to the hardcoded default (YKPIV_PINPOLICY_ONCE).
+ * then to the hardcoded default (YKPIV_PINPOLICY_ONCE). The weakest environment value, 'never',
+ * is honored only when MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE is set; otherwise the default is used.
  *
  * @param policy The key policy bitmask.
  * @return The ykpiv PIN policy constant.
@@ -48,7 +49,8 @@ std::uint8_t resolve_pin_policy(KeyPolicy policy);
  *
  * If the YubiKey touch policy field (bits 4-7) is non-zero, maps the value to the corresponding
  * ykpiv constant. Otherwise, falls back to the MPSS_YUBIKEY_TOUCHPOLICY environment variable,
- * then to the hardcoded default (YKPIV_TOUCHPOLICY_NEVER).
+ * then to the hardcoded default (YKPIV_TOUCHPOLICY_CACHED). The weakest environment value, 'never',
+ * is honored only when MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE is set; otherwise the default is used.
  *
  * @param policy The key policy bitmask.
  * @return The ykpiv touch policy constant.

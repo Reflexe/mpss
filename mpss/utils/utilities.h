@@ -52,7 +52,11 @@ std::optional<ByteVectorType> hex_string_to_bytes(std::string_view hex_str)
     {
         std::uint8_t this_byte{};
         auto [ptr, ec] = std::from_chars(hex_str.data() + i, hex_str.data() + i + 2, this_byte, 16);
-        if (ec != std::errc{})
+        // Require both characters of the window to be consumed. std::from_chars reports success as soon as
+        // it parses at least one digit, so without the end-pointer check a window like "1g" would parse as
+        // 0x01 (stopping at 'g') and the invalid character would be silently dropped -- turning a typo'd
+        // hex string into a different, valid-looking byte sequence.
+        if (std::errc{} != ec || ptr != hex_str.data() + i + 2)
         {
             return std::nullopt;
         }

@@ -249,4 +249,16 @@ class YubiKeyPIV
 [[nodiscard]]
 bool authenticate_pin_interactive(YubiKeyPIV &piv, std::string_view context);
 
+/**
+ * @brief Check whether a key name is reserved for MPSS internal use.
+ *
+ * Free and deleted slots are marked by a sentinel label written to the slot's certificate. A user-supplied name
+ * equal to that sentinel would collide with the marker, so such names must be rejected before they reach a slot.
+ *
+ * @param name The key name to check.
+ * @return true if the name is reserved and must not be used, false otherwise.
+ */
+[[nodiscard]]
+bool is_reserved_key_name(std::string_view name);
+
 } // namespace mpss::impl::yubikey

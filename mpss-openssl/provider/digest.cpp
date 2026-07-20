@@ -256,7 +256,12 @@ int mpss_digest_digest_internal(void *ctx, const unsigned char *in, ::size_t inl
                                                unsigned char *out, ::size_t *outl, ::size_t outsz)                     \
     {                                                                                                                  \
         void *ctx = mpss_digest_newctx_##digest(provctx);                                                              \
-        return mpss_digest_digest_internal(ctx, in, inl, out, outl, outsz);                                            \
+        const int result = mpss_digest_digest_internal(ctx, in, inl, out, outl, outsz);                                \
+        /* The one-shot entry owns the context it just allocated -- the caller never sees the pointer, so it     */    \
+        /* must be freed here or every invocation leaks the struct plus the EVP_MD/EVP_MD_CTX owned by its        */    \
+        /* destructor. mpss_digest_freectx tolerates a null ctx (null provctx path allocates nothing).            */    \
+        mpss_digest_freectx(ctx);                                                                                      \
+        return result;                                                                                                 \
     }
 
 MPSS_MAKE_DIGEST_DIGEST(SHA256)

@@ -3,6 +3,7 @@
 
 #include "mpss/impl/apple/apple_keychain_keypair.h"
 #include "mpss/impl/apple/apple_api_wrapper.h"
+#include "mpss/impl/apple/apple_utils.h"
 #include "mpss/utils/utilities.h"
 
 namespace
@@ -29,7 +30,7 @@ bool AppleKeychainKeyPair::do_delete_key()
     const bool result = MPSS_DeleteKey(name().c_str());
     if (!result)
     {
-        mpss::utils::log_and_set_error("Failed to delete key: {}", MPSS_GetLastError());
+        mpss::utils::log_and_set_error("Failed to delete key: {}", utils::MPSS_GetLastError());
     }
     else
     {
@@ -49,7 +50,7 @@ std::size_t AppleKeychainKeyPair::do_sign_hash(std::span<const std::byte> hash, 
                        reinterpret_cast<std::uint8_t *>(sig.data()), &signature_size))
     {
         // This should not fail at this point. The caller already validated inputs.
-        mpss::utils::log_and_set_error("Failed to sign hash: {}", MPSS_GetLastError());
+        mpss::utils::log_and_set_error("Failed to sign hash: {}", utils::MPSS_GetLastError());
         return 0;
     }
 
@@ -75,7 +76,7 @@ std::size_t AppleKeychainKeyPair::do_extract_key(std::span<std::byte> public_key
     if (!MPSS_GetPublicKey(name().c_str(), reinterpret_cast<std::uint8_t *>(public_key.data()), &pk_size))
     {
         // This should not fail at this point. The caller already validated inputs.
-        mpss::utils::log_and_set_error("Failed to retrieve public key: {}", MPSS_GetLastError());
+        mpss::utils::log_and_set_error("Failed to retrieve public key: {}", utils::MPSS_GetLastError());
         return 0;
     }
 

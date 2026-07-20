@@ -84,6 +84,12 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
         return nullptr;
     }
 
+    if (is_reserved_key_name(name))
+    {
+        mpss::utils::log_warning("Key name '{}' is reserved.", key_name);
+        return nullptr;
+    }
+
     if (unsupported == algorithm)
     {
         mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
@@ -189,6 +195,12 @@ std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
     if (key_name.empty())
     {
         mpss::utils::log_warning("Key name cannot be empty.");
+        return nullptr;
+    }
+
+    if (is_reserved_key_name(name))
+    {
+        mpss::utils::log_warning("Key name '{}' is reserved.", key_name);
         return nullptr;
     }
 

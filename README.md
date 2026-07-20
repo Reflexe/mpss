@@ -390,6 +390,8 @@ The default log level is `mpss::LogLevel::INFO`.
 After calling `close()` on a logger, all handlers are reset and subsequent log calls are silently dropped.
 To restore logging, call `mpss::ResetDefaultLogger()` to reinstall the default logger, or use `mpss::GetOrSetLogger` to install a new custom logger.
 
+The global logger and MPSS's internal backend registry are intentionally **never destroyed** at process exit. This keeps MPSS safe to call from a host object's static or global destructor (avoiding the static destruction-order problem), but it has one consequence for custom loggers: a custom logger's `flush`/`close` handlers are **not** invoked automatically at process exit. If your logger buffers output or holds a resource such as a file handle, call `mpss::GetLogger()->close()` (or `mpss_log_close()` from C) during your controlled shutdown to guarantee a final flush. The default `std::cout`/`std::cerr` logger requires no action. For the same reason, avoid performing MPSS-dependent work in your own static/global destructors where ordering relative to the C runtime's stream flushing is undefined.
+
 ### Platform-Dependent Behavior
 There is a single known difference in how MPSS behaves on different platforms.
 This happens when opening several instances of the same key.
@@ -445,7 +447,7 @@ If you prefer to use a custom management key instead of the PIN-protected mode, 
 export MPSS_YUBIKEY_MGM_KEY=<32, 48, or 64-character hexadecimal string>
 ```
 
-**Note**: Without PIN-protected mode or a custom management key, MPSS will attempt to use the factory default management key.
+**Note**: Without PIN-protected mode or a custom management key, MPSS will attempt to use the factory default management key. If `MPSS_YUBIKEY_MGM_KEY` **is** set but is malformed or does not authenticate, MPSS fails the operation rather than silently falling back to the factory default.
 
 **Note**: MPSS does **not** support the legacy PIN-derived management key mode. If your YubiKey is configured with a PIN-derived management key, MPSS will fail with an error.
 
@@ -482,6 +484,8 @@ export MPSS_YUBIKEY_PINPOLICY=once
 # Default: cached
 export MPSS_YUBIKEY_TOUCHPOLICY=cached
 ```
+
+The `never` value for either policy permanently disables PIN or touch protection for keys created while it is set, and this cannot be changed after key creation. Because it is a permanent, unrepairable downgrade, MPSS ignores `never` from the environment unless you also set `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` as an explicit opt-in; otherwise it logs a warning and falls back to the safe default (`once` / `cached`). This gate applies only to the environment variables — a policy set programmatically via `KeyPolicy` is always honored.
 
 See the PIN Policy and Touch Policy items under [YubiKey Backend Limitations and Considerations](#yubikey-backend-limitations-and-considerations) for details on how these affect MPSS operations.
 
@@ -552,6 +556,7 @@ All operations (key creation, opening, and deletion) will fail with an error if 
 | `MPSS_YUBIKEY_SERIAL` | Select a YubiKey by serial number. Required when multiple devices are connected. | Serial number (e.g., `18268739`) | First available device |
 | `MPSS_YUBIKEY_PINPOLICY` | PIN policy baked into newly created keys. See [PIN Policy](#yubikey-backend-limitations-and-considerations) for details. | `default`, `never`, `once`, `always` | `once` |
 | `MPSS_YUBIKEY_TOUCHPOLICY` | Touch policy baked into newly created keys. See [Touch Policy](#yubikey-backend-limitations-and-considerations) for details. | `default`, `never`, `always`, `cached`, `auto` | `cached` |
+| `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE` | Opt-in required to honor `MPSS_YUBIKEY_PINPOLICY=never` or `MPSS_YUBIKEY_TOUCHPOLICY=never` (a permanent hardware downgrade). Without it, `never` from the environment is ignored with a warning and the safe default is used. | `1`, `true`, `yes`, `on` (enable); anything else keeps the gate closed | *(unset = `never` refused)* |
 
 
 ### YubiKey Backend Limitations and Considerations
@@ -575,9 +580,9 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **Concurrent Access**: Only one application can access the YubiKey PIV at a time. Concurrent connections from multiple applications will fail.
 
-1. **PIN Policy**: Keys created by MPSS use PIN policy `once` by default (configurable via `MPSS_YUBIKEY_PINPOLICY`). With the connection-per-operation architecture, `once` and `always` behave identically, both requiring the PIN on every MPSS call, because each operation opens a fresh PIV session. The only policy that changes MPSS behavior is `never`, which allows signing operations to succeed without a PIN prompt. Note that key creation and deletion operations need access to the management key, which, if PIN-protected, will require the PIN no matter what (`MPSS_YUBIKEY_PINPOLICY` has nothing to do with this).
+1. **PIN Policy**: Keys created by MPSS use PIN policy `once` by default (configurable via `MPSS_YUBIKEY_PINPOLICY`). With the connection-per-operation architecture, `once` and `always` behave identically, both requiring the PIN on every MPSS call, because each operation opens a fresh PIV session. The only policy that changes MPSS behavior is `never`, which allows signing operations to succeed without a PIN prompt. Because a `never` key is permanently unprotected, `MPSS_YUBIKEY_PINPOLICY=never` is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `once`); a policy set programmatically via `KeyPolicy` is not gated. Note that key creation and deletion operations need access to the management key, which, if PIN-protected, will require the PIN no matter what (`MPSS_YUBIKEY_PINPOLICY` has nothing to do with this).
 
-1. **Touch Policy**: Keys created by MPSS use touch policy `cached` by default (configurable via `MPSS_YUBIKEY_TOUCHPOLICY`). The `cached` policy requires a physical touch once per 15-second window, balancing security and usability. When a key has a touch policy other than `never`, the YubiKey will wait for a physical touch before completing signing operations. MPSS notifies the application via the `InteractionHandler` (`notify_touch_needed` / `notify_touch_complete`) so it can display appropriate UI. If the user does not touch the device within the YubiKey's timeout window (typically ~15 seconds), the signing operation fails. To disable touch entirely, set `MPSS_YUBIKEY_TOUCHPOLICY=never`.
+1. **Touch Policy**: Keys created by MPSS use touch policy `cached` by default (configurable via `MPSS_YUBIKEY_TOUCHPOLICY`). The `cached` policy requires a physical touch once per 15-second window, balancing security and usability. When a key has a touch policy other than `never`, the YubiKey will wait for a physical touch before completing signing operations. MPSS notifies the application via the `InteractionHandler` (`notify_touch_needed` / `notify_touch_complete`) so it can display appropriate UI. If the user does not touch the device within the YubiKey's timeout window (typically ~15 seconds), the signing operation fails. To disable touch entirely, set `MPSS_YUBIKEY_TOUCHPOLICY=never`; because this is a permanent downgrade, it is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `cached`).
 
 1. **Key Deletion**: Deleting a key from the YubiKey PIV does *not* erase the slot. Instead, MPSS overwrites the private key with a newly generated dummy key and writes a marker certificate with `CN=(available)` to indicate the slot is free for reuse. You can observe this with `ykman piv info`. A deleted key may show up as follows:
    ```
@@ -602,7 +607,7 @@ To run the tests with the YubiKey backend (assuming [PIN-protected management ke
 MPSS_DEFAULT_BACKEND=yubikey MPSS_YUBIKEY_PIN=123456 out/build/macos-arm64-debug/bin/mpss_tests
 ```
 If you do not supply the PIN, you will see the default terminal-based interaction handler requesting the PIN.
-Since the default touch policy is `cached`, you will see the touch prompt from the default interaction handler. To skip touch during testing, set `MPSS_YUBIKEY_TOUCHPOLICY=never`.
+Since the default touch policy is `cached`, you will see the touch prompt from the default interaction handler. To skip touch during testing, set `MPSS_YUBIKEY_TOUCHPOLICY=never MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` (the opt-in flag is required because `never` is a permanent policy downgrade).
 
 ## OpenSSL Provider (mpss-openssl)
 
@@ -676,29 +681,45 @@ EVP_PKEY_free(pkey);
 
 #### 2. Opening Existing Keys and Public Key Extraction
 
-```cpp
-// Open an existing MPSS key by name
-EVP_PKEY_CTX *load_ctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss");
-EVP_PKEY_fromdata_init(load_ctx);
+An existing key is reopened by name through OpenSSL's `OSSL_STORE` interface. The provider registers
+the `mpss` URI scheme, so a key stored under the name `my_key_name` is addressed as
+`"mpss:my_key_name"`. The key material never leaves the secure backend; the store yields an
+`EVP_PKEY` that references the hardware-backed key and can be used for signing, certificates, and
+public-key extraction.
 
-OSSL_PARAM load_params[] = {
-    OSSL_PARAM_construct_utf8_string("mpss_key_name", my_key_name, 0),
-    OSSL_PARAM_END};
+**The `"provider=mpss"` property query is required.** OpenSSL uses it to select the MPSS key
+management when it materializes the key from the store. If it is omitted, OpenSSL falls back to the
+default provider's EC implementation, which cannot open an MPSS key, and the reopen silently yields
+no key.
+
+```cpp
+// Open an existing MPSS key by name.
+OSSL_STORE_CTX *store =
+    OSSL_STORE_open_ex("mpss:my_key_name", libctx, "provider=mpss", nullptr, nullptr, nullptr, nullptr, nullptr);
 
 EVP_PKEY *existing_pkey = nullptr;
-EVP_PKEY_fromdata(load_ctx, &existing_pkey, EVP_PKEY_KEYPAIR, load_params);
-EVP_PKEY_CTX_free(load_ctx);
+while (OSSL_STORE_eof(store) == 0)
+{
+    OSSL_STORE_INFO *info = OSSL_STORE_load(store);
+    if (info == nullptr)
+    {
+        continue;
+    }
+    if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
+    {
+        existing_pkey = OSSL_STORE_INFO_get1_PKEY(info);
+    }
+    OSSL_STORE_INFO_free(info);
+}
+OSSL_STORE_close(store);
 
-// Extract the raw public key
-std::size_t public_key_len = 1024;
-std::vector<unsigned char> public_key(public_key_len);
-EVP_PKEY_get_raw_public_key(existing_pkey, public_key.data(), &public_key_len);
-public_key.resize(public_key_len);
-
-// Or directly extract the public key (SPKI) in PEM format.
+// existing_pkey now holds the hardware-backed key. Extract the public key (SPKI) in PEM format.
 BIO *pk_file = BIO_new_file("pk.pem", "w");
 PEM_write_bio_PUBKEY_ex(pk_file, existing_pkey, libctx, "provider=mpss");
 BIO_free(pk_file);
+
+// ... use existing_pkey, then free it.
+EVP_PKEY_free(existing_pkey);
 ```
 
 #### 3. Self-Signed Certificate Creation
@@ -738,7 +759,7 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `mpss_key_name` | UTF-8 string | Yes | A persistent name under which the key is stored in the secure environment. Must be unique and must not exceed 64 characters. |
-| `mpss_algorithm` | UTF-8 string | Yes (on key generation) | The signature algorithm suite, e.g., `"ecdsa_secp256r1_sha256"`. Omit when opening an existing key. |
+| `mpss_algorithm` | UTF-8 string | Yes | The signature algorithm suite, e.g., `"ecdsa_secp256r1_sha256"`. (Only used for key generation; opening an existing key is done through `OSSL_STORE`, see above.) |
 | `mpss_backend` | UTF-8 string | No | The backend to use (e.g., `"os"` or `"yubikey"`). If omitted, the default backend is used. Use `mpss_get_available_backends()` to list available backends. |
 | `mpss_key_policy` | uint64 | No | Backend-specific key policy flags (e.g., YubiKey PIN/touch policy). Use the `MPSS_KEY_POLICY_*` constants from `mpss-openssl/api.h`. If omitted, defaults to `MPSS_KEY_POLICY_NONE` (env vars / backend defaults apply). |
 
@@ -760,7 +781,30 @@ A complete end-to-end example of creating a CA certificate with an MPSS-backed k
 
 #### 6. Secure Key Cleanup
 
-When an MPSS secret key is no longer needed, it can be securely deleted from the secure environment as follows:
+When an MPSS secret key is no longer needed, it can be securely deleted from the secure environment.
+There are two equivalent ways to do this.
+
+**Through OpenSSL (`OSSL_STORE_delete`).** This is the OSSL-native counterpart to opening a key
+(section 2 above): the key is addressed by the same `mpss:<key_name>` URI, `"provider=mpss"` selects
+the MPSS provider, and an optional `mpss_backend` parameter selects the backend (as with key
+generation and opening). This is the natural choice for an application already using an OpenSSL
+library context.
+
+```cpp
+// Delete "my-old-key" through the MPSS provider. Returns 1 on success, 0 on failure / not found.
+int deleted = OSSL_STORE_delete("mpss:my-old-key", libctx, "provider=mpss", nullptr, nullptr, nullptr);
+if (deleted == 1) {
+    printf("MPSS key deleted from secure storage\n");
+}
+
+// To delete from a specific backend, pass an mpss_backend parameter:
+OSSL_PARAM params[] = {OSSL_PARAM_construct_utf8_string("mpss_backend", (char *)"yubikey", 0), OSSL_PARAM_END};
+OSSL_STORE_delete("mpss:my-old-key", libctx, "provider=mpss", nullptr, nullptr, params);
+```
+
+**Through the C API (`mpss_delete_key`).** This is a lightweight helper that deletes a key by name
+without requiring an OpenSSL library context or a loaded provider — convenient for cleanup utilities.
+Use `mpss_delete_key_from_backend` to target a specific backend.
 
 ```cpp
 #include "mpss-openssl/api.h"

@@ -27,6 +27,7 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.SignatureException;
 import java.security.UnrecoverableKeyException;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -161,8 +162,20 @@ public class KeyManagement {
 
 
         try {
-            if (OpenKey(keyName)) {
-                String msg = "Key with same name already exists: " + keyName;
+            // Fail-closed existence check. containsAlias tests presence without loading the key, so
+            // a transiently unloadable key still reports as present, and if existence cannot be
+            // determined we refuse to create rather than overwriting a live key.
+            try {
+                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                ks.load(null);
+                if (ks.containsAlias(keyName)) {
+                    String msg = "Key with same name already exists: " + keyName;
+                    Log.e("MPSS", msg);
+                    SetError(msg);
+                    return false;
+                }
+            } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
+                String msg = "Could not determine whether key exists; refusing to create: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
                 return false;
@@ -438,7 +451,14 @@ public class KeyManagement {
                 return null;
             }
 
-            PublicKey pubKey = ks.getCertificate(keyName).getPublicKey();
+            Certificate cert = ks.getCertificate(keyName);
+            if (null == cert) {
+                String msg = "Key present but has no certificate: " + keyName;
+                Log.w("MPSS", msg);
+                SetError(msg);
+                return null;
+            }
+            PublicKey pubKey = cert.getPublicKey();
             kp = new KeyPair(pubKey, pk);
             MemKeyStore.AddKey(keyName, kp);
 

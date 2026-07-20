@@ -9,5 +9,6 @@ namespace mpss::impl::os::utils
 {
 
 std::string MPSS_SE_GetLastError();
+std::string MPSS_GetLastError();
 
 } // namespace mpss::impl::os::utils

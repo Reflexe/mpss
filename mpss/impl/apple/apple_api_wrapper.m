@@ -26,8 +26,12 @@ NSString *GetThreadLocalError() {
   return [[NSThread currentThread].threadDictionary objectForKey:@"MyThreadLocalError"];
 }
 
+void ClearThreadLocalError() {
+  [[NSThread currentThread].threadDictionary removeObjectForKey:@"MyThreadLocalError"];
+}
+
 NSString *GetKeyLabel(const char *keyName) {
-  NSString *keyLabel = [[NSString alloc] initWithUTF8String:keyName];
+  NSString *keyLabel = [NSString stringWithUTF8String:keyName];
   NSString *keyNameWithPrefix = [NSString stringWithFormat:@"com.microsoft.mpss.%@", keyLabel];
   return keyNameWithPrefix;
 }
@@ -107,6 +111,14 @@ int GetKeyBitSize(int signatureType) {
   }
 }
 
+// The Keychain key type every MPSS-created key uses on this platform. Centralized so the create,
+// open, and delete match filters stay in lockstep: the open/delete filters accept exactly what
+// create produces. Adding a non-EC scheme is a single-point change here (the open query would then
+// need to match a set of types rather than one).
+static id SupportedKeychainKeyType() {
+  return (id)kSecAttrKeyTypeECSECPrimeRandom;
+}
+
 ////////////////////////////////////////////////////////
 // From here on below, the public functions.
 ////////////////////////////////////////////////////////
@@ -138,6 +150,7 @@ bool MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
 
     NSDictionary *query = @{
       (id)kSecClass : (__bridge id)kSecClassKey,
+      (id)kSecAttrKeyType : SupportedKeychainKeyType(),
       (id)kSecAttrApplicationTag :
           [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
       (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
@@ -189,7 +202,7 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
 
     mpss_log_debug([[NSString stringWithFormat:@"Creating key with bit size %d", keyBitSize] UTF8String]);
     NSDictionary *keyAttributes = @{
-      (id)kSecAttrKeyType : (id)kSecAttrKeyTypeECSECPrimeRandom,
+      (id)kSecAttrKeyType : SupportedKeychainKeyType(),
       (id)kSecAttrKeySizeInBits : @(keyBitSize), // NOLINT(readability-redundant-parentheses)
       (id)kSecAttrIsPermanent : @YES,
       (id)kSecAttrLabel : keyLabel,
@@ -229,6 +242,7 @@ bool MPSS_SignHash(const char *keyName, int signatureType, const uint8_t *hash,
 
     if (keyRef == NULL) {
       mpss_log_debug("Key not found.");
+      SetThreadLocalError(@"Key not found.");
       return false;
     }
 
@@ -473,6 +487,7 @@ bool MPSS_DeleteKey(const char *keyName) {
     // Create query to delete private key.
     NSMutableDictionary *query = [@{
       (id)kSecClass : (__bridge id)kSecClassKey,
+      (id)kSecAttrKeyType : SupportedKeychainKeyType(),
       (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
       (id)kSecAttrApplicationTag : [keyLabel dataUsingEncoding:NSUTF8StringEncoding]
     } mutableCopy];
@@ -509,13 +524,22 @@ bool MPSS_DeleteKey(const char *keyName) {
   }
 }
 
-const char *MPSS_GetLastError() {
+size_t MPSS_GetLastError(char *error, size_t errorSize) {
   @autoreleasepool {
-    NSString *error = GetThreadLocalError();
-    if (error) {
-      return [error UTF8String];
+    NSString *lastError = GetThreadLocalError() ?: @"";
+    const char *utf8 = [lastError UTF8String];
+    size_t need = strlen(utf8);
+    if (error == NULL) {
+      // Size query: report the needed length without consuming the error.
+      return need;
     }
-
-    return NULL;
+    if (errorSize < need) {
+      return 0;
+    }
+    // Copy while the autorelease pool (and thus utf8) is still alive.
+    memcpy(error, utf8, need);
+    // Clear on read so a later failure that sets no error cannot surface this stale one.
+    ClearThreadLocalError();
+    return need;
   }
 }

@@ -346,6 +346,16 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
         return false;
     }
 
+    // The verification algorithm is inferred from the public key length on the Java side, so require
+    // an exact length match here to keep the public key bound to the requested algorithm.
+    const std::size_t expected_pk_size = mpss::utils::get_public_key_size(algorithm);
+    if (public_key.size() != expected_pk_size)
+    {
+        mpss::utils::log_warning("Public key length {} does not match algorithm '{}' (expected {}).",
+                                 public_key.size(), get_algorithm_info(algorithm).type_str, expected_pk_size);
+        return false;
+    }
+
     JNIEnvGuard guard;
 
     jni_class km(guard.Env(), utils::GetKeyManagementClass(guard.Env()));

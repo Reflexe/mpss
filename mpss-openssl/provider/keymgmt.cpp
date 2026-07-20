@@ -219,7 +219,9 @@ extern "C" int mpss_keymgmt_gen_set_params(void *genctx, const OSSL_PARAM params
     if (nullptr != p)
     {
         const char *value_str = nullptr;
-        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str))
+        // OSSL_PARAM_get_utf8_string_ptr returns success with *value_str == nullptr for a NULL-data
+        // param, so guard before assigning into std::string (operator=(nullptr) is UB via strlen).
+        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str) || nullptr == value_str)
         {
             return 0;
         }
@@ -230,7 +232,9 @@ extern "C" int mpss_keymgmt_gen_set_params(void *genctx, const OSSL_PARAM params
     if (nullptr != p)
     {
         const char *value_str = nullptr;
-        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str))
+        // OSSL_PARAM_get_utf8_string_ptr returns success with *value_str == nullptr for a NULL-data
+        // param, so guard before assigning into std::string (operator=(nullptr) is UB via strlen).
+        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str) || nullptr == value_str)
         {
             return 0;
         }
@@ -241,7 +245,9 @@ extern "C" int mpss_keymgmt_gen_set_params(void *genctx, const OSSL_PARAM params
     if (nullptr != p)
     {
         const char *value_str = nullptr;
-        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str))
+        // OSSL_PARAM_get_utf8_string_ptr returns success with *value_str == nullptr for a NULL-data
+        // param, so guard before assigning into std::string (operator=(nullptr) is UB via strlen).
+        if (!OSSL_PARAM_get_utf8_string_ptr(p, &value_str) || nullptr == value_str)
         {
             return 0;
         }
@@ -470,6 +476,47 @@ extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
     }
 }
 
+extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_sz)
+{
+    // The store loader delivers a reference of the form "<backend>\0<key_name>" (not key material);
+    // an empty backend means the default backend. Split on the NUL separator and reopen the existing
+    // key. The mpss_key constructor decides between opening and creating by whether it is given an
+    // algorithm name: with no algorithm it opens an existing key (KeyPair::Open), with one it creates
+    // a new key. We are opening, so we pass an empty (value-less) algorithm.
+    if (nullptr == reference || 0 == reference_sz)
+    {
+        return nullptr;
+    }
+    const std::string_view ref_view(static_cast<const char *>(reference), reference_sz);
+    const std::size_t sep = ref_view.find('\0');
+    if (std::string_view::npos == sep)
+    {
+        return nullptr;
+    }
+    const std::string_view backend_view = ref_view.substr(0, sep);
+    const std::string key_name(ref_view.substr(sep + 1));
+    if (key_name.empty())
+    {
+        return nullptr;
+    }
+
+    std::optional<std::string> no_algorithm = std::nullopt;
+    const std::optional<std::string> backend =
+        backend_view.empty() ? std::nullopt : std::optional<std::string>(backend_view);
+    mpss_key *pkey = mpss_new<mpss_key>(key_name, no_algorithm, backend, mpss::KeyPolicy::none);
+    if (nullptr == pkey)
+    {
+        return nullptr;
+    }
+    if (!pkey->has_valid_key())
+    {
+        mpss_delete(pkey);
+        return nullptr;
+    }
+
+    return pkey;
+}
+
 const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
     {OSSL_FUNC_KEYMGMT_EXPORT, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export)},
     {OSSL_FUNC_KEYMGMT_EXPORT_TYPES, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export_types)},
@@ -480,6 +527,7 @@ const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
     {OSSL_FUNC_KEYMGMT_GEN_CLEANUP, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_cleanup)},
     {OSSL_FUNC_KEYMGMT_GEN_INIT, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_init)},
     {OSSL_FUNC_KEYMGMT_FREE, reinterpret_cast<void (*)(void)>(mpss_keymgmt_free)},
+    {OSSL_FUNC_KEYMGMT_LOAD, reinterpret_cast<void (*)(void)>(mpss_keymgmt_load)},
     {OSSL_FUNC_KEYMGMT_GEN, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen)},
     {OSSL_FUNC_KEYMGMT_HAS, reinterpret_cast<void (*)(void)>(mpss_keymgmt_has)},
     {OSSL_FUNC_KEYMGMT_QUERY_OPERATION_NAME, reinterpret_cast<void (*)(void)>(mpss_keymgmt_query_operation_name)},

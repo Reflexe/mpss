@@ -6,6 +6,7 @@
 #include "mpss-openssl/provider/encoder.h"
 #include "mpss-openssl/provider/keymgmt.h"
 #include "mpss-openssl/provider/signature.h"
+#include "mpss-openssl/provider/store.h"
 #include "mpss-openssl/utils/utils.h"
 #include <openssl/core_dispatch.h>
 
@@ -42,6 +43,8 @@ extern "C" const OSSL_ALGORITHM *mpss_provider_query_operation([[maybe_unused]] 
         return mpss_signature_algorithms;
     case OSSL_OP_DIGEST:
         return mpss_digest_algorithms;
+    case OSSL_OP_STORE:
+        return mpss_store_algorithms;
     default:
         return nullptr;
     }

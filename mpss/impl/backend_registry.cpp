@@ -62,6 +62,26 @@ class BackendNameSetter
 // CN to 64 characters.
 constexpr std::size_t max_key_name_length = 64;
 
+namespace
+{
+// Validates a key name before it reaches any backend. Names are restricted to printable ASCII
+// (0x20-0x7E). This rejects embedded NUL and other control bytes that would otherwise truncate at
+// a C-string sink (CNG wide strings, Keychain CFString, JNI NewStringUTF, X.509 CN with len=-1) and
+// alias one key onto another; it also avoids UTF-8 widening / Modified-UTF-8 ambiguity that would
+// let the value seen by the API diverge from the value stored on the backend.
+[[nodiscard]] bool is_valid_key_name(std::string_view name)
+{
+    if (name.empty() || name.size() > max_key_name_length)
+    {
+        return false;
+    }
+    return std::ranges::all_of(name, [](char ch) {
+        const auto uch = static_cast<unsigned char>(ch);
+        return uch >= 0x20 && uch < 0x7F;
+    });
+}
+} // namespace
+
 #ifdef MPSS_BACKEND_YUBIKEY
 // Forward declaration for YubiKey backend registration.
 void register_yubikey_backend();
@@ -82,7 +102,13 @@ class BackendRegistry
      */
     static BackendRegistry &Instance()
     {
-        static BackendRegistry registry;
+        // Immortal singleton: heap-allocated once and never destroyed, so the registry outlives every
+        // host static/global object -- including host statics whose destructors call into MPSS during
+        // process exit. This avoids the static destruction-order fiasco (a host static destroyed after
+        // the registry would otherwise touch a destroyed object). The one-time allocation is reclaimed
+        // by the OS at process exit.
+        static BackendRegistry &registry =
+            *new BackendRegistry(); // NOLINT(cppcoreguidelines-owning-memory) - intentional immortal singleton, never freed.
         return registry;
     }
 
@@ -168,16 +194,22 @@ class BackendRegistry
      */
     void initialize_if_needed()
     {
-        if (initialized_.load(std::memory_order_acquire))
+        if (init_attempted_.load(std::memory_order_acquire))
         {
             return;
         }
 
         std::scoped_lock lock{init_mutex_};
-        if (initialized_.load(std::memory_order_relaxed))
+        if (init_attempted_.load(std::memory_order_relaxed))
         {
             return;
         }
+
+        // Latch the attempt exactly once, on every exit path from the locked region. Registration and
+        // backend selection then happen a single time; a persistently-bad MPSS_DEFAULT_BACKEND fails
+        // closed (default_backend_ stays null) instead of re-running registration on every call. The
+        // store cannot throw, so the ScopeGuard's terminate-on-exception path is unreachable.
+        SCOPE_GUARD({ init_attempted_.store(true, std::memory_order_release); });
 
         // Register available backends.
 #if defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__)
@@ -196,8 +228,7 @@ class BackendRegistry
             if (backends_.end() != it)
             {
                 default_backend_ = it->second;
-                initialized_.store(true, std::memory_order_release);
-                utils::log_trace("Using backend '{}' from MPSS_DEFAULT_BACKEND.", requested);
+                utils::log_warning("Default backend redirected to '{}' via MPSS_DEFAULT_BACKEND.", requested);
                 return;
             }
             utils::log_and_set_error("Requested backend '{}' not found.", requested);
@@ -212,7 +243,6 @@ class BackendRegistry
             if (backends_.end() != it)
             {
                 default_backend_ = it->second;
-                initialized_.store(true, std::memory_order_release);
                 utils::log_trace("Using default backend '{}'.", default_name);
                 return;
             }
@@ -226,7 +256,7 @@ class BackendRegistry
 
     std::unordered_map<std::string, std::shared_ptr<Backend>> backends_;
     std::shared_ptr<Backend> default_backend_;
-    std::atomic<bool> initialized_{false};
+    std::atomic<bool> init_attempted_{false};
     std::mutex init_mutex_;
 
     /**
@@ -281,14 +311,9 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
                                     KeyPolicy policy)
 {
-    if (name.empty())
+    if (!is_valid_key_name(name))
     {
-        utils::log_warning("Key name cannot be empty.");
-        return nullptr;
-    }
-    if (name.size() > max_key_name_length)
-    {
-        utils::log_warning("Key name exceeds maximum length of {} characters.", max_key_name_length);
+        utils::log_warning("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
         return nullptr;
     }
 
@@ -313,14 +338,9 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
 
 std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name)
 {
-    if (name.empty())
+    if (!is_valid_key_name(name))
     {
-        utils::log_warning("Key name cannot be empty.");
-        return nullptr;
-    }
-    if (name.size() > max_key_name_length)
-    {
-        utils::log_warning("Key name exceeds maximum length of {} characters.", max_key_name_length);
+        utils::log_warning("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
         return nullptr;
     }
 

@@ -209,6 +209,16 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     ASSERT_NE(nullptr, hash_func);
     ASSERT_GT(X509_sign(ca_cert, ca_pkey, hash_func), 0);
 
+    // RFC 5758 3.2: the emitted ECDSA signatureAlgorithm must omit its parameters field (not carry an
+    // explicit ASN.1 NULL). The provider produces this AlgorithmIdentifier in mpss_signature_get_ctx_params;
+    // X509_sign copies it verbatim into the cert.
+    const X509_ALGOR *ca_sig_alg = nullptr;
+    X509_get0_signature(nullptr, &ca_sig_alg, ca_cert);
+    ASSERT_NE(nullptr, ca_sig_alg);
+    int algid_param_type = 0;
+    X509_ALGOR_get0(nullptr, &algid_param_type, nullptr, ca_sig_alg);
+    ASSERT_EQ(V_ASN1_UNDEF, algid_param_type);
+
     // -------------------------------------------------------------------------
     // 3. Create an independent RSA key pair outside the secure environment.
     // -------------------------------------------------------------------------

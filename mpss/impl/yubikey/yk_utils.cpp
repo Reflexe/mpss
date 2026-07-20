@@ -24,6 +24,24 @@ std::string to_lower(std::string_view str)
     return result;
 }
 
+/**
+ * @brief Whether an env-driven downgrade to a 'never' pin/touch policy is explicitly permitted.
+ *
+ * A 'never' policy is permanent and unrepairable once baked into a key at generation, so it is
+ * only honored from the environment when MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE is set to an
+ * affirmative value (1, true, yes, on). It defaults to off.
+ */
+bool policy_downgrade_allowed()
+{
+    const char *env_ptr = std::getenv("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE");
+    if (nullptr == env_ptr)
+    {
+        return false;
+    }
+    const std::string value = to_lower(env_ptr);
+    return "1" == value || "true" == value || "yes" == value || "on" == value;
+}
+
 /** @brief Read YubiKey PIN policy from the MPSS_YUBIKEY_PINPOLICY environment variable. */
 std::uint8_t get_pin_policy_from_env()
 {
@@ -41,6 +59,14 @@ std::uint8_t get_pin_policy_from_env()
     }
     if ("never" == value)
     {
+        if (!policy_downgrade_allowed())
+        {
+            mpss::utils::log_warning("MPSS_YUBIKEY_PINPOLICY=never ignored: set MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE "
+                                     "to permanently disable PIN protection for newly created keys. Using 'once'.");
+            return default_pin_policy;
+        }
+        mpss::utils::log_warning("MPSS_YUBIKEY_PINPOLICY=never permanently disables PIN protection for keys "
+                                 "created now.");
         return YKPIV_PINPOLICY_NEVER;
     }
     if ("once" == value)
@@ -74,6 +100,14 @@ std::uint8_t get_touch_policy_from_env()
     }
     if ("never" == value)
     {
+        if (!policy_downgrade_allowed())
+        {
+            mpss::utils::log_warning("MPSS_YUBIKEY_TOUCHPOLICY=never ignored: set MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE "
+                                     "to permanently disable touch protection for newly created keys. Using 'cached'.");
+            return default_touch_policy;
+        }
+        mpss::utils::log_warning("MPSS_YUBIKEY_TOUCHPOLICY=never permanently disables touch protection for keys "
+                                 "created now.");
         return YKPIV_TOUCHPOLICY_NEVER;
     }
     if ("always" == value)

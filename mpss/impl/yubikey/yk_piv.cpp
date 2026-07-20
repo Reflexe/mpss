@@ -8,6 +8,7 @@
 #include "mpss/utils/utilities.h"
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
@@ -100,6 +101,11 @@ constexpr std::array<std::uint8_t, 20> usable_slots = {
 // Label written to a slot's certificate after the private key has been overwritten
 // with a dummy key. Slots bearing this label are treated as free by find_free_slot.
 constexpr const char *available_slot_label = "(available)";
+
+bool is_reserved_key_name(std::string_view name)
+{
+    return available_slot_label == name;
+}
 
 YubiKeyPIV::YubiKeyPIV(std::uint32_t serial)
 {
@@ -197,17 +203,25 @@ bool YubiKeyPIV::authenticate_mgm_key()
         mpss::utils::log_warning("PIN-protected management key authentication failed: {}", ykpiv_strerror(rc));
     }
 
-    // Try management key from environment variable.
-    const SecureByteVector env_key = utils::get_mgm_key_from_env();
-    if (!env_key.empty())
+    // Try management key from environment variable. If MPSS_YUBIKEY_MGM_KEY is set, it must authenticate:
+    // a malformed or wrong key is a hard error, never a silent fall-back to the factory-default key.
+    if (nullptr != std::getenv("MPSS_YUBIKEY_MGM_KEY"))
     {
-        rc = ykpiv_authenticate(state_, reinterpret_cast<const unsigned char *>(env_key.data()));
+        const SecureByteVector env_key = utils::get_mgm_key_from_env();
+        if (env_key.empty())
+        {
+            mpss::utils::log_and_set_error("MPSS_YUBIKEY_MGM_KEY is set but invalid; refusing to fall back to the "
+                                           "factory-default management key.");
+            return false;
+        }
+        rc = ykpiv_authenticate2(state_, reinterpret_cast<const unsigned char *>(env_key.data()), env_key.size());
         if (YKPIV_OK == rc)
         {
             mpss::utils::log_trace("Authenticated with management key from MPSS_YUBIKEY_MGM_KEY.");
             return true;
         }
-        mpss::utils::log_warning("Management key from MPSS_YUBIKEY_MGM_KEY failed: {}", ykpiv_strerror(rc));
+        mpss::utils::log_and_set_error("Management key from MPSS_YUBIKEY_MGM_KEY failed: {}", ykpiv_strerror(rc));
+        return false;
     }
 
     // Fall back to default YubiKey management key (3DES, 24 bytes).
@@ -462,14 +476,16 @@ std::uint8_t YubiKeyPIV::get_key_touch_policy(std::uint8_t slot)
     ykpiv_rc rc = ykpiv_get_metadata(state_, slot, metadata_buf, &metadata_len);
     if (YKPIV_OK != rc)
     {
-        return YKPIV_TOUCHPOLICY_NEVER;
+        // Assume touch may be required so the sign path prompts rather than blocking silently.
+        return YKPIV_TOUCHPOLICY_DEFAULT;
     }
 
     ykpiv_metadata metadata = {};
     rc = ykpiv_util_parse_metadata(metadata_buf, metadata_len, &metadata);
     if (YKPIV_OK != rc)
     {
-        return YKPIV_TOUCHPOLICY_NEVER;
+        // Assume touch may be required so the sign path prompts rather than blocking silently.
+        return YKPIV_TOUCHPOLICY_DEFAULT;
     }
 
     return metadata.touch_policy;
@@ -513,7 +529,22 @@ bool YubiKeyPIV::key_exists(std::uint8_t slot)
     std::size_t metadata_len = sizeof(metadata_buf);
 
     ykpiv_rc rc = ykpiv_get_metadata(state_, slot, metadata_buf, &metadata_len);
-    return (YKPIV_OK == rc && metadata_len > 0);
+    if (YKPIV_OK == rc)
+    {
+        return metadata_len > 0;
+    }
+    if (YKPIV_KEY_ERROR == rc || YKPIV_INVALID_OBJECT == rc)
+    {
+        // Slot is confirmed empty: the card reports no object in this slot. Which of the two
+        // "not found" codes the firmware returns for an empty slot varies by firmware.
+        return false;
+    }
+
+    // Occupancy could not be determined (e.g. transient transport error). Treat as occupied so
+    // find_free_slot does not select the slot and overwrite a live key.
+    mpss::utils::log_warning("Could not determine occupancy of slot {}: {}. Treating as occupied.",
+                             utils::get_slot_name(slot), ykpiv_strerror(rc));
+    return true;
 }
 
 bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)

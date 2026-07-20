@@ -4,18 +4,21 @@
 #include "mpss/key_policy.h"
 #include "mpss/log.h"
 #include "mpss/mpss.h"
+#include "mpss/utils/utilities.h"
 #include "tests/compat_env.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
+#include "mpss/impl/yubikey/yk_utils.h"
 #endif
 
 namespace mpss::tests
@@ -201,6 +204,36 @@ TEST_F(MPSS, DoubleCreation384)
 TEST_F(MPSS, DoubleCreation521)
 {
     DoubleCreation(ecdsa_secp521r1_sha512, "521");
+}
+
+TEST_F(MPSS, RejectInvalidKeyNames)
+{
+    // Names must be 1-64 printable ASCII characters. Everything below is rejected by both Create
+    // and Open before any backend is consulted, so these assertions are backend-independent. Each
+    // invalid name would otherwise truncate or mangle at a C-string backend sink and could alias
+    // onto a different stored key (embedded NUL is the primary aliasing vector).
+    const std::vector<std::string> invalid_names = {
+        ""s,                  // empty
+        "a\0b"s,              // embedded NUL - truncates to "a" at every sink
+        "a\001b"s,            // C0 control byte (octal escape keeps 'b' separate)
+        "a\x7f"s,             // DEL
+        "a\tb"s,              // tab (control)
+        "a\nb"s,              // newline (control)
+        "k\xC3\xA9y"s,        // non-ASCII (UTF-8 "key" with an accented e)
+        std::string(65, 'a'), // exceeds the 64-character maximum
+    };
+
+    for (const std::string &name : invalid_names)
+    {
+        EXPECT_EQ(nullptr, mpss::KeyPair::Create(name, ecdsa_secp256r1_sha256))
+            << "Create should reject invalid name (size " << name.size() << ")";
+        EXPECT_EQ(nullptr, mpss::KeyPair::Open(name)) << "Open should reject invalid name (size " << name.size() << ")";
+    }
+
+    // The aliasing case: a name differing from a valid one only by a trailing NUL (+bytes) must not
+    // be accepted, so it can never reach a backend as the truncated prefix "victim".
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create("victim\0x"s, ecdsa_secp256r1_sha256));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open("victim\0x"s));
 }
 
 void GetKey(Algorithm algorithm, std::string_view suffix)
@@ -709,6 +742,53 @@ TEST(KeyPolicyTest, CreateKeyWithPolicyNone)
     key->delete_key();
 }
 
+// --- hex_string_to_bytes tests ---
+
+TEST(HexStringToBytesTest, ValidEvenLengthRoundTrips)
+{
+    auto result = mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("deadBEEF");
+    ASSERT_TRUE(result.has_value());
+    const std::vector<std::byte> expected{static_cast<std::byte>(0xde), static_cast<std::byte>(0xad),
+                                          static_cast<std::byte>(0xbe), static_cast<std::byte>(0xef)};
+    EXPECT_EQ(expected, result.value());
+}
+
+TEST(HexStringToBytesTest, EmptyStringIsEmptyVector)
+{
+    auto result = mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result.value().empty());
+}
+
+TEST(HexStringToBytesTest, OddLengthRejected)
+{
+    EXPECT_FALSE(mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("abc").has_value());
+}
+
+TEST(HexStringToBytesTest, PartialWindowRejected)
+{
+    // "1g": from_chars would parse '1' as 0x01 and stop at 'g'. Without the end-pointer check this
+    // window is silently accepted; it must be rejected instead.
+    EXPECT_FALSE(mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("1g").has_value());
+}
+
+TEST(HexStringToBytesTest, LeadingNonHexRejected)
+{
+    EXPECT_FALSE(mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("g1").has_value());
+}
+
+TEST(HexStringToBytesTest, EmbeddedPrefixRejected)
+{
+    // "0x12": the "0x" window parses '0' and stops at 'x'; it must be rejected, not read as 0x00.
+    EXPECT_FALSE(mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("0x12").has_value());
+}
+
+TEST(HexStringToBytesTest, InvalidCharInLaterWindowRejected)
+{
+    // A valid first byte followed by a partial window must still be rejected.
+    EXPECT_FALSE(mpss::utils::hex_string_to_bytes<std::vector<std::byte>>("ab1g").has_value());
+}
+
 // --- Key name length limit tests ---
 
 TEST(KeyNameLimitTest, KeyNameTooLongCreate)
@@ -877,6 +957,144 @@ TEST_F(CrossBackendTest, CreateKeyOnEachBackend)
 }
 
 #ifdef MPSS_BACKEND_YUBIKEY
+
+// Env-driven pin/touch policy resolution. Device-independent: exercises the pure resolver logic
+// (resolve_pin_policy / resolve_touch_policy) with the policy environment variables, no hardware.
+class YubiKeyPolicyEnv : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        save("MPSS_YUBIKEY_PINPOLICY", saved_pin_);
+        save("MPSS_YUBIKEY_TOUCHPOLICY", saved_touch_);
+        save("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE", saved_allow_);
+    }
+
+    void TearDown() override
+    {
+        restore("MPSS_YUBIKEY_PINPOLICY", saved_pin_);
+        restore("MPSS_YUBIKEY_TOUCHPOLICY", saved_touch_);
+        restore("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE", saved_allow_);
+    }
+
+    static void save(const char *name, std::optional<std::string> &slot)
+    {
+        const char *value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
+        slot = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
+    }
+
+    static void restore(const char *name, const std::optional<std::string> &slot)
+    {
+        if (slot.has_value())
+        {
+            setenv(name, slot->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+        }
+        else
+        {
+            unsetenv(name); // NOLINT(concurrency-mt-unsafe)
+        }
+    }
+
+    std::optional<std::string> saved_pin_;
+    std::optional<std::string> saved_touch_;
+    std::optional<std::string> saved_allow_;
+};
+
+TEST_F(YubiKeyPolicyEnv, EnvNeverGatedBehindOptIn)
+{
+    namespace yku = mpss::impl::yubikey::utils;
+
+    // Oracles: the programmatic mappings the env path should resolve to (env-independent).
+    const std::uint8_t pin_once = yku::resolve_pin_policy(KeyPolicy::yubikey_pin_once);
+    const std::uint8_t pin_never = yku::resolve_pin_policy(KeyPolicy::yubikey_pin_never);
+    const std::uint8_t touch_cached = yku::resolve_touch_policy(KeyPolicy::yubikey_touch_cached);
+    const std::uint8_t touch_never = yku::resolve_touch_policy(KeyPolicy::yubikey_touch_never);
+    ASSERT_NE(pin_once, pin_never);
+    ASSERT_NE(touch_cached, touch_never);
+
+    setenv("MPSS_YUBIKEY_PINPOLICY", "never", 1);   // NOLINT(concurrency-mt-unsafe)
+    setenv("MPSS_YUBIKEY_TOUCHPOLICY", "never", 1); // NOLINT(concurrency-mt-unsafe)
+
+    // Without the opt-in flag, env 'never' is refused and the safe default is used.
+    unsetenv("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE"); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_EQ(pin_once, yku::resolve_pin_policy(KeyPolicy::none));
+    EXPECT_EQ(touch_cached, yku::resolve_touch_policy(KeyPolicy::none));
+
+    // A non-affirmative flag value likewise does not enable the downgrade.
+    setenv("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE", "0", 1); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_EQ(pin_once, yku::resolve_pin_policy(KeyPolicy::none));
+    EXPECT_EQ(touch_cached, yku::resolve_touch_policy(KeyPolicy::none));
+
+    // With the opt-in flag, env 'never' is honored.
+    setenv("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE", "1", 1); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_EQ(pin_never, yku::resolve_pin_policy(KeyPolicy::none));
+    EXPECT_EQ(touch_never, yku::resolve_touch_policy(KeyPolicy::none));
+
+    // The programmatic path is unaffected by the gate (explicit caller choice, no env consulted).
+    EXPECT_EQ(pin_never, yku::resolve_pin_policy(KeyPolicy::yubikey_pin_never));
+    EXPECT_EQ(touch_never, yku::resolve_touch_policy(KeyPolicy::yubikey_touch_never));
+}
+
+// Env-driven management-key authentication. Requires a connected YubiKey: exercises the live
+// authenticate_mgm_key() path. A freshly connected session has no verified PIN, so the
+// PIN-protected branch always fails first and control reaches the env-key branch regardless of the
+// device's management-key mode.
+class YubiKeyMgmKeyEnv : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        serials_ = mpss::impl::yubikey::YubiKeyPIV::available_serials();
+        if (serials_.empty())
+        {
+            GTEST_SKIP() << "Requires a connected YubiKey.";
+        }
+        const char *value = std::getenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+        saved_mgm_ = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
+    }
+
+    void TearDown() override
+    {
+        if (saved_mgm_.has_value())
+        {
+            setenv("MPSS_YUBIKEY_MGM_KEY", saved_mgm_->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+        }
+        else
+        {
+            unsetenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+        }
+    }
+
+    std::vector<std::uint32_t> serials_;
+    std::optional<std::string> saved_mgm_;
+};
+
+TEST_F(YubiKeyMgmKeyEnv, SuppliedKeyMustAuthenticateNoDefaultFallback)
+{
+    mpss::impl::yubikey::YubiKeyPIV piv{serials_[0]};
+    ASSERT_TRUE(piv.is_connected());
+
+    // A valid-length management key that does not match the device must fail; MPSS must not fall
+    // back to the factory-default key.
+    const std::string wrong_key(48, 'a');
+    setenv("MPSS_YUBIKEY_MGM_KEY", wrong_key.c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_FALSE(piv.authenticate_mgm_key());
+
+    // A set-but-malformed value is likewise a hard error, not a default fallback.
+    setenv("MPSS_YUBIKEY_MGM_KEY", "not-hex", 1); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_FALSE(piv.authenticate_mgm_key());
+}
+
+// The sentinel name used to mark free/deleted slots is reserved and must not be accepted as a user key
+// name. The reject happens before any device access, so the test needs no connected YubiKey.
+TEST(YubiKeyReservedName, MarkerNameRejected)
+{
+    EXPECT_TRUE(mpss::impl::yubikey::is_reserved_key_name("(available)"));
+    EXPECT_FALSE(mpss::impl::yubikey::is_reserved_key_name("my-key"));
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create("(available)", ecdsa_secp256r1_sha256, "yubikey"));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open("(available)", "yubikey"));
+}
 
 // Multi-device YubiKey tests. These tests require at least two YubiKeys to be physically connected.
 // They are automatically skipped when fewer than two devices are available.

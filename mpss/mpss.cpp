@@ -67,8 +67,17 @@ bool is_algorithm_available(Algorithm algorithm)
     utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
     const bool available = impl::is_algorithm_available(algorithm);
 
-    std::scoped_lock lock{cache_mutex};
-    cache[idx] = available;
+    // Cache positive results only. A positive is stable — the platform genuinely supports the algorithm.
+    // A negative is the only direction that can be wrong and stick: a one-time probe can fail while the
+    // keystore is temporarily unavailable (e.g. a locked device on a long-lived process) or a probe name
+    // briefly collides, which memoizing would turn into a permanent, process-wide understatement of
+    // availability. Re-probing a genuinely unsupported algorithm is cheap (create_key bails before
+    // persisting a key), so negatives are simply not cached.
+    if (available)
+    {
+        std::scoped_lock lock{cache_mutex};
+        cache[idx] = true;
+    }
     utils::log_trace("Algorithm '{}' is {}.", info.type_str, available ? "available" : "unavailable");
     return available;
 }

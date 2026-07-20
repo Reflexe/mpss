@@ -152,7 +152,8 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief Creates a new key pair with the given name and algorithm.
-     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] name The name of the key pair. Must be 1-64 printable ASCII characters (0x20-0x7E);
+     * control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
      * @return Key pair if the key pair was created successfully, a null pointer otherwise.
@@ -165,7 +166,8 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief Creates a new key pair using a specific backend.
-     * @param[in] name The name of the key pair. Must not exceed 64 characters.
+     * @param[in] name The name of the key pair. Must be 1-64 printable ASCII characters (0x20-0x7E);
+     * control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
@@ -177,7 +179,8 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief Opens the key pair with the given name.
-     * @param[in] name The name of the key pair to open. Must not exceed 64 characters.
+     * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
+     * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @return Key pair instance if the key pair was opened successfully, a null pointer
      * otherwise.
      */
@@ -186,7 +189,8 @@ class MPSS_DECOR KeyPair
 
     /**
      * @brief Opens the key pair with the given name using a specific backend.
-     * @param[in] name The name of the key pair to open. Must not exceed 64 characters.
+     * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
+     * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
      * @return Key pair if opened successfully, nullptr otherwise.
      */

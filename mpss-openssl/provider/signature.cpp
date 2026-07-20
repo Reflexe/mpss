@@ -146,7 +146,10 @@ extern "C" int mpss_signature_get_ctx_params(void *ctx, OSSL_PARAM params[])
             break;
         }
 
-        if (1 != X509_ALGOR_set0(alg, obj, V_ASN1_NULL, nullptr))
+        // RFC 5758 3.2: the ecdsa-with-SHA* AlgorithmIdentifier parameters field MUST be absent.
+        // V_ASN1_UNDEF leaves alg->parameter null so i2d_X509_ALGOR omits it (canonical SEQUENCE { OID }),
+        // matching OpenSSL's own default provider; V_ASN1_NULL would emit a non-conformant explicit NULL.
+        if (1 != X509_ALGOR_set0(alg, obj, V_ASN1_UNDEF, nullptr))
         {
             break;
         }
