@@ -75,6 +75,14 @@ std::vector<std::byte> vector_pubkey()
 {
     return to_bytes(tpm_vector::kExpectedPubkey, tpm_vector::kExpectedPubkey_len);
 }
+std::vector<std::byte> vector_weak_bundle()
+{
+    return to_bytes(tpm_vector::kWeakBundle, tpm_vector::kWeakBundle_len);
+}
+std::vector<std::byte> vector_weak_pubkey()
+{
+    return to_bytes(tpm_vector::kWeakExpectedPubkey, tpm_vector::kWeakExpectedPubkey_len);
+}
 
 // A verification policy pinning the published Azure vTPM root (and ICA) at a fixed clock inside the AK
 // certificate validity, so the committed vector verifies identically on every runner and never expires.
@@ -332,6 +340,19 @@ TEST(WindowsTpmVerifierTest, RevokedSerialRejected)
     const auto result = verifier.verify(bundle_evidence(vector_bundle()), vector_nonce(), vector_pubkey());
     EXPECT_FALSE(result.ok);
     EXPECT_NE(result.reason.find("revoked"), std::string::npos);
+}
+
+// Scenario: a real AK-certified bundle whose subject key is migratable (created without fixedTPM /
+// fixedParent). Its AK signature, cert chain, certify magic/type, nonce, and subject name all check out.
+// Expected behavior: rejected by the hardware-bound hardening -- an AK must not certify an importable or
+// migratable key, or "attested" would not mean "hardware-bound key".
+TEST(WindowsTpmVerifierTest, MigratableSubjectKeyRejected)
+{
+    const mpss::attest::AttestationVerifier verifier{vector_policy()};
+
+    const auto result = verifier.verify(bundle_evidence(vector_weak_bundle()), vector_nonce(), vector_weak_pubkey());
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.reason.find("hardware-bound"), std::string::npos) << "reason: " << result.reason;
 }
 
 } // namespace mpss::tests

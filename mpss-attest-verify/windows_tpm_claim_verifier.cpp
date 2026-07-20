@@ -74,6 +74,12 @@ constexpr std::uint16_t kEccP256 = 0x0003;
 constexpr std::uint16_t kEccP384 = 0x0004;
 constexpr std::uint16_t kEccP521 = 0x0005;
 
+// TPMA_OBJECT bits that make the certified subject key genuinely hardware-bound: TPM-resident,
+// non-migratable, and TPM-generated. Without these an AK could certify a weak/importable key.
+constexpr std::uint32_t kFixedTpm = 0x00000002;
+constexpr std::uint32_t kFixedParent = 0x00000010;
+constexpr std::uint32_t kSensitiveDataOrigin = 0x00000020;
+
 AttestationVerifier::Result reject(std::string reason)
 {
     return AttestationVerifier::Result{/* ok */ false, kFormat, std::move(reason)};
@@ -417,6 +423,22 @@ const char *group_name_for(std::uint16_t curve_id)
     }
 }
 
+// The certified subject key must be TPM-resident, non-migratable, and TPM-generated. subject_pub is
+// already bound to the signed certify (its name matched), so its objectAttributes are trustworthy here.
+bool subject_key_is_hardware_bound(std::span<const std::byte> subject_pub)
+{
+    Cursor cursor{subject_pub};
+    std::uint16_t type = 0;
+    std::uint16_t name_alg = 0;
+    std::uint32_t attributes = 0;
+    if (!cursor.u16(type) || !cursor.u16(name_alg) || !cursor.u32(attributes))
+    {
+        return false;
+    }
+    constexpr std::uint32_t required = kFixedTpm | kFixedParent | kSensitiveDataOrigin;
+    return (attributes & required) == required;
+}
+
 // Rebuild an EVP_PKEY from the subject TPMT_PUBLIC's ECC point so it can be compared to the expected key.
 PkeyPtr subject_public_key(std::span<const std::byte> subject_pub)
 {
@@ -609,6 +631,11 @@ AttestationVerifier::Result verify_windows_tpm_claim(const AttestationEvidence &
         !std::equal(computed_name->begin(), computed_name->end(), attested_name->begin()))
     {
         return reject("certified subject key name does not match the attestation");
+    }
+    if (!subject_key_is_hardware_bound(bundle->subject_pub))
+    {
+        return reject("certified subject key is not hardware-bound (missing fixedTPM / fixedParent / "
+                      "sensitiveDataOrigin); the AK must not certify an importable or migratable key");
     }
     if (!same_public_key(bundle->subject_pub, pubkey))
     {
