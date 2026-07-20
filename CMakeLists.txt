@@ -302,8 +302,6 @@ if(TARGET ${mpss_TARGET})
         # mpss on Windows requires ncrypt.lib.
         target_link_libraries(${mpss_TARGET} PRIVATE ncrypt)
         target_link_libraries(${mpss_TARGET} PRIVATE crypt32)
-        # tbs.lib provides Tbsi_Get_TCG_Log_Ex for the VBS offline-bundle measured-boot log.
-        target_link_libraries(${mpss_TARGET} PRIVATE tbs)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
         target_link_libraries(${mpss_TARGET} PRIVATE
             "-framework Foundation"
@@ -493,7 +491,12 @@ if(MPSS_BUILD_TESTS)
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         # The Windows attestation E2E test drives the CNG claim APIs (NCryptCreateClaim /
         # NCryptVerifyClaim) directly for the on-runner VBS create -> claim -> verify round trip.
-        target_link_libraries(mpss_tests PRIVATE ncrypt crypt32)
+        # win_vbs_bundle.cpp (build_vbs_offline_bundle) is test-only emit code, so it is compiled
+        # straight into the test binary: that way it links in both the static and shared-library
+        # builds without exporting an internal symbol from the mpss DLL. tbs.lib provides its
+        # Tbsi_Get_TCG_Log_Ex measured-boot log call.
+        target_sources(mpss_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/mpss/impl/windows/win_vbs_bundle.cpp")
+        target_link_libraries(mpss_tests PRIVATE ncrypt crypt32 tbs)
     endif()
 
     if(TARGET ${mpss_openssl_TARGET})

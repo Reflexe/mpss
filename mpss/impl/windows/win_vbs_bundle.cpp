@@ -7,6 +7,7 @@
 #include <Windows.h>
 #include <array>
 #include <bcrypt.h>
+#include <limits>
 #include <ncrypt.h>
 #include <string>
 #include <tbs.h>
@@ -138,7 +139,11 @@ std::vector<BYTE> platform_quote(NCRYPT_KEY_HANDLE aik, std::span<const std::byt
     buffers[0].cbBuffer = sizeof(mask);
     buffers[0].pvBuffer = &mask;
     buffers[1].BufferType = NCRYPTBUFFER_TPM_PLATFORM_CLAIM_NONCE;
-    buffers[1].cbBuffer = mpss::utils::narrow_or_error<ULONG>(nonce.size());
+    if (nonce.size() > (std::numeric_limits<ULONG>::max)())
+    {
+        return {};
+    }
+    buffers[1].cbBuffer = static_cast<ULONG>(nonce.size());
     buffers[1].pvBuffer = const_cast<std::byte *>(nonce.data());
 
     BCryptBufferDesc parameters{};
