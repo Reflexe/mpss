@@ -199,12 +199,68 @@ class MPSSProvider : public ::testing::Test
         }
         return EvpPkeyPtr(pkey);
     }
+
+    EvpPkeyPtr GenerateNamedKey(const std::string &key_name, const char *algorithm)
+    {
+        EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss"));
+        if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
+        {
+            return nullptr;
+        }
+
+        OSSL_PARAM params[3];
+        int count = 0;
+        params[count++] = OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0);
+        if (nullptr != algorithm)
+        {
+            params[count++] = OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(algorithm), 0);
+        }
+        params[count] = OSSL_PARAM_construct_end();
+        if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
+        {
+            return nullptr;
+        }
+
+        EVP_PKEY *pkey = nullptr;
+        if (1 != EVP_PKEY_generate(ctx.get(), &pkey))
+        {
+            return nullptr;
+        }
+        return EvpPkeyPtr(pkey);
+    }
 };
 
 } // namespace
 
 namespace mpss_openssl::tests
 {
+
+// Scenario: a key created with an algorithm is reopened through the keymgmt gen path by name only.
+// Expected behavior: reopening the existing key by name without specifying an algorithm succeeds and
+// returns the originally created key (same group), instead of failing because no algorithm was given.
+TEST_F(MPSSProvider, KeymgmtGenReopensExistingKeyByNameWithoutAlgorithm)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("gen_reopen");
+    EvpPkeyPtr created = GenerateNamedKey(key_name, mpss_p256_algorithm);
+    if (nullptr == created)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    // Reopening the existing key by name without specifying an algorithm succeeds and yields the
+    // originally created key (same group).
+    EvpPkeyPtr reopened = GenerateNamedKey(key_name, nullptr);
+    ASSERT_NE(nullptr, reopened) << "reopen by name without an algorithm failed: " << mpss_get_error();
+    char group_name[80] = {};
+    std::size_t group_name_len = 0;
+    ASSERT_EQ(1, EVP_PKEY_get_group_name(reopened.get(), group_name, sizeof(group_name), &group_name_len));
+    EXPECT_STREQ(SN_X9_62_prime256v1, group_name);
+}
 
 // Scenario: the MPSS provider signs an X.509 request with ECDSA P-256/SHA-256.
 // Expected behavior: the signature AlgorithmIdentifier uses ecdsa-with-SHA256 with absent parameters.
