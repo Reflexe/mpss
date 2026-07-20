@@ -15,6 +15,12 @@ namespace os
 // These are implemented in each platform's mpss_impl.cpp.
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm);
+#if defined(_WIN32)
+// Windows attests keys (TPM / VBS); other platforms have no attested overload yet.
+[[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    const std::optional<AttestationRequest> &attestation);
+#endif
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
@@ -29,12 +35,16 @@ std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm 
                                                std::optional<AttestationRequest> attestation,
                                                KeyPolicy /*policy*/) const
 {
-    // Evidence generation is not implemented yet; the request is ignored.
+#if defined(_WIN32)
+    return os::create_key(name, algorithm, attestation);
+#else
+    // Other OS backends have no attested path yet; ignore the request and create a plain key.
     if (attestation.has_value())
     {
         utils::log_debug("OS backend does not produce attestation evidence yet; creating key '{}' without it.", name);
     }
     return os::create_key(name, algorithm);
+#endif
 }
 
 AttestationCapability OSBackend::attestation_capability() const

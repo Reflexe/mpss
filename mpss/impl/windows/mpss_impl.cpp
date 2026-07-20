@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
+#include "mpss/impl/windows/win_attestation.h"
 #include "mpss/impl/windows/win_keypair.h"
 #include "mpss/impl/windows/win_utils.h"
 #include "mpss/utils/scope_guard.h"
@@ -11,6 +12,7 @@
 #include <cwchar>
 #include <locale>
 #include <ncrypt.h>
+#include <optional>
 #include <string>
 
 namespace
@@ -348,6 +350,50 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     mpss::utils::log_and_set_error("{}; fallback: {}", primary_error, mpss::utils::get_error());
 
     return nullptr;
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    const std::optional<AttestationRequest> &attestation)
+{
+    if (!attestation.has_value())
+    {
+        return create_key(name, algorithm);
+    }
+
+    if (name.empty())
+    {
+        mpss::utils::log_warning("Key name cannot be empty.");
+        return nullptr;
+    }
+    if (unsupported == algorithm)
+    {
+        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        return nullptr;
+    }
+
+    if (std::unique_ptr<KeyPair> existing_key = open_key(name); nullptr != existing_key)
+    {
+        mpss::utils::log_warning("Key '{}' already exists.", name);
+        return nullptr;
+    }
+
+    mpss::utils::log_trace("Creating attested key '{}'.", name);
+    std::unique_ptr<KeyPair> attested = create_attested_key(name, algorithm, *attestation);
+    if (nullptr != attested)
+    {
+        return attested;
+    }
+
+    if (AttestationRequirement::require == attestation->requirement)
+    {
+        mpss::utils::log_and_set_error(
+            "Attestation was required for key '{}' but no TPM evidence could be produced.", name);
+        return nullptr;
+    }
+
+    // Best-effort request: fall back to a plain key so the caller still gets a usable key.
+    mpss::utils::log_debug("Attestation requested for key '{}' but unavailable; creating key without evidence.", name);
+    return create_key(name, algorithm);
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

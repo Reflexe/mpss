@@ -476,6 +476,9 @@ if(MPSS_BUILD_TESTS)
         $<BUILD_INTERFACE:${mpss_INCLUDES_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
     )
+    # The windows_tpm_claim verifier chains the Azure vTPM AK cert to the published Microsoft root and
+    # checks the TPM2_Certify signature with OpenSSL; hardware-free, so it builds on every platform.
+    target_link_libraries(mpss_attest_verify PRIVATE OpenSSL::Crypto)
 
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
@@ -484,6 +487,17 @@ if(MPSS_BUILD_TESTS)
     target_link_libraries(mpss_tests PRIVATE GTest::gtest)
     target_link_libraries(mpss_tests PRIVATE mpss_attest_verify)
     target_link_libraries(mpss_tests PRIVATE OpenSSL::Crypto)
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # The Windows attestation E2E test drives the CNG claim APIs (NCryptCreateClaim /
+        # NCryptVerifyClaim) directly for the on-runner VBS create -> claim -> verify round trip.
+        # win_vbs_bundle.cpp (build_vbs_offline_bundle) is test-only emit code, so it is compiled
+        # straight into the test binary: that way it links in both the static and shared-library
+        # builds without exporting an internal symbol from the mpss DLL. tbs.lib provides its
+        # Tbsi_Get_TCG_Log_Ex measured-boot log call.
+        target_sources(mpss_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/mpss/impl/windows/win_vbs_bundle.cpp")
+        target_link_libraries(mpss_tests PRIVATE ncrypt crypt32 tbs)
+    endif()
 
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.

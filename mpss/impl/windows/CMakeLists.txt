@@ -9,6 +9,7 @@ endif()
 # Add the source files from this directory.
 list(APPEND mpss_SOURCE_FILES
     "${CMAKE_CURRENT_LIST_DIR}/mpss_impl.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/win_attestation.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/win_keypair.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/win_utils.cpp"
 )
