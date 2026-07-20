@@ -2,14 +2,17 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/provider/keymgmt.h"
+#include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <utility>
+#include <mpss/utils/utilities.h>
 
 namespace mpss_openssl::provider
 {
@@ -123,10 +126,6 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
         return 0;
     }
 
-    // Get the algorithm info.
-    const mpss::AlgorithmInfo info = pkey->key_pair->algorithm_info();
-    const std::string_view type_str = info.type_str;
-
     // Capacity: at most 2 params (group name + public key) plus OSSL_PARAM_END terminator.
     OSSL_PARAM params[3]{};
     OSSL_PARAM *p = params;
@@ -169,6 +168,43 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
     }
 
     return 1;
+}
+
+extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_sz)
+{
+    if (nullptr == reference || sizeof(mpss_key_reference *) != reference_sz)
+    {
+        return nullptr;
+    }
+
+    const mpss_key_reference *const *key_reference_ptr = static_cast<const mpss_key_reference *const *>(reference);
+    const mpss_key_reference *key_reference = *key_reference_ptr;
+    if (nullptr == key_reference || key_reference->key_name.empty() ||
+        key_reference->key_name.size() > mpss_key_reference_max_name_len ||
+        key_reference->key_name.find('\0') != std::string::npos)
+    {
+        mpss::utils::log_warning("mpss keymgmt load: rejecting a missing, empty, oversized, or NUL-containing key reference");
+        return nullptr;
+    }
+
+    std::optional<std::string> mpss_algorithm = std::nullopt;
+    mpss_key *pkey = mpss_new<mpss_key>(key_reference->key_name, mpss_algorithm, std::nullopt /* mpss_backend */);
+    if (nullptr == pkey)
+    {
+        return nullptr;
+    }
+
+    // The reference identifies the key by name; reopening succeeds as long as a key with this name
+    // exists in the backend.
+    if (!pkey->has_valid_key())
+    {
+        mpss::utils::log_warning("mpss keymgmt load: no key named '{}' exists in the backend",
+                                 key_reference->key_name);
+        mpss_delete(pkey);
+        return nullptr;
+    }
+
+    return pkey;
 }
 
 extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
@@ -490,6 +526,7 @@ extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
 }
 
 const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
+    {OSSL_FUNC_KEYMGMT_LOAD, reinterpret_cast<void (*)(void)>(mpss_keymgmt_load)},
     {OSSL_FUNC_KEYMGMT_EXPORT, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export)},
     {OSSL_FUNC_KEYMGMT_EXPORT_TYPES, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export_types)},
     {OSSL_FUNC_KEYMGMT_GEN_SETTABLE_PARAMS, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_settable_params)},
