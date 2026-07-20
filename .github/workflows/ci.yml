@@ -139,6 +139,21 @@ jobs:
         shell: bash
         run: cmake --build "out/build/${{ matrix.preset }}"
 
+      - name: Verify captured windows_tpm_claim vector (no-TPM, cross-machine)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="out/build/${{ matrix.preset }}/bin/mpss_tests"
+          if [ ! -f "$BIN" ]; then
+            echo "mpss_tests not found at $BIN" >&2
+            find "out/build/${{ matrix.preset }}/bin" -name 'mpss_tests*' -maxdepth 2 || true
+            exit 1
+          fi
+          # Hardware-free: verify the committed Azure-vTPM windows_tpm_claim bundle against the pinned
+          # published Microsoft root on a Linux box with no TPM. This is the offline cross-machine
+          # attestation proof -- the bundle was generated on a different (Azure vTPM) machine.
+          "$BIN" --gtest_filter='WindowsTpmVerifierTest.*:WindowsVbsVerifierTest.*'
+
   # -------------------------------------------------------------------------
   # Android: run the gtest suite on an emulator against the real Keystore backend.
   # The backend needs a JVM (bound in JNI_OnLoad), so it runs inside an

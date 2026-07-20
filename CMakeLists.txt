@@ -478,6 +478,9 @@ if(MPSS_BUILD_TESTS)
         $<BUILD_INTERFACE:${mpss_INCLUDES_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
     )
+    # The windows_tpm_claim verifier chains the Azure vTPM AK cert to the published Microsoft root and
+    # checks the TPM2_Certify signature with OpenSSL; hardware-free, so it builds on every platform.
+    target_link_libraries(mpss_attest_verify PRIVATE OpenSSL::Crypto)
 
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
