@@ -101,10 +101,71 @@ class MPSSDigest : public ::testing::Test
     }
 };
 
+
 } // namespace
 
 namespace mpss_openssl::tests
 {
+
+
+// Scenario: a key created with an algorithm is reopened through the keymgmt gen path by name only.
+// Expected behavior: reopening the existing key without specifying an algorithm succeeds and returns the same group.
+TEST(MPSS_OpenSSL, KeymgmtGenReopensExistingKeyByNameWithoutAlgorithm)
+{
+    const char *algorithm = "ecdsa_secp256r1_sha256";
+    if (!mpss_is_algorithm_available(algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const char *key_name = "test_key_gen_reopen_no_algorithm";
+    const bool _ = mpss_delete_key(key_name);
+
+    OSSL_LIB_CTX *mpss_libctx = OSSL_LIB_CTX_new();
+    ASSERT_NE(nullptr, mpss_libctx);
+    ASSERT_NE(0, OSSL_PROVIDER_add_builtin(mpss_libctx, "mpss", OSSL_provider_init));
+    OSSL_PROVIDER *mpss_prov = OSSL_PROVIDER_load(mpss_libctx, "mpss");
+    ASSERT_NE(nullptr, mpss_prov);
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss");
+    ASSERT_NE(nullptr, ctx);
+    ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+    OSSL_PARAM create_params[] = {
+        OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name), 0),
+        OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(algorithm), 0), OSSL_PARAM_END};
+    ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, create_params));
+    EVP_PKEY *created = nullptr;
+    if (1 != EVP_PKEY_generate(ctx, &created))
+    {
+        EVP_PKEY_CTX_free(ctx);
+        ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
+        OSSL_LIB_CTX_free(mpss_libctx);
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    ctx = EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss");
+    ASSERT_NE(nullptr, ctx);
+    ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+    OSSL_PARAM reopen_params[] = {OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name), 0),
+                                  OSSL_PARAM_END};
+    ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, reopen_params));
+    EVP_PKEY *reopened = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_generate(ctx, &reopened)) << "reopen by name without an algorithm failed: " << mpss_get_error();
+    EVP_PKEY_CTX_free(ctx);
+
+    char group_name[80] = {};
+    std::size_t group_name_len = 0;
+    ASSERT_EQ(1, EVP_PKEY_get_group_name(reopened, group_name, sizeof(group_name), &group_name_len));
+    EXPECT_STREQ(SN_X9_62_prime256v1, group_name);
+
+    EVP_PKEY_free(reopened);
+    EVP_PKEY_free(created);
+    ASSERT_EQ(1, mpss_delete_key(key_name));
+    ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
+    OSSL_LIB_CTX_free(mpss_libctx);
+}
+
 
 TEST_F(MPSSDigest, SHA256)
 {
