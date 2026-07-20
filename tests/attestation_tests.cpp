@@ -152,8 +152,9 @@ TEST(AttestationVerifierTest, NoneEvidenceIsRejected)
     EXPECT_FALSE(result.reason.empty());
 }
 
-// Scenario: verifying evidence for each real format against the Stage 1 skeleton.
-// Expected behavior: every per-format verifier reports "not implemented" and echoes the format.
+// Scenario: verifying evidence for each not-yet-implemented format against the skeleton.
+// Expected behavior: those per-format verifiers report "not implemented" and echo the format.
+// (android_key_attestation is excluded here; it has its own test suite.)
 TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
 {
     const mpss::attest::AttestationVerifier verifier;
@@ -161,8 +162,8 @@ TEST(AttestationVerifierTest, EachFormatReportsNotImplemented)
     const std::vector<std::byte> pubkey = make_bytes(8, std::byte{0x22});
 
     for (const mpss::AttestationFormat format :
-         {mpss::AttestationFormat::android_key_attestation, mpss::AttestationFormat::apple_acme_managed_device,
-          mpss::AttestationFormat::windows_tpm_claim, mpss::AttestationFormat::windows_vbs_claim})
+         {mpss::AttestationFormat::apple_acme_managed_device, mpss::AttestationFormat::windows_tpm_claim,
+          mpss::AttestationFormat::windows_vbs_claim})
     {
         mpss::AttestationEvidence evidence;
         evidence.format = format;

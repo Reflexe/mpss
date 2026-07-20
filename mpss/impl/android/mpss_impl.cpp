@@ -94,7 +94,7 @@ using enum Algorithm;
 
 AttestationCapability attestation_capability()
 {
-    // Android attests a named key via KeyGenParameterSpec.setAttestationChallenge; generation not implemented yet.
+    // Android attests a named key via KeyGenParameterSpec.setAttestationChallenge.
     return AttestationCapability::key_attestation;
 }
 
@@ -329,6 +329,179 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
 
     mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, storage_description);
     return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+}
+
+jfieldID GetAlgorithmFieldId(JNIEnv *env, jclass algorithmClass, Algorithm algorithm)
+{
+    switch (algorithm)
+    {
+    case ecdsa_secp256r1_sha256:
+        return env->GetStaticFieldID(algorithmClass, "secp256r1", "Lcom/microsoft/research/mpss/Algorithm;");
+    case ecdsa_secp384r1_sha384:
+        return env->GetStaticFieldID(algorithmClass, "secp384r1", "Lcom/microsoft/research/mpss/Algorithm;");
+    case ecdsa_secp521r1_sha512:
+        return env->GetStaticFieldID(algorithmClass, "secp521r1", "Lcom/microsoft/research/mpss/Algorithm;");
+    default:
+        return nullptr;
+    }
+}
+
+// Retrieves the DER attestation certificate chain (leaf first) for a key via KeyStore.getCertificateChain.
+std::vector<std::vector<std::byte>> GetAttestationChain(JNIEnv *env, jclass km, jstring keyName)
+{
+    jmethodID mid = env->GetStaticMethodID(km, "GetAttestationCertificateChain", "(Ljava/lang/String;)[[B");
+    if (nullptr == mid)
+    {
+        mpss::utils::log_and_set_error("Could not get KeyManagement.GetAttestationCertificateChain method.");
+        return {};
+    }
+
+    jni_object arr_obj(env, env->CallStaticObjectMethod(km, mid, keyName));
+    if (arr_obj.is_null())
+    {
+        mpss::utils::log_and_set_error("KeyManagement.GetAttestationCertificateChain returned null.");
+        return {};
+    }
+
+    auto *arr = reinterpret_cast<jobjectArray>(arr_obj.get());
+    const jsize count = env->GetArrayLength(arr);
+    std::vector<std::vector<std::byte>> chain;
+    chain.reserve(static_cast<std::size_t>(count));
+    for (jsize i = 0; i < count; ++i)
+    {
+        jni_bytearray cert(env, reinterpret_cast<jbyteArray>(env->GetObjectArrayElement(arr, i)));
+        if (cert.is_null())
+        {
+            continue;
+        }
+        const jsize len = env->GetArrayLength(cert.get());
+        std::vector<std::byte> der(static_cast<std::size_t>(len));
+        env->GetByteArrayRegion(cert.get(), 0, len, reinterpret_cast<jbyte *>(der.data()));
+        chain.push_back(std::move(der));
+    }
+    return chain;
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
+                                    const std::optional<AttestationRequest> &attestation)
+{
+    if (!attestation.has_value())
+    {
+        return create_key(name, algorithm);
+    }
+
+    if (name.empty())
+    {
+        mpss::utils::log_warning("Key name cannot be empty.");
+        return nullptr;
+    }
+    if (unsupported == algorithm)
+    {
+        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        return nullptr;
+    }
+    if (nullptr != open_key(name))
+    {
+        mpss::utils::log_warning("Key '{}' already exists.", name);
+        return nullptr;
+    }
+
+    mpss::utils::log_trace("Creating attested key '{}' with algorithm '{}' on Android backend.", name,
+                           get_algorithm_info(algorithm).type_str);
+
+    JNIEnvGuard guard;
+    jni_class km(guard.Env(), utils::GetKeyManagementClass(guard.Env()));
+    if (km.is_null())
+    {
+        mpss::utils::log_and_set_error("Could not get KeyManagement Java class.");
+        return nullptr;
+    }
+
+    jmethodID mid = guard->GetStaticMethodID(
+        km.get(), "CreateKeyWithAttestation",
+        "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;[B)Ljava/lang/Boolean;");
+    if (nullptr == mid)
+    {
+        mpss::utils::log_and_set_error("Could not get KeyManagement.CreateKeyWithAttestation Java method.");
+        return nullptr;
+    }
+
+    const std::string keyNameStr(name);
+    jni_string keyName(guard.Env(), guard->NewStringUTF(keyNameStr.c_str()));
+    if (keyName.is_null())
+    {
+        mpss::utils::log_and_set_error("Could not convert key name to Java String.");
+        return nullptr;
+    }
+
+    jni_class algorithmClass(guard.Env(), guard->FindClass("com/microsoft/research/mpss/Algorithm"));
+    if (algorithmClass.is_null())
+    {
+        mpss::utils::log_and_set_error("Could not get Algorithm Java class.");
+        return nullptr;
+    }
+
+    jfieldID algoFieldId = GetAlgorithmFieldId(guard.Env(), algorithmClass.get(), algorithm);
+    if (nullptr == algoFieldId)
+    {
+        mpss::utils::log_and_set_error("Could not find appropriate enum value for Algorithm.");
+        return nullptr;
+    }
+
+    jni_object algorithmValue(guard.Env(), guard->GetStaticObjectField(algorithmClass.get(), algoFieldId));
+    if (algorithmValue.is_null())
+    {
+        mpss::utils::log_and_set_error("Could not get object for Algorithm value.");
+        return nullptr;
+    }
+
+    jni_bytearray challenge(guard.Env(), utils::ToJByteArray(guard.Env(), attestation->challenge));
+    if (challenge.is_null())
+    {
+        mpss::utils::log_and_set_error("Could not convert attestation challenge to jbyte array.");
+        return nullptr;
+    }
+
+    jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mid, keyName.get(),
+                                                                 algorithmValue.get(), challenge.get()));
+    if (result.is_null() || !utils::UnboxBoolean(guard.Env(), result.get()))
+    {
+        mpss::utils::log_and_set_error(mpss::impl::os::utils::GetError(guard.Env()));
+        return nullptr;
+    }
+
+    bool hardware_backed = false;
+    const char *storage_description = nullptr;
+    GetKeyProperties(name, hardware_backed, &storage_description);
+    if (nullptr == storage_description)
+    {
+        // Error reported by GetKeyProperties.
+        return nullptr;
+    }
+
+    std::vector<std::vector<std::byte>> chain = GetAttestationChain(guard.Env(), km.get(), keyName.get());
+
+    std::optional<AttestationEvidence> evidence;
+    if (!chain.empty())
+    {
+        AttestationEvidence produced;
+        produced.format = AttestationFormat::android_key_attestation;
+        produced.payload = std::move(chain);
+        evidence = std::move(produced);
+    }
+
+    // A strictly required attestation that produced no evidence must fail; do not leave the key behind.
+    if (!evidence.has_value() && AttestationRequirement::require == attestation->requirement)
+    {
+        mpss::utils::log_and_set_error(
+            "Attestation was required for key '{}' but no evidence could be produced.", name);
+        AndroidKeyPair{algorithm, name, hardware_backed, storage_description}.delete_key();
+        return nullptr;
+    }
+
+    mpss::utils::log_trace("Attested key '{}' created on Android with {} storage.", name, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description,
+                                            std::move(evidence));
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

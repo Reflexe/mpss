@@ -5,6 +5,8 @@
 
 #include "mpss/impl/android/JNIHelper.h"
 #include "mpss/mpss.h"
+#include <optional>
+#include <utility>
 
 namespace mpss::impl::os
 {
@@ -13,8 +15,10 @@ class AndroidKeyPair : public mpss::KeyPair
 {
   public:
     AndroidKeyPair(mpss::Algorithm algorithm, std::string_view name, bool hardware_backed,
-                   const char *storage_description)
-        : mpss::KeyPair{algorithm, hardware_backed, storage_description}, key_name_{name}
+                   const char *storage_description,
+                   std::optional<mpss::AttestationEvidence> attestation = std::nullopt)
+        : mpss::KeyPair{algorithm, hardware_backed, storage_description}, key_name_{name},
+          attestation_{std::move(attestation)}
     {
     }
 
@@ -35,6 +39,18 @@ class AndroidKeyPair : public mpss::KeyPair
     [[nodiscard]]
     std::size_t extract_key(std::span<std::byte> public_key) const override;
 
+    [[nodiscard]]
+    bool supports_attestation() const override
+    {
+        return attestation_.has_value();
+    }
+
+    [[nodiscard]]
+    std::optional<mpss::AttestationEvidence> attestation() const override
+    {
+        return attestation_;
+    }
+
     void release_key() noexcept override;
 
   private:
@@ -46,6 +62,7 @@ class AndroidKeyPair : public mpss::KeyPair
     };
 
     std::string key_name_;
+    std::optional<mpss::AttestationEvidence> attestation_;
     JNIEnvGuard guard_;
 };
 

@@ -27,6 +27,7 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.SignatureException;
 import java.security.UnrecoverableKeyException;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -47,6 +48,10 @@ public class KeyManagement {
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
 
     private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
+        return CreateKey(keyName, algorithm, useStrongbox, /* attestationChallenge */ null);
+    }
+
+    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox, byte[] attestationChallenge) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
         if (null == keyName) {
             throw new IllegalArgumentException("keyName is null.");
         }
@@ -64,6 +69,11 @@ public class KeyManagement {
                 .setDigests(digest)
                 .setUserAuthenticationRequired(false);
         builder.setIsStrongBoxBacked(useStrongbox);
+
+        // When a challenge is present, bind it into hardware-signed key attestation evidence.
+        if (null != attestationChallenge) {
+            builder.setAttestationChallenge(attestationChallenge);
+        }
 
         kpg.initialize(builder.build());
 
@@ -156,6 +166,23 @@ public class KeyManagement {
      * @return True if key was created successfully, False otherwise.
      */
     public static Boolean CreateKey(String keyName, Algorithm algorithm) {
+        return CreateKeyInternal(keyName, algorithm, /* attestationChallenge */ null);
+    }
+
+    /**
+     * Create a new long-term key bound to a hardware key-attestation challenge.
+     * Tries to create first in StrongBox, will create in TEE if StrongBox is not available.
+     * @param keyName Name of the key to create.
+     * @param algorithm Algorithm for the key.
+     * @param attestationChallenge Relying-party nonce to bind into the attestation evidence.
+     * @return True if key was created successfully, False otherwise.
+     */
+    public static Boolean CreateKeyWithAttestation(String keyName, Algorithm algorithm, byte[] attestationChallenge) {
+        if (null == attestationChallenge) throw new IllegalArgumentException("attestationChallenge is null.");
+        return CreateKeyInternal(keyName, algorithm, attestationChallenge);
+    }
+
+    private static Boolean CreateKeyInternal(String keyName, Algorithm algorithm, byte[] attestationChallenge) {
         if (null == keyName) throw new IllegalArgumentException("keyName is null.");
         if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
 
@@ -177,7 +204,7 @@ public class KeyManagement {
             }
 
             try {
-                kp = CreateKey(keyName, algorithm, useStrongbox);
+                kp = CreateKey(keyName, algorithm, useStrongbox, attestationChallenge);
             } catch (StrongBoxUnavailableException ex) {
                 Log.w("MPSS", "Strong box is not available.");
             }
@@ -192,7 +219,7 @@ public class KeyManagement {
 
             // Try again without StrongBox.
             if (null == kp) {
-                kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
+                kp = CreateKey(keyName, algorithm, /* useStrongBox */ false, attestationChallenge);
             }
 
             if (null != kp) {
@@ -337,6 +364,45 @@ public class KeyManagement {
             return uncompressed;
         } catch (InvalidKeySpecException | NoSuchAlgorithmException ex) {
             String msg = "Error getting public key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
+        }
+    }
+
+    /**
+     * Get the attestation certificate chain (leaf first) for the given key.
+     *
+     * The chain is produced by the AndroidKeyStore at key creation when an attestation challenge was
+     * supplied. Each entry is a DER-encoded X.509 certificate; the leaf carries the key attestation
+     * extension (OID 1.3.6.1.4.1.11129.2.1.17) that binds the challenge to the hardware-backed key.
+     *
+     * @param keyName Name of the key whose attestation chain is requested.
+     * @return DER-encoded certificates (leaf first), or null on error or if no chain is available.
+     */
+    public static byte[][] GetAttestationCertificateChain(String keyName) {
+        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+
+        try {
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(/* param */ null);
+
+            Certificate[] chain = ks.getCertificateChain(keyName);
+            if (null == chain || 0 == chain.length) {
+                String msg = "No attestation certificate chain for key: " + keyName;
+                Log.w("MPSS", msg);
+                SetError(msg);
+                return null;
+            }
+
+            byte[][] encoded = new byte[chain.length][];
+            for (int i = 0; i < chain.length; i++) {
+                encoded[i] = chain[i].getEncoded();
+            }
+            return encoded;
+        } catch (KeyStoreException | IOException | NoSuchAlgorithmException |
+                 CertificateException ex) {
+            String msg = "Error getting attestation certificate chain: " + ex.toString();
             Log.e("MPSS", msg);
             SetError(msg);
             return null;

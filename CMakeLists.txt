@@ -472,6 +472,8 @@ if(MPSS_BUILD_TESTS)
     add_subdirectory(mpss-attest-verify)
     add_library(mpss_attest_verify STATIC ${mpss_attest_verify_SOURCE_FILES})
     target_compile_features(mpss_attest_verify PUBLIC cxx_std_20)
+    # The Android per-format verifier uses OpenSSL for ASN.1/X.509 parsing and path validation.
+    target_link_libraries(mpss_attest_verify PUBLIC OpenSSL::Crypto)
     target_include_directories(mpss_attest_verify PUBLIC
         $<BUILD_INTERFACE:${mpss_INCLUDES_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>

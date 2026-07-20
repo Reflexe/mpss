@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-attest-verify/attestation_verifier.h"
+#include "mpss-attest-verify/android_key_attestation.h"
 #include <span>
 #include <utility>
 
@@ -19,12 +20,12 @@ AttestationVerifier::Result not_implemented(AttestationFormat format)
                                        "attestation verification for this format is not implemented in Stage 1"};
 }
 
-AttestationVerifier::Result verify_android_key_attestation(const AttestationEvidence & /*evidence*/,
-                                                           std::span<const std::byte> /*nonce*/,
-                                                           std::span<const std::byte> /*pubkey*/,
-                                                           const AttestationVerifier::Policy & /*policy*/)
+AttestationVerifier::Result verify_android_key_attestation(const AttestationEvidence &evidence,
+                                                           std::span<const std::byte> nonce,
+                                                           std::span<const std::byte> pubkey,
+                                                           const AttestationVerifier::Policy &policy)
 {
-    return not_implemented(AttestationFormat::android_key_attestation);
+    return detail::verify_android_key_attestation(evidence, nonce, pubkey, policy);
 }
 
 AttestationVerifier::Result verify_apple_acme_managed_device(const AttestationEvidence & /*evidence*/,
