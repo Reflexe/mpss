@@ -476,6 +476,8 @@ if(MPSS_BUILD_TESTS)
         $<BUILD_INTERFACE:${mpss_INCLUDES_DIR}>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
     )
+    # The per-format verifiers use OpenSSL for ASN.1/X.509 parsing and chain verification.
+    target_link_libraries(mpss_attest_verify PUBLIC OpenSSL::Crypto)
 
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
