@@ -433,7 +433,9 @@ extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *
     }
 
     // Set up the new mpss_key struct with the right info.
-    std::optional<std::string> mpss_algorithm = ctx->mpss_algorithm;
+    const bool algorithm_requested = !ctx->mpss_algorithm.empty();
+    std::optional<std::string> mpss_algorithm =
+        algorithm_requested ? std::make_optional(ctx->mpss_algorithm) : std::nullopt;
     const auto policy = static_cast<mpss::KeyPolicy>(ctx->key_policy);
     mpss_key *pkey = mpss_new<mpss_key>(ctx->key_name, mpss_algorithm, ctx->mpss_backend, policy);
     if (nullptr == pkey)
@@ -443,20 +445,18 @@ extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *
 
     do
     {
-        // Check that everything went well.
         if (!pkey->has_valid_key())
         {
             break;
         }
 
-        // If a key already existed, mpss_algorithm now has the algorithm type that was loaded.
-        // This has to be the same as the one that was requested, otherwise return nullptr.
-        if (!mpss_algorithm || mpss_algorithm.value() != ctx->mpss_algorithm)
+        // Only enforce the algorithm match when one was actually requested; otherwise reopening an
+        // existing key by name without specifying an algorithm would fail.
+        if (algorithm_requested && (!mpss_algorithm || mpss_algorithm.value() != ctx->mpss_algorithm))
         {
             break;
         }
 
-        // Key generation succeeded.
         return pkey;
     } while (false);
 
