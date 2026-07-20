@@ -387,7 +387,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm,
     if (AttestationRequirement::require == attestation->requirement)
     {
         mpss::utils::log_and_set_error(
-            "Attestation was required for key '{}' but no TPM or VBS evidence could be produced.", name);
+            "Attestation was required for key '{}' but no TPM evidence could be produced.", name);
         return nullptr;
     }
 

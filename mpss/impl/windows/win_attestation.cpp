@@ -22,14 +22,6 @@ namespace
 
 // Cosmetic KeyInfo label only; the evidence format is the authoritative signal.
 constexpr const char *tpm_storage_description = "TPM Attestation";
-constexpr const char *vbs_storage_description = "VBS Attestation";
-
-// VBS_ROOT (0x5) is Win11-only; the legacy 0x4 auto-transforms to it on older SDKs.
-#if defined(NCRYPT_CLAIM_VBS_ROOT)
-constexpr DWORD vbs_claim_type = NCRYPT_CLAIM_VBS_ROOT;
-#else
-constexpr DWORD vbs_claim_type = NCRYPT_CLAIM_VBS_KEY_ATTESTATION_STATEMENT;
-#endif
 
 // One attestation attempt: provider + creation flags + claim type/format to emit.
 struct ClaimProfile
@@ -85,8 +77,7 @@ NCRYPT_KEY_HANDLE create_ec_key(NCRYPT_PROV_HANDLE provider, std::string_view na
     return key_handle;
 }
 
-// Nonce-bound claim over the key; hAuthorityKey=NULL means the provider self-signs (TPM AIK / VBS
-// secure kernel).
+// Nonce-bound claim over the key; hAuthorityKey=NULL means the TPM AIK self-signs.
 std::vector<std::byte> generate_claim(NCRYPT_KEY_HANDLE key, std::span<const std::byte> nonce, DWORD claim_type)
 {
     const ULONG nonce_size = mpss::utils::narrow_or_error<ULONG>(nonce.size());
@@ -174,26 +165,21 @@ std::unique_ptr<KeyPair> create_attested_key(std::string_view name, Algorithm al
 
     const std::span<const std::byte> nonce{request.challenge};
 
-    // TPM first (externally verifiable AIK -> EK -> root); else VBS, under the distinct
-    // windows_vbs_claim format (test lane, not real attestation).
-    const ClaimProfile profiles[] = {
-        {MS_PLATFORM_KEY_STORAGE_PROVIDER, /* create_flags */ 0, NCRYPT_CLAIM_AUTHORITY_AND_SUBJECT,
-         AttestationFormat::windows_tpm_claim, tpm_storage_description},
-        {MS_KEY_STORAGE_PROVIDER, NCRYPT_USE_VIRTUAL_ISOLATION_FLAG, vbs_claim_type,
-         AttestationFormat::windows_vbs_claim, vbs_storage_description},
-    };
+    // Only a TPM claim is externally verifiable (AIK -> EK -> published manufacturer root), so only it
+    // counts as attestation evidence. VBS / Key Guard is key protection, applied on the normal create
+    // path via NCRYPT_REQUIRE_VBS_FLAG -- not attestation; a VBS-only key carries no evidence.
+    const ClaimProfile tpm_profile{MS_PLATFORM_KEY_STORAGE_PROVIDER, /* create_flags */ 0,
+                                   NCRYPT_CLAIM_AUTHORITY_AND_SUBJECT, AttestationFormat::windows_tpm_claim,
+                                   tpm_storage_description};
 
-    for (const ClaimProfile &profile : profiles)
+    std::unique_ptr<KeyPair> key = try_profile(tpm_profile, name, algorithm, nonce);
+    if (nullptr != key)
     {
-        std::unique_ptr<KeyPair> key = try_profile(profile, name, algorithm, nonce);
-        if (nullptr != key)
-        {
-            mpss::utils::log_trace("Created attested key '{}' with {}.", name, profile.storage_description);
-            return key;
-        }
+        mpss::utils::log_trace("Created attested key '{}' with {}.", name, tpm_storage_description);
+        return key;
     }
 
-    mpss::utils::log_debug("No attestation provider (TPM or VBS) could produce evidence for key '{}'.", name);
+    mpss::utils::log_debug("No TPM attestation could produce evidence for key '{}'.", name);
     return nullptr;
 }
 

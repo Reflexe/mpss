@@ -237,10 +237,10 @@ TEST(WindowsVbsE2ETest, GenerateVerifyRoundTrip)
 }
 
 // Scenario: the shipping mpss backend creates a key with a required attestation request.
-// Expected behavior: real nonce-bound evidence is attached (windows_tpm_claim when a TPM is present,
-// otherwise windows_vbs_claim), the key is a usable signing key, and the shared verifier handles the
-// evidence per format (TPM -> reaches the documented chain gap; VBS -> refused). Gated on the backend
-// being able to attest at all so a runner with neither TPM nor VBS stays green.
+// Expected behavior: only a TPM claim counts as attestation, so real nonce-bound windows_tpm_claim
+// evidence is attached, the key is a usable signing key, and the shared verifier parses the claim and
+// reaches the documented AIK -> EK -> manufacturer-root chain gap. Gated on a TPM being present so a
+// hosted runner with no TPM (where VBS is key-protection only, not attestation) stays green.
 TEST(WindowsAttestedCreateE2ETest, BackendProducesRealEvidence)
 {
     const std::vector<std::byte> nonce = make_nonce();
@@ -252,7 +252,7 @@ TEST(WindowsAttestedCreateE2ETest, BackendProducesRealEvidence)
         "mpss_attested_e2e_key", mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none, request);
     if (key == nullptr)
     {
-        GTEST_SKIP() << "No TPM or VBS attestation available on this runner: " << mpss::get_error();
+        GTEST_SKIP() << "No TPM attestation available on this runner: " << mpss::get_error();
     }
 
     // Capture everything we need, then delete the key, so later ASSERT failures never leak storage.
@@ -287,8 +287,7 @@ TEST(WindowsAttestedCreateE2ETest, BackendProducesRealEvidence)
     ASSERT_TRUE(std::holds_alternative<mpss::NCryptClaim>(evidence->payload));
     EXPECT_FALSE(std::get<mpss::NCryptClaim>(evidence->payload).empty());
     EXPECT_FALSE(pubkey.empty());
-    EXPECT_TRUE(evidence->format == mpss::AttestationFormat::windows_tpm_claim ||
-                evidence->format == mpss::AttestationFormat::windows_vbs_claim);
+    EXPECT_EQ(evidence->format, mpss::AttestationFormat::windows_tpm_claim);
 
     // Feed the real evidence into the shared verifier with a pinned (placeholder) TPM root.
     mpss::attest::AttestationVerifier::Policy policy;
@@ -304,17 +303,10 @@ TEST(WindowsAttestedCreateE2ETest, BackendProducesRealEvidence)
     const auto result = verifier.verify(*evidence, nonce, pubkey);
 
     EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.format, evidence->format);
-    if (evidence->format == mpss::AttestationFormat::windows_tpm_claim)
-    {
-        // A real TPM claim parses cleanly and is nonce-bound, so it reaches the documented
-        // AIK -> EK -> manufacturer-root chain gap rather than any earlier structural rejection.
-        EXPECT_NE(result.reason.find("manufacturer-root"), std::string::npos) << "reason: " << result.reason;
-    }
-    else
-    {
-        EXPECT_NE(result.reason.find("not externally verifiable"), std::string::npos) << "reason: " << result.reason;
-    }
+    EXPECT_EQ(result.format, mpss::AttestationFormat::windows_tpm_claim);
+    // A real TPM claim parses cleanly and is nonce-bound, so it reaches the documented
+    // AIK -> EK -> manufacturer-root chain gap rather than any earlier structural rejection.
+    EXPECT_NE(result.reason.find("manufacturer-root"), std::string::npos) << "reason: " << result.reason;
 }
 
 // Scenario: the Windows backend assembles the offline VBS bundle from a real VBS claim plus the TPM
