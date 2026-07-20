@@ -16,6 +16,7 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         list(APPEND mpss_TESTS_FILES
             "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_tests.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_e2e_test.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_mtls_test.cpp"
         )
     endif()
 
@@ -53,6 +54,7 @@ if(MPSS_OPENSSL_FOUND)
     list(APPEND mpss_TESTS_SOURCES
         mpss_openssl_tests.cpp
         mpss_openssl_e2e_test.cpp
+        mpss_openssl_mtls_test.cpp
     )
 endif()
 
@@ -67,6 +69,9 @@ if(MPSS_OPENSSL_FOUND)
     else()
         target_link_libraries(mpss_tests PRIVATE mpss::mpss_openssl_static)
     endif()
+    # The mTLS handshake test needs libssl; mpss-openssl only pulls in libcrypto.
+    find_package(OpenSSL 3 REQUIRED)
+    target_link_libraries(mpss_tests PRIVATE OpenSSL::SSL)
 elseif(MPSS_CORE_FOUND)
     if(TARGET mpss::mpss)
         target_link_libraries(mpss_tests PRIVATE mpss::mpss)
