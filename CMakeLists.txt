@@ -302,6 +302,8 @@ if(TARGET ${mpss_TARGET})
         # mpss on Windows requires ncrypt.lib.
         target_link_libraries(${mpss_TARGET} PRIVATE ncrypt)
         target_link_libraries(${mpss_TARGET} PRIVATE crypt32)
+        # tbs.lib provides Tbsi_Get_TCG_Log_Ex for the VBS offline-bundle measured-boot log.
+        target_link_libraries(${mpss_TARGET} PRIVATE tbs)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
         target_link_libraries(${mpss_TARGET} PRIVATE
             "-framework Foundation"

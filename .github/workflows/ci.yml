@@ -599,3 +599,29 @@ jobs:
           if grep -q '\[  FAILED  \]' gtest.log; then
             echo "::error::gtest reported failing tests"; exit 1
           fi
+
+      - name: Set up Go (go-attestation reference verifier)
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Emit VBS offline bundle and verify with go-attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="out/build/win-vs2022-x64/bin/${{ matrix.configuration }}/mpss_tests.exe"
+          export MPSS_VBS_BUNDLE_OUT="$GITHUB_WORKSPACE/vbs_bundle.json"
+          rm -f "$MPSS_VBS_BUNDLE_OUT"
+          # Assemble the Azure VBS-protocol bundle via the real backend helper. The test skips (and
+          # writes no bundle) when the runner exposes VBS but no (v)TPM anchor -- never faking evidence.
+          "$BIN" --gtest_filter='WindowsVbsBundleE2ETest.*' 2>&1 | tee bundle.log
+          if grep -q '\[  FAILED  \]' bundle.log; then
+            echo "::error::VBS offline-bundle emit test failed"; exit 1
+          fi
+          if [ -f "$MPSS_VBS_BUNDLE_OUT" ]; then
+            # The runner has a (v)TPM: the bundle MUST validate against the reference implementation.
+            echo "Bundle produced; validating with google/go-attestation (reference verifier)."
+            ( cd tests/goverify && go run . "$MPSS_VBS_BUNDLE_OUT" )
+          else
+            echo "::notice::hosted windows-2022 runner exposes no (v)TPM anchor; the VBS offline-bundle E2E ran as a build+emit check (go-attestation verify not exercised here). The full generate->verify runs on a real-TPM / clean-boot lane."
+          fi

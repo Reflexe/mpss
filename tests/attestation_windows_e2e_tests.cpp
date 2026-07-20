@@ -11,10 +11,13 @@
 
 #include "mpss-attest-verify/attestation_verifier.h"
 #include "mpss/attestation.h"
+#include "mpss/impl/windows/win_vbs_bundle.h"
 #include "mpss/mpss.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <optional>
 #include <span>
@@ -64,6 +67,66 @@ struct NcryptHandle
         }
     }
 };
+
+// Generate a real, nonce-bound VBS / Key Guard claim over an ephemeral virtual-isolation key, then
+// delete the key. Returns nullopt when VBS is unavailable on the runner (never fakes evidence).
+std::optional<std::vector<std::byte>> make_vbs_claim(std::span<const std::byte> nonce)
+{
+    NCRYPT_PROV_HANDLE raw_provider = 0;
+    if (::NCryptOpenStorageProvider(&raw_provider, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS)
+    {
+        return std::nullopt;
+    }
+    NcryptHandle provider{raw_provider};
+
+    const wchar_t *key_name = L"mpss_vbs_bundle_e2e_key";
+    {
+        NCRYPT_KEY_HANDLE stale = 0;
+        if (::NCryptOpenKey(raw_provider, &stale, key_name, 0, 0) == ERROR_SUCCESS)
+        {
+            ::NCryptDeleteKey(stale, 0);
+        }
+    }
+
+    NCRYPT_KEY_HANDLE raw_key = 0;
+    if (::NCryptCreatePersistedKey(raw_provider, &raw_key, BCRYPT_ECDSA_P256_ALGORITHM, key_name, 0,
+                                   NCRYPT_USE_VIRTUAL_ISOLATION_FLAG) != ERROR_SUCCESS)
+    {
+        return std::nullopt;
+    }
+    if (::NCryptFinalizeKey(raw_key, 0) != ERROR_SUCCESS)
+    {
+        ::NCryptDeleteKey(raw_key, 0);
+        return std::nullopt;
+    }
+
+    BCryptBuffer nonce_buffer{};
+    nonce_buffer.cbBuffer = static_cast<ULONG>(nonce.size());
+    nonce_buffer.BufferType = NCRYPTBUFFER_CLAIM_KEYATTESTATION_NONCE;
+    nonce_buffer.pvBuffer = const_cast<std::byte *>(nonce.data());
+    BCryptBufferDesc parameter_list{};
+    parameter_list.ulVersion = BCRYPTBUFFER_VERSION;
+    parameter_list.cBuffers = 1;
+    parameter_list.pBuffers = &nonce_buffer;
+
+    DWORD claim_size = 0;
+    if (::NCryptCreateClaim(raw_key, 0, kVbsClaimType, &parameter_list, nullptr, 0, &claim_size, 0) != ERROR_SUCCESS ||
+        claim_size == 0)
+    {
+        ::NCryptDeleteKey(raw_key, 0);
+        return std::nullopt;
+    }
+    std::vector<std::byte> claim(claim_size);
+    const SECURITY_STATUS status = ::NCryptCreateClaim(raw_key, 0, kVbsClaimType, &parameter_list,
+                                                       reinterpret_cast<PBYTE>(claim.data()), claim_size, &claim_size, 0);
+    ::NCryptDeleteKey(raw_key, 0);
+    if (status != ERROR_SUCCESS)
+    {
+        return std::nullopt;
+    }
+    claim.resize(claim_size);
+    return claim;
+}
 
 } // namespace
 
@@ -251,6 +314,44 @@ TEST(WindowsAttestedCreateE2ETest, BackendProducesRealEvidence)
     else
     {
         EXPECT_NE(result.reason.find("not externally verifiable"), std::string::npos) << "reason: " << result.reason;
+    }
+}
+
+// Scenario: the Windows backend assembles the offline VBS bundle from a real VBS claim plus the TPM
+// measured-boot anchor (AIK-signed platform quote over all PCRs + SRTM TCG log + AIK-pub JWK).
+// Expected behavior: on a runner with a usable (v)TPM, build_vbs_offline_bundle returns a well-formed
+// Azure VBS-protocol JSON bundle carrying vsm_report + current_claim + srtm_boot_log + aik_pub, which
+// is written for the go-attestation CI verifier to validate; on a runner with VBS but no TPM anchor it
+// reports that and skips, never faking evidence.
+TEST(WindowsVbsBundleE2ETest, EmitsGoAttestationVerifiableBundle)
+{
+    const std::vector<std::byte> nonce = make_nonce();
+    const std::optional<std::vector<std::byte>> claim = make_vbs_claim(nonce);
+    if (!claim.has_value())
+    {
+        GTEST_SKIP() << "VBS / Key Guard not available on this runner.";
+    }
+
+    const std::optional<std::vector<std::byte>> bundle = mpss::impl::os::build_vbs_offline_bundle(*claim, nonce);
+    if (!bundle.has_value())
+    {
+        GTEST_SKIP() << "No (v)TPM anchor on this runner (VBS present, platform quote / SRTM log absent).";
+    }
+
+    const std::string json(reinterpret_cast<const char *>(bundle->data()), bundle->size());
+    EXPECT_NE(json.find(R"("att_type":"vbs")"), std::string::npos);
+    EXPECT_NE(json.find(R"("vsm_report")"), std::string::npos);
+    EXPECT_NE(json.find(R"("current_claim")"), std::string::npos);
+    EXPECT_NE(json.find(R"("srtm_boot_log")"), std::string::npos);
+    EXPECT_NE(json.find(R"("aik_pub")"), std::string::npos);
+
+    // Hand the bundle to the go-attestation CI verifier when a destination path is provided.
+    char *dest = nullptr;
+    std::size_t len = 0;
+    if (_dupenv_s(&dest, &len, "MPSS_VBS_BUNDLE_OUT") == 0 && dest != nullptr)
+    {
+        std::ofstream(dest, std::ios::binary).write(json.data(), static_cast<std::streamsize>(json.size()));
+        std::free(dest);
     }
 }
 
