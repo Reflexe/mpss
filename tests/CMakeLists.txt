@@ -5,8 +5,8 @@ cmake_minimum_required(VERSION 3.25)
 
 # When invoked as a subdirectory, just collect source files and return.
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    # In any case, compile the test runner.
-    list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/test_runner.cpp")
+    # In any case, compile the reusable test entry point.
+    list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/test_entry.cpp")
 
     # Conditionally add tests depending on what is being built.
     if(TARGET ${mpss_TARGET})
@@ -51,8 +51,8 @@ endif()
 find_package(mpss REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
-# Always compile the test runner.
-set(mpss_TESTS_SOURCES test_runner.cpp)
+# Always compile the reusable entry point and desktop runner.
+set(mpss_TESTS_SOURCES test_entry.cpp test_runner.cpp)
 
 # Conditionally add tests depending on what the installed mpss provides.
 if(MPSS_CORE_FOUND)

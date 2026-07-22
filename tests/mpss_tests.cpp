@@ -6,6 +6,13 @@
 #include "mpss/mpss.h"
 #include "mpss/utils/utilities.h"
 #include "tests/compat_env.h"
+#ifdef __APPLE__
+#include "mpss/impl/apple/apple_api_wrapper.h"
+#include "mpss/impl/apple/apple_result.h"
+#include "mpss/impl/apple/apple_se_wrapper.h"
+#include "mpss/impl/apple/apple_utils.h"
+#endif
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -410,6 +417,112 @@ TEST_F(MPSS, VerifyStandaloneSignature521)
 {
     VerifyStandaloneSignature(ecdsa_secp521r1_sha512, "521", 64);
 }
+
+#ifdef __APPLE__
+TEST(AppleErrorPropagation, MissingOpenHasNoErrorDetail)
+{
+    constexpr char key_name[] = "mpss_apple_missing_error_test_key";
+    EXPECT_TRUE(MPSS_DeleteKey(key_name));
+    EXPECT_TRUE(mpss::impl::os::utils::take_keychain_error().empty());
+    (void)MPSS_SE_RemoveExistingKey(key_name);
+
+    int bit_size = 0;
+    EXPECT_EQ(MPSS_APPLE_RESULT_EXPECTED_NEGATIVE, MPSS_OpenExistingKey(key_name, &bit_size));
+    EXPECT_TRUE(mpss::impl::os::utils::take_keychain_error().empty());
+
+    EXPECT_EQ(MPSS_APPLE_RESULT_EXPECTED_NEGATIVE, MPSS_SE_OpenExistingKey(key_name));
+    EXPECT_TRUE(mpss::impl::os::utils::take_secure_enclave_error().empty());
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name));
+    EXPECT_TRUE(mpss::get_error().empty());
+}
+
+TEST(AppleErrorPropagation, WrapperErrorsAreConsumedOnce)
+{
+    const std::array<std::uint8_t, 32> hash{};
+    const std::array<std::uint8_t, 1> malformed_public_key{};
+    const std::array<std::uint8_t, 1> malformed_signature{};
+
+    EXPECT_EQ(MPSS_APPLE_RESULT_OPERATIONAL_ERROR,
+              MPSS_VerifyStandaloneSignature(static_cast<int>(ecdsa_secp256r1_sha256), hash.data(), hash.size(),
+                                             malformed_public_key.data(), malformed_public_key.size(),
+                                             malformed_signature.data(), malformed_signature.size()));
+    EXPECT_FALSE(mpss::impl::os::utils::take_keychain_error().empty());
+    EXPECT_TRUE(mpss::impl::os::utils::take_keychain_error().empty());
+
+    EXPECT_EQ(MPSS_APPLE_RESULT_OPERATIONAL_ERROR,
+              MPSS_SE_VerifyStandaloneSignature(malformed_public_key.data(), malformed_public_key.size(), hash.data(),
+                                                hash.size(), malformed_signature.data(), malformed_signature.size()));
+    EXPECT_FALSE(mpss::impl::os::utils::take_secure_enclave_error().empty());
+    EXPECT_TRUE(mpss::impl::os::utils::take_secure_enclave_error().empty());
+
+    int bit_size = 0;
+    EXPECT_EQ(MPSS_APPLE_RESULT_OPERATIONAL_ERROR, MPSS_OpenExistingKey(nullptr, &bit_size));
+    EXPECT_FALSE(mpss::impl::os::utils::take_keychain_error().empty());
+
+    const char unicode_key_name[] = {static_cast<char>(0xC3), static_cast<char>(0xA9), '\0'};
+    std::array<std::uint8_t, 72> signature{};
+    std::size_t signature_size = signature.size();
+    EXPECT_FALSE(MPSS_SE_Sign(unicode_key_name, hash.data(), hash.size(), signature.data(), &signature_size));
+    const std::string unicode_error = mpss::impl::os::utils::take_secure_enclave_error();
+    EXPECT_NE(std::string::npos, unicode_error.find(unicode_key_name));
+}
+
+TEST_F(MPSS, InvalidSignatureClearsOperationalError)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "mpss_apple_invalid_signature_error_test";
+    DeleteKey(key_name);
+    std::unique_ptr<mpss::KeyPair> handle = CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    const std::vector<std::byte> signed_hash(32, std::byte{'a'});
+    const std::vector<std::byte> other_hash(32, std::byte{'b'});
+    std::vector<std::byte> signature(handle->sign_hash_size());
+    const std::size_t signature_size = handle->sign_hash(signed_hash, signature);
+    ASSERT_NE(0, signature_size);
+    signature.resize(signature_size);
+
+    std::vector<std::byte> public_key(handle->extract_key_size());
+    ASSERT_EQ(public_key.size(), handle->extract_key(public_key));
+    ASSERT_TRUE(mpss::verify(signed_hash, public_key, ecdsa_secp256r1_sha256, signature));
+
+    std::vector<std::byte> malformed_public_key = public_key;
+    malformed_public_key.front() ^= std::byte{0xFF};
+    ASSERT_FALSE(mpss::verify(signed_hash, malformed_public_key, ecdsa_secp256r1_sha256, signature));
+    ASSERT_FALSE(mpss::get_error().empty());
+
+    EXPECT_FALSE(mpss::verify(other_hash, public_key, ecdsa_secp256r1_sha256, signature));
+    EXPECT_TRUE(mpss::get_error().empty());
+
+    ASSERT_TRUE(handle->delete_key());
+}
+
+TEST_F(MPSS, VerificationErrorSurvivesKeyDestruction)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "mpss_apple_destroyed_key_error_test";
+    DeleteKey(key_name);
+    std::unique_ptr<mpss::KeyPair> handle = CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    ASSERT_FALSE(handle->verify({}, {}));
+    const std::string verification_error = mpss::get_error();
+    ASSERT_FALSE(verification_error.empty());
+
+    handle.reset();
+    EXPECT_EQ(verification_error, mpss::get_error());
+    DeleteKey(key_name);
+}
+#endif
 
 TEST(MPSSTests, IsAlgorithmSupported)
 {

@@ -30,7 +30,7 @@ bool AppleKeychainKeyPair::do_delete_key()
     const bool result = MPSS_DeleteKey(name().c_str());
     if (!result)
     {
-        mpss::utils::log_and_set_error("Failed to delete key: {}", utils::MPSS_GetLastError());
+        utils::report_keychain_error("delete key");
     }
     else
     {
@@ -50,7 +50,7 @@ std::size_t AppleKeychainKeyPair::do_sign_hash(std::span<const std::byte> hash, 
                        reinterpret_cast<std::uint8_t *>(sig.data()), &signature_size))
     {
         // This should not fail at this point. The caller already validated inputs.
-        mpss::utils::log_and_set_error("Failed to sign hash: {}", utils::MPSS_GetLastError());
+        utils::report_keychain_error("sign hash");
         return 0;
     }
 
@@ -60,12 +60,10 @@ std::size_t AppleKeychainKeyPair::do_sign_hash(std::span<const std::byte> hash, 
 
 bool AppleKeychainKeyPair::do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    const bool result = MPSS_VerifySignature(name().c_str(), static_cast<int>(algorithm()),
-                                             reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
-                                             reinterpret_cast<const std::uint8_t *>(sig.data()), sig.size());
-
-    // This should not fail at this point unless the signature is invalid. The caller already validated inputs.
-    return result;
+    const std::int32_t raw_result = MPSS_VerifySignature(
+        name().c_str(), static_cast<int>(algorithm()), reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
+        reinterpret_cast<const std::uint8_t *>(sig.data()), sig.size());
+    return utils::handle_keychain_verification_result(raw_result, "verify signature");
 }
 
 std::size_t AppleKeychainKeyPair::do_extract_key(std::span<std::byte> public_key) const
@@ -76,7 +74,7 @@ std::size_t AppleKeychainKeyPair::do_extract_key(std::span<std::byte> public_key
     if (!MPSS_GetPublicKey(name().c_str(), reinterpret_cast<std::uint8_t *>(public_key.data()), &pk_size))
     {
         // This should not fail at this point. The caller already validated inputs.
-        mpss::utils::log_and_set_error("Failed to retrieve public key: {}", utils::MPSS_GetLastError());
+        utils::report_keychain_error("retrieve public key");
         return 0;
     }
 

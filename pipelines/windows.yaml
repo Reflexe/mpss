@@ -8,7 +8,6 @@ steps:
     displayName: 'Credential Scan'
 
   - task: CodeQL3000Init@0
-  - task: CodeQL3000Finalize@0
 
   - task: ComponentGovernanceComponentDetection@0
     inputs:
@@ -42,6 +41,9 @@ steps:
       --build out/build/${{ parameters.preset }}
       --config ${{ parameters.configuration }}
     workingDirectory: '$(Build.SourcesDirectory)'
+
+- ${{ if eq(parameters.configuration, 'Release') }}:
+  - task: CodeQL3000Finalize@0
 
 # Unit tests will fail because TPM cannot be accessed in the Azure Pipelines hosted agents.
 # - script: '${{ parameters.configuration }}\mpss_tests.exe'

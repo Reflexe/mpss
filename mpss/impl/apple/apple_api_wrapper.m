@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 
+#include "mpss/impl/apple/apple_result.h"
 #include "mpss/log_c.h"
 
 // Global dictionary to store SecKeyRef instances.
@@ -41,21 +42,20 @@ void StoreKey(NSString *keyLabel, SecKeyRef keyRef) {
 
   if (keyLabel && keyRef) {
     dispatch_sync(_keyStoreQueue, ^{
-      // Store the key.
       _keyStore[keyLabel] = (__bridge id)keyRef;
-
-      // Ensure the key stays alive.
-      CFRetain(keyRef);
     });
   }
 }
 
-SecKeyRef GetKey(NSString *keyLabel) {
+SecKeyRef CopyKey(NSString *keyLabel) {
   InitializeKeyStore();
 
   __block SecKeyRef result = NULL;
   dispatch_sync(_keyStoreQueue, ^{
     result = (__bridge SecKeyRef)(_keyStore[keyLabel]);
+    if (result) {
+      CFRetain(result);
+    }
   });
   return result;
 }
@@ -64,9 +64,7 @@ void RemoveKey(NSString *keyLabel) {
   InitializeKeyStore();
 
   dispatch_sync(_keyStoreQueue, ^{
-    SecKeyRef keyRef = (__bridge SecKeyRef)(_keyStore[keyLabel]);
-    if (keyRef) {
-      CFRelease(keyRef);
+    if (_keyStore[keyLabel]) {
       [_keyStore removeObjectForKey:keyLabel];
     }
   });
@@ -119,6 +117,55 @@ static id SupportedKeychainKeyType() {
   return (id)kSecAttrKeyTypeECSECPrimeRandom;
 }
 
+static bool IsExpectedVerificationFailure(CFErrorRef error) {
+  return error != NULL &&
+         CFEqual(CFErrorGetDomain(error), kCFErrorDomainOSStatus) &&
+         CFErrorGetCode(error) == errSecVerifyFailed;
+}
+
+static int32_t OpenExistingKeyInternal(NSString *keyLabel, int *bitSize) {
+  SecKeyRef keyRef = CopyKey(keyLabel);
+
+  if (keyRef) {
+    mpss_log_debug("Found existing key in local dictionary.");
+    *bitSize = GetKeySize(keyRef);
+    CFRelease(keyRef);
+    return MPSS_APPLE_RESULT_SUCCESS;
+  }
+
+  mpss_log_debug("Did not find key in local dictionary, querying from OS.");
+
+  NSDictionary *query = @{
+    (id)kSecClass : (__bridge id)kSecClassKey,
+    (id)kSecAttrKeyType : SupportedKeychainKeyType(),
+    (id)kSecAttrApplicationTag :
+        [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
+    (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
+    (id)kSecReturnRef : @YES,
+    (id)kSecMatchLimit : (__bridge id)kSecMatchLimitOne
+  };
+
+  OSStatus status =
+      SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&keyRef);
+
+  if (status == errSecSuccess) {
+    mpss_log_debug("Retrieved key from OS.");
+    StoreKey(keyLabel, keyRef);
+    *bitSize = GetKeySize(keyRef);
+    CFRelease(keyRef);
+    return MPSS_APPLE_RESULT_SUCCESS;
+  }
+
+  if (status == errSecItemNotFound) {
+    return MPSS_APPLE_RESULT_EXPECTED_NEGATIVE;
+  }
+
+  NSString *error = [NSString
+      stringWithFormat:@"Failed to retrieve key with status: %d", (int)status];
+  SetThreadLocalError(error);
+  return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+}
+
 ////////////////////////////////////////////////////////
 // From here on below, the public functions.
 ////////////////////////////////////////////////////////
@@ -130,62 +177,46 @@ void MPSS_RemoveKey(const char *keyName) {
   }
 }
 
-bool MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
+int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
+  ClearThreadLocalError();
   if (keyName == NULL || bitSize == NULL) {
-    return false;
+    SetThreadLocalError(@"Invalid parameters (keyName or bitSize is NULL).");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
-    SecKeyRef keyRef = GetKey(keyLabel);
-
-    if (keyRef) {
-      // Already exists.
-      mpss_log_debug("Found existing key in local dictionary.");
-      *bitSize = GetKeySize(keyRef);
-      return true;
-    }
-
-    mpss_log_debug("Did not find key in local dictionary, querying from OS.");
-
-    NSDictionary *query = @{
-      (id)kSecClass : (__bridge id)kSecClassKey,
-      (id)kSecAttrKeyType : SupportedKeychainKeyType(),
-      (id)kSecAttrApplicationTag :
-          [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
-      (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
-      (id)kSecReturnRef : @YES,
-      (id)kSecMatchLimit : (__bridge id)kSecMatchLimitOne
-    };
-
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&keyRef);
-
-    if (status == errSecSuccess) {
-      mpss_log_debug("Retrieved key from OS.");
-      StoreKey(keyLabel, keyRef);
-
-      *bitSize = GetKeySize(keyRef);
-      return true;
-    }
-
-    NSString *error = [NSString stringWithFormat:@"Failed to retrieve key with status: %d", (int)status];
-    SetThreadLocalError(error);
-
-    return false;
+    return OpenExistingKeyInternal(keyLabel, bitSize);
   }
 }
 
 bool MPSS_CreateKey(const char *keyName, int bitSize) {
+  ClearThreadLocalError();
+  if (keyName == NULL) {
+    SetThreadLocalError(@"Invalid parameter (keyName is NULL).");
+    return false;
+  }
+
   // Define key attributes.
   @autoreleasepool {
     int existingBitSize = 0;
-    if (MPSS_OpenExistingKey(keyName, &existingBitSize)) {
+    NSString *keyLabel = GetKeyLabel(keyName);
+    const int32_t openResult =
+        OpenExistingKeyInternal(keyLabel, &existingBitSize);
+    if (openResult == MPSS_APPLE_RESULT_SUCCESS) {
       NSString *error = [NSString stringWithFormat:@"Key %s already exists.", keyName];
       SetThreadLocalError(error);
       return false;
     }
-
-    NSString *keyLabel = GetKeyLabel(keyName);
+    if (openResult == MPSS_APPLE_RESULT_OPERATIONAL_ERROR) {
+      return false;
+    }
+    if (openResult != MPSS_APPLE_RESULT_EXPECTED_NEGATIVE) {
+      NSString *error = [NSString
+          stringWithFormat:@"Open returned invalid result: %d", openResult];
+      SetThreadLocalError(error);
+      return false;
+    }
 
     int keyBitSize = GetKeyBitSize(bitSize);
     mpss_log_debug([[NSString stringWithFormat:@"Key bit size: %d", keyBitSize] UTF8String]);
@@ -195,18 +226,19 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
       return false;
     }
 
-    // Access control for key.
-    SecAccessControlRef access = SecAccessControlCreateWithFlags(
-        kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        kSecAccessControlPrivateKeyUsage, NULL);
-
     mpss_log_debug([[NSString stringWithFormat:@"Creating key with bit size %d", keyBitSize] UTF8String]);
+    NSDictionary *privateKeyAttributes = @{
+      (id)kSecAttrIsPermanent : @YES,
+      (id)kSecAttrLabel : keyLabel,
+      (id)kSecAttrApplicationTag :
+          [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
+      (id)kSecAttrAccessible :
+          (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    };
     NSDictionary *keyAttributes = @{
       (id)kSecAttrKeyType : SupportedKeychainKeyType(),
       (id)kSecAttrKeySizeInBits : @(keyBitSize), // NOLINT(readability-redundant-parentheses)
-      (id)kSecAttrIsPermanent : @YES,
-      (id)kSecAttrLabel : keyLabel,
-      (id)kSecAttrApplicationTag : [keyLabel dataUsingEncoding:NSUTF8StringEncoding]
+      (id)kSecPrivateKeyAttrs : privateKeyAttributes
     };
 
     // Generate the key.
@@ -224,6 +256,7 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
 
     mpss_log_trace("Key generated successfully.");
     StoreKey(keyLabel, keyRef);
+    CFRelease(keyRef);
 
     return true;
   }
@@ -231,14 +264,17 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
 
 bool MPSS_SignHash(const char *keyName, int signatureType, const uint8_t *hash,
                    size_t hashSize, uint8_t *signature, size_t *signatureSize) {
+  ClearThreadLocalError();
   if (keyName == NULL || hash == NULL || signature == NULL ||
       signatureSize == NULL) {
+    SetThreadLocalError(
+        @"Invalid parameters (keyName, hash, signature, or signatureSize is NULL).");
     return false;
   }
 
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
-    SecKeyRef keyRef = GetKey(keyLabel);
+    SecKeyRef keyRef = CopyKey(keyLabel);
 
     if (keyRef == NULL) {
       mpss_log_debug("Key not found.");
@@ -252,11 +288,13 @@ bool MPSS_SignHash(const char *keyName, int signatureType, const uint8_t *hash,
     if (algorithm == NULL) {
       NSString *error = [NSString stringWithFormat:@"Unsupported signature type: %d", signatureType];
       SetThreadLocalError(error);
+      CFRelease(keyRef);
       return false;
     }
 
     CFErrorRef error = NULL;
     CFDataRef signatureData = SecKeyCreateSignature(keyRef, algorithm, (__bridge CFDataRef)hashData, &error);
+    CFRelease(keyRef);
 
     if (signatureData == NULL) {
       NSError *err = CFBridgingRelease(error);
@@ -272,6 +310,7 @@ bool MPSS_SignHash(const char *keyName, int signatureType, const uint8_t *hash,
                                      @"size: %lu, signature size: %lu",
                                      *signatureSize, signatureDataSize];
       SetThreadLocalError(error);
+      CFRelease(signatureData);
       return false;
     }
 
@@ -289,21 +328,25 @@ bool MPSS_SignHash(const char *keyName, int signatureType, const uint8_t *hash,
   }
 }
 
-bool MPSS_VerifySignature(const char *keyName, int signatureType,
-                          const uint8_t *hash, size_t hashSize,
-                          const uint8_t *signature, size_t signatureSize) {
+int32_t MPSS_VerifySignature(const char *keyName, int signatureType,
+                             const uint8_t *hash, size_t hashSize,
+                             const uint8_t *signature,
+                             size_t signatureSize) {
+  ClearThreadLocalError();
   if (keyName == NULL || hash == NULL || signature == NULL) {
-    return false;
+    SetThreadLocalError(
+        @"Invalid parameters (keyName, hash, or signature is NULL).");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
-    SecKeyRef keyRef = GetKey(keyLabel);
+    SecKeyRef keyRef = CopyKey(keyLabel);
 
     if (keyRef == NULL) {
       NSString *error = @"Key not found.";
       SetThreadLocalError(error);
-      return false;
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     NSData *hashData = [NSData dataWithBytes:hash length:hashSize];
@@ -313,14 +356,16 @@ bool MPSS_VerifySignature(const char *keyName, int signatureType,
     if (algorithm == NULL) {
       NSString *error = [NSString stringWithFormat:@"Unsupported signature type: %d", signatureType];
       SetThreadLocalError(error);
-      return false;
+      CFRelease(keyRef);
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     SecKeyRef publicKeyRef = SecKeyCopyPublicKey(keyRef);
+    CFRelease(keyRef);
     if (!publicKeyRef) {
       NSString *error = @"Could not copy public key.";
       SetThreadLocalError(error);
-      return false;
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     CFErrorRef error = NULL;
@@ -331,25 +376,38 @@ bool MPSS_VerifySignature(const char *keyName, int signatureType,
     // Release public key.
     CFRelease(publicKeyRef);
 
-    if (!result) {
-      NSError *err = CFBridgingRelease(error);
-      NSString *error = [NSString stringWithFormat:@"Failed to verify signature: %@", err];
-      SetThreadLocalError(error);
-      return false;
+    if (result) {
+      if (error != NULL) {
+        CFRelease(error);
+      }
+      return MPSS_APPLE_RESULT_SUCCESS;
     }
 
-    return true;
+    const bool expectedNegative = IsExpectedVerificationFailure(error);
+    if (!expectedNegative) {
+      NSString *detail =
+          error == NULL ? @"No platform error detail."
+                        : [(__bridge NSError *)error description];
+      NSString *errorMessage =
+          [NSString stringWithFormat:@"Failed to verify signature: %@", detail];
+      SetThreadLocalError(errorMessage);
+    }
+    if (error != NULL) {
+      CFRelease(error);
+    }
+    return expectedNegative ? MPSS_APPLE_RESULT_EXPECTED_NEGATIVE
+                            : MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 }
 
-bool MPSS_VerifyStandaloneSignature(int signatureType, const uint8_t *hash,
-                                    size_t hashSize, const uint8_t *publicKey,
-                                    size_t publicKeySize,
-                                    const uint8_t *signature,
-                                    size_t signatureSize) {
+int32_t MPSS_VerifyStandaloneSignature(
+    int signatureType, const uint8_t *hash, size_t hashSize,
+    const uint8_t *publicKey, size_t publicKeySize,
+    const uint8_t *signature, size_t signatureSize) {
+  ClearThreadLocalError();
   if (hash == NULL || publicKey == NULL || signature == NULL) {
     SetThreadLocalError(@"Invalid parameters (hash, publicKey, or signature is NULL).");
-    return false;
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 
   @autoreleasepool {
@@ -362,7 +420,7 @@ bool MPSS_VerifyStandaloneSignature(int signatureType, const uint8_t *hash,
     if (algorithm == NULL) {
       NSString *error = [NSString stringWithFormat:@"Unsupported signature type: %d", signatureType];
       SetThreadLocalError(error);
-      return false;
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     int keyBitSize = GetKeyBitSize(signatureType);
@@ -371,7 +429,7 @@ bool MPSS_VerifyStandaloneSignature(int signatureType, const uint8_t *hash,
     if (keyBitSize == -1) {
       NSString *error = [NSString stringWithFormat:@"Unsupported signature type: %d", signatureType];
       SetThreadLocalError(error);
-      return false;
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     // Create public key attributes.
@@ -392,7 +450,7 @@ bool MPSS_VerifyStandaloneSignature(int signatureType, const uint8_t *hash,
       NSError *err = CFBridgingRelease(error);
       NSString *error = [NSString stringWithFormat:@"Failed to create public key from data: %@", err];
       SetThreadLocalError(error);
-      return false;
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
     }
 
     // Verify the signature.
@@ -403,25 +461,41 @@ bool MPSS_VerifyStandaloneSignature(int signatureType, const uint8_t *hash,
     // Release public key.
     CFRelease(publicKeyRef);
 
-    if (!result) {
-      NSError *err = CFBridgingRelease(error);
-      NSString *error = [NSString stringWithFormat:@"Failed to verify standalone signature: %@", err];
-      SetThreadLocalError(error);
-      return false;
+    if (result) {
+      if (error != NULL) {
+        CFRelease(error);
+      }
+      return MPSS_APPLE_RESULT_SUCCESS;
     }
 
-    return true;
+    const bool expectedNegative = IsExpectedVerificationFailure(error);
+    if (!expectedNegative) {
+      NSString *detail =
+          error == NULL ? @"No platform error detail."
+                        : [(__bridge NSError *)error description];
+      NSString *errorMessage = [NSString
+          stringWithFormat:@"Failed to verify standalone signature: %@", detail];
+      SetThreadLocalError(errorMessage);
+    }
+    if (error != NULL) {
+      CFRelease(error);
+    }
+    return expectedNegative ? MPSS_APPLE_RESULT_EXPECTED_NEGATIVE
+                            : MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 }
 
 bool MPSS_GetPublicKey(const char *keyName, uint8_t *pk, size_t *pkSize) {
+  ClearThreadLocalError();
   if (NULL == keyName || NULL == pk || NULL == pkSize) {
+    SetThreadLocalError(
+        @"Invalid parameters (keyName, pk, or pkSize is NULL).");
     return false;
   }
 
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
-    SecKeyRef keyRef = GetKey(keyLabel);
+    SecKeyRef keyRef = CopyKey(keyLabel);
 
     if (keyRef == NULL) {
       NSString *error = @"Key not found.";
@@ -430,6 +504,7 @@ bool MPSS_GetPublicKey(const char *keyName, uint8_t *pk, size_t *pkSize) {
     }
 
     SecKeyRef publicKeyRef = SecKeyCopyPublicKey(keyRef);
+    CFRelease(keyRef);
     if (publicKeyRef == NULL) {
       NSString *error = @"Could not copy public key.";
       SetThreadLocalError(error);
@@ -474,13 +549,15 @@ bool MPSS_GetPublicKey(const char *keyName, uint8_t *pk, size_t *pkSize) {
 }
 
 bool MPSS_DeleteKey(const char *keyName) {
+  ClearThreadLocalError();
+  if (keyName == NULL) {
+    SetThreadLocalError(@"Invalid parameter (keyName is NULL).");
+    return false;
+  }
+
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
-    SecKeyRef keyRef = GetKey(keyLabel);
-
-    if (keyRef) {
-      RemoveKey(keyLabel);
-    }
+    RemoveKey(keyLabel);
 
     NSString *op_status = @"";
 
@@ -496,6 +573,8 @@ bool MPSS_DeleteKey(const char *keyName) {
 
     if (status == errSecSuccess) {
       mpss_log_trace("Deleted private key.");
+    } else if (status == errSecItemNotFound) {
+      mpss_log_trace("Private key not found, nothing to delete.");
     } else {
       // Append to status.
       op_status = [op_status
@@ -509,6 +588,8 @@ bool MPSS_DeleteKey(const char *keyName) {
 
     if (status == errSecSuccess) {
       mpss_log_trace("Deleted public key.");
+    } else if (status == errSecItemNotFound) {
+      mpss_log_trace("Public key not found, nothing to delete.");
     } else {
       // Append to status.
       op_status = [op_status

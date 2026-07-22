@@ -188,6 +188,56 @@ xcodebuild -create-xcframework                                              \
 
 </details>
 
+#### Running the iOS simulator suite
+
+The iOS tests run in a hosted XCTest bundle inside a minimal UIKit application. This is required
+because Keychain behavior depends on an application runtime, entitlements, and bundle identity.
+The simulator path deliberately reports Secure Enclave as unavailable, so it validates the
+Keychain-backed fallback without making hardware-security claims.
+
+Run the complete native core and OpenSSL test suite with:
+
+```bash
+cmake \
+  -DMPSS_BUILD_DIR=/path/to/build-ios-simulator \
+  -DMPSS_VCPKG_ROOT=/path/to/vcpkg \
+  -P cmake/ios_simulator_tests.cmake
+```
+
+If `MPSS_BUILD_DIR` is omitted, the helper uses `build-ios-simulator` under the source tree.
+`MPSS_VCPKG_ROOT` can be omitted when `VCPKG_ROOT` is set or vcpkg is checked out next to this
+repository. The helper defaults to an iOS 16.3 deployment target; override it with
+`-DMPSS_IOS_DEPLOYMENT_TARGET=<version>` when necessary. It configures an arm64 simulator build,
+selects and boots a compatible iPhone simulator, runs the generated XCTest scheme, and fails unless
+the expected GoogleTest totals are observed.
+
+#### Running on a physical iOS device
+
+Physical-device testing is the only valid way to exercise the Secure Enclave backend. Configure
+the project with the Xcode generator and the device SDK, then select your development team and
+provisioning profile in Xcode:
+
+```bash
+cmake -S . -B /path/to/build-ios-device -G Xcode \
+  -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=16.3 \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_TARGET_TRIPLET=arm64-ios \
+  -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+  -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+  -DMPSS_BUILD_TESTS=ON
+```
+
+Open `mpss.xcodeproj`, configure signing for `mpss_ios_test_host`, add
+`mpss_ios_xctest` to the host scheme's Test action, choose the connected device, and run the Test
+action. The test host carries a Keychain access-group entitlement derived from its signed
+application identifier.
+
+The helper script and simulator suite do not validate Secure Enclave behavior. Record the device
+model, iOS version, signing team, and test result when making hardware-backed security claims.
+
 ### Android
 
 The checked-in Android presets pin the minimum API to 28, the Java compile API to 36, and the NDK to

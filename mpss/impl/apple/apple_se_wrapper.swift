@@ -31,6 +31,24 @@ nonisolated(unsafe) private let _keyStore = NSMutableDictionary()
 let KeyChainAccountName = "P256Key"
 let ErrorKey = "com.microsoft.mpss.ErrorKey"
 
+private enum AppleOperationResult: Int32 {
+    case operationalError = -1
+    case expectedNegative = 0
+    case success = 1
+}
+
+private enum KeychainDataResult {
+    case found(Data)
+    case notFound
+    case failure
+}
+
+private enum KeyLookupResult {
+    case found(SecureEnclave.P256.Signing.PrivateKey)
+    case notFound
+    case failure
+}
+
 /// Extension for Digest to create an instance from Data.
 extension Digest {
     static func fromData(_ hash: Data) -> Self? {
@@ -53,7 +71,7 @@ extension Digest {
 /// Get the current last error.
 /// - Returns: The current last error.
 private func getError() -> String {
-    Thread.current.threadDictionary[ErrorKey] as? String ?? "[No error]"
+    Thread.current.threadDictionary[ErrorKey] as? String ?? ""
 }
 
 /// Set the current last error.
@@ -61,6 +79,11 @@ private func getError() -> String {
 ///     - error: The new last error.
 private func setError(_ error: String) {
     Thread.current.threadDictionary[ErrorKey] = error
+}
+
+/// Clear the current last error.
+private func clearError() {
+    Thread.current.threadDictionary.removeObject(forKey: ErrorKey)
 }
 
 /// Store a private key in the in-memory dictionary.
@@ -82,7 +105,6 @@ private func getKeyFromDict(keyName: String) -> SecureEnclave.P256.Signing.Priva
         guard
             let result = _keyStore.value(forKey: keyName) as? SecureEnclave.P256.Signing.PrivateKey?
         else {
-            setError("Did not find key with name \(keyName)")
             return nil
         }
         return result
@@ -103,33 +125,30 @@ private func removeKeyFromDict(_ keyName: String) {
 ///  - Parameters:
 ///      - keyName: Name of the key to retrieve.
 /// - Returns: Private key, or nil if not found.
-private func getKey(_ keyName: String) -> SecureEnclave.P256.Signing.PrivateKey? {
+private func getKey(_ keyName: String) -> KeyLookupResult {
     do {
         // Try first from dictionary.
-        var result = getKeyFromDict(keyName: keyName)
-        if result == nil {
-            // Try from keychain.
-            logDebug("Key not found in dictionary, trying to get from Keychain.")
-            let keyChainData = retrieveDataFromKeychain(
-                account: KeyChainAccountName, service: keyName)
-            if keyChainData == nil {
-                // No key.
-                logDebug("Key not found in Keychain.")
-                return nil
-            }
-
-            result = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyChainData!)
-
-            // Store in dictionary for next time.
-            if result != nil {
-                storeKeyInDict(keyName: keyName, key: result!)
-            }
+        if let result = getKeyFromDict(keyName: keyName) {
+            return .found(result)
         }
 
-        return result
+        // Try from keychain.
+        logDebug("Key not found in dictionary, trying to get from Keychain.")
+        switch retrieveDataFromKeychain(account: KeyChainAccountName, service: keyName) {
+        case .found(let keyChainData):
+            let result = try SecureEnclave.P256.Signing.PrivateKey(
+                dataRepresentation: keyChainData)
+            storeKeyInDict(keyName: keyName, key: result)
+            return .found(result)
+        case .notFound:
+            logDebug("Key not found in Keychain.")
+            return .notFound
+        case .failure:
+            return .failure
+        }
     } catch {
         setError("Error trying to get key: \(error)")
-        return nil
+        return .failure
     }
 }
 
@@ -172,7 +191,7 @@ private func storeDataInKeychain(data: Data, account: String, service: String) -
 ///     - account: The account name under which the data can be found.
 ///     - service: The service name under which the data can be found.
 /// - Returns: The data retrieved from the keychain or nil if not found.
-private func retrieveDataFromKeychain(account: String, service: String) -> Data? {
+private func retrieveDataFromKeychain(account: String, service: String) -> KeychainDataResult {
     let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrAccount as String: account,
@@ -192,18 +211,20 @@ private func retrieveDataFromKeychain(account: String, service: String) -> Data?
     } else if status == errSecItemNotFound {
         // Item not found.
         logTrace("Item not found in Keychain.")
-        return nil
+        return .notFound
     } else {
         // Some other error occurred.
         logDebug("Error retrieving item from Keychain: \(status)")
-        return nil
+        setError("Error retrieving item from Keychain: \(status)")
+        return .failure
     }
 
     guard status == errSecSuccess, let retrievedData = item as? Data else {
-        return nil
+        setError("Keychain returned invalid key data.")
+        return .failure
     }
 
-    return retrievedData
+    return .found(retrievedData)
 }
 
 /// Remove data from the keychain.
@@ -289,27 +310,39 @@ private func createKeyPriv(_ keyName: String) -> SecureEnclave.P256.Signing.Priv
 /// - Returns: True if the secure enclave is available, false otherwise.
 @_cdecl("MPSS_SE_SecureEnclaveIsSupported")
 func isSupported() -> Bool {
+    clearError()
+    #if targetEnvironment(simulator)
+    return false
+    #else
     return SecureEnclave.isAvailable
+    #endif
 }
 
 /// Open an existing private key.
 /// - Parameters:
 ///     - keyName: Name of the private key to open.
-/// - Returns: True if key was opened successfully, False otherwise.
+/// - Returns: Success, expected-negative if absent, or operational-error.
 @_cdecl("MPSS_SE_OpenExistingKey")
-func openExistingKey(_ keyName: UnsafePointer<CChar>) -> Bool {
+func openExistingKey(_ keyName: UnsafePointer<CChar>) -> Int32 {
+    clearError()
     let keyNameString = String(cString: keyName)
-    return openExistingKey(keyNameString)
+    return openExistingKey(keyNameString).rawValue
 }
 
 /// Open an existing private key.
 /// - Parameters:
 ///     - keyName: Name of the private key to open.
-/// - Returns: True if key was opened successfully, False otherwise.
-private func openExistingKey(_ keyName: String) -> Bool {
+/// - Returns: Success, expected-negative if absent, or operational-error.
+private func openExistingKey(_ keyName: String) -> AppleOperationResult {
     let fullKeyName = getKeyName(keyName)
-    let existing = getKey(fullKeyName)
-    return (existing != nil)
+    switch getKey(fullKeyName) {
+    case .found:
+        return .success
+    case .notFound:
+        return .expectedNegative
+    case .failure:
+        return .operationalError
+    }
 }
 
 /// Remove existing key.
@@ -319,6 +352,7 @@ private func openExistingKey(_ keyName: String) -> Bool {
 /// - Returns: True if the key was removed successfully, false otherwise.
 @_cdecl("MPSS_SE_RemoveExistingKey")
 func removeExistingKey(_ keyName: UnsafePointer<CChar>) -> Bool {
+    clearError()
     let keyNameString = String(cString: keyName)
     return removeExistingKey(keyNameString)
 }
@@ -349,6 +383,7 @@ func closeKey(_ keyName: UnsafePointer<CChar>) {
 /// - Returns: True if key was created successfully, False otherwise.
 @_cdecl("MPSS_SE_CreateKey")
 func createKey(_ keyName: UnsafePointer<CChar>) -> Bool {
+    clearError()
     let keyNameString = String(cString: keyName)
     return createKey(keyNameString)
 }
@@ -376,6 +411,7 @@ func sign(
     _ keyName: UnsafePointer<CChar>, hash: UnsafePointer<UInt8>, hashLength: UInt,
     sig: UnsafeMutablePointer<UInt8>, sigLength: UnsafeMutablePointer<UInt>
 ) -> Bool {
+    clearError()
     let keyNameString = String(cString: keyName)
     let hashData = Data(bytes: hash, count: Int(hashLength))
 
@@ -412,9 +448,14 @@ private func sign(keyName: String, hash: any Digest) -> Data? {
         let fullKeyName = getKeyName(keyName)
 
         // Try to get existing key.
-        guard let privateKey = getKey(fullKeyName) else {
-            // Key should exist.
+        let privateKey: SecureEnclave.P256.Signing.PrivateKey
+        switch getKey(fullKeyName) {
+        case .found(let foundKey):
+            privateKey = foundKey
+        case .notFound:
             setError("Could not get key: \(keyName)")
+            return nil
+        case .failure:
             return nil
         }
 
@@ -434,22 +475,25 @@ private func sign(keyName: String, hash: any Digest) -> Data? {
 ///     - hashLength: Size of the hash buffer.
 ///     - signature: Buffer with the signature to verify.
 ///     - signatureLength: Size of the signature buffer.
-/// - Returns: True if the signature was verified correctly, False otherwise.
+/// - Returns: Success, expected-negative if invalid, or operational-error.
 @_cdecl("MPSS_SE_VerifySignature")
 func verifySignature(
     keyName: UnsafePointer<CChar>, hash: UnsafePointer<UInt8>, hashLength: UInt,
     signature: UnsafePointer<UInt8>, signatureLength: UInt
-) -> Bool {
+) -> Int32 {
+    clearError()
     let keyNameString = String(cString: keyName)
     let hashData = Data(bytes: hash, count: Int(hashLength))
     let signatureData = Data(bytes: signature, count: Int(signatureLength))
 
     guard let hashDigest = SHA256Digest.fromData(hashData) else {
         setError("Invalid hash size: \(hashData.count) (expected \(SHA256Digest.byteCount))")
-        return false
+        return AppleOperationResult.operationalError.rawValue
     }
 
-    return verifySignature(keyName: keyNameString, hash: hashDigest, signature: signatureData)
+    return verifySignature(
+        keyName: keyNameString, hash: hashDigest, signature: signatureData
+    ).rawValue
 }
 
 /// Verify the given signature of the given hash using the given private key.
@@ -457,20 +501,29 @@ func verifySignature(
 ///     - keyName: Name of the key to use for verification.
 ///     - hash: Hash to verify.
 ///     - signature: Signature to verify.
-/// - Returns: True if the signature was verified correctly, False otherwise.
-private func verifySignature(keyName: String, hash: any Digest, signature: Data) -> Bool {
+/// - Returns: Success, expected-negative if invalid, or operational-error.
+private func verifySignature(
+    keyName: String, hash: any Digest, signature: Data
+) -> AppleOperationResult {
     do {
         let fullKeyName = getKeyName(keyName)
-        guard let privateKey = getKey(fullKeyName) else {
+        let privateKey: SecureEnclave.P256.Signing.PrivateKey
+        switch getKey(fullKeyName) {
+        case .found(let foundKey):
+            privateKey = foundKey
+        case .notFound:
             setError("Could not get key: \(keyName)")
-            return false
+            return .operationalError
+        case .failure:
+            return .operationalError
         }
 
         let ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signature)
         return privateKey.publicKey.isValidSignature(ecdsaSignature, for: hash)
+            ? .success : .expectedNegative
     } catch {
         setError("Error verifying signature: \(error)")
-        return false
+        return .operationalError
     }
 }
 
@@ -482,22 +535,25 @@ private func verifySignature(keyName: String, hash: any Digest, signature: Data)
 ///     - hashLength: Size of the hash buffer.
 ///     - signature: Buffer with the signature to verify.
 ///     - signatureLength: Size of the signature buffer.
-/// - Returns: True if the signature was verified successfully, False otherwise.
+/// - Returns: Success, expected-negative if invalid, or operational-error.
 @_cdecl("MPSS_SE_VerifyStandaloneSignature")
 func verifyStandaloneSignature(
     pk: UnsafePointer<UInt8>, pkLength: UInt, hash: UnsafePointer<UInt8>, hashLength: UInt,
     signature: UnsafePointer<UInt8>, signatureLength: UInt
-) -> Bool {
+) -> Int32 {
+    clearError()
     let pkData = Data(bytes: pk, count: Int(pkLength))
     let hashData = Data(bytes: hash, count: Int(hashLength))
     let signatureData = Data(bytes: signature, count: Int(signatureLength))
 
     guard let hashDigest = SHA256Digest.fromData(hashData) else {
         setError("Invalid hash size: \(hashData.count) (expected \(SHA256Digest.byteCount))")
-        return false
+        return AppleOperationResult.operationalError.rawValue
     }
 
-    return verifyStandaloneSignature(pk: pkData, hash: hashDigest, signature: signatureData)
+    return verifyStandaloneSignature(
+        pk: pkData, hash: hashDigest, signature: signatureData
+    ).rawValue
 }
 
 /// Verify the given signature of the given hash using the given public key.
@@ -505,17 +561,20 @@ func verifyStandaloneSignature(
 ///     - pk: Data representation of the public key.
 ///     - hash: Data of the hash to verify.
 ///     - signature: Data of the signature to verify.
-/// - Returns: True if the signature was verified successfully, False otherwise.
-private func verifyStandaloneSignature(pk: Data, hash: any Digest, signature: Data) -> Bool {
+/// - Returns: Success, expected-negative if invalid, or operational-error.
+private func verifyStandaloneSignature(
+    pk: Data, hash: any Digest, signature: Data
+) -> AppleOperationResult {
     do {
         // Recreate public key.
         let publicKey = try P256.Signing.PublicKey.init(x963Representation: pk)
         let ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signature)
 
         return publicKey.isValidSignature(ecdsaSignature, for: hash)
+            ? .success : .expectedNegative
     } catch {
         setError("Error verifying signature: \(error)")
-        return false
+        return .operationalError
     }
 }
 
@@ -530,6 +589,7 @@ func getPublicKey(
     keyName: UnsafePointer<CChar>, pk: UnsafeMutablePointer<UInt8>,
     pkLength: UnsafeMutablePointer<UInt>
 ) -> Bool {
+    clearError()
     let keyNameString = String(cString: keyName)
 
     guard let publicKey = getPublicKey(keyName: keyNameString) else {
@@ -556,8 +616,14 @@ func getPublicKey(
 /// - Returns: x9.63 representation of the public key, nil if not able to get representation.
 private func getPublicKey(keyName: String) -> Data? {
     let fullKeyName = getKeyName(keyName)
-    guard let privateKey = getKey(fullKeyName) else {
+    let privateKey: SecureEnclave.P256.Signing.PrivateKey
+    switch getKey(fullKeyName) {
+    case .found(let foundKey):
+        privateKey = foundKey
+    case .notFound:
         setError("Could not get private key: \(keyName)")
+        return nil
+    case .failure:
         return nil
     }
 
@@ -573,20 +639,24 @@ private func getPublicKey(keyName: String) -> Data? {
 @_cdecl("MPSS_SE_GetLastError")
 func getLastError(error: UnsafeMutablePointer<CChar>?, errorLength: UInt) -> UInt {
     let lastError = getError()
+    let utf8 = Array(lastError.utf8)
 
     // Return string size if error is nil.
     if error == nil {
-        return UInt(lastError.count)
+        return UInt(utf8.count)
     }
 
-    if lastError.count > Int(errorLength) {
+    if utf8.count > Int(errorLength) {
         // Not enough space.
         return 0
     }
 
-    _ = lastError.withCString { cString in
-        strncpy(error!, cString, lastError.count)
+    utf8.withUnsafeBytes { bytes in
+        if let baseAddress = bytes.baseAddress {
+            memcpy(error!, baseAddress, utf8.count)
+        }
     }
 
-    return UInt(lastError.count)
+    clearError()
+    return UInt(utf8.count)
 }

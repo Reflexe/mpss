@@ -96,6 +96,7 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     enable_language(OBJC)
+    enable_language(OBJCXX)
     enable_language(Swift)
 endif()
 
@@ -516,99 +517,109 @@ if(MPSS_BUILD_TESTS)
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
 
-    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-        add_library(mpss_tests SHARED ${mpss_TESTS_FILES})
-        target_link_libraries(mpss_tests PRIVATE log)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_subdirectory(tests/ios)
     else()
-        add_executable(mpss_tests ${mpss_TESTS_FILES})
-    endif()
-    target_link_libraries(mpss_tests PRIVATE GTest::gtest)
-
-    if(TARGET ${mpss_openssl_TARGET})
-        # mpss comes transitively through mpss_openssl's PUBLIC dependency.
-        target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})
-    elseif(TARGET ${mpss_TARGET})
-        target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
-    endif()
-
-    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-        if(CMAKE_CONFIGURATION_TYPES)
-            set(mpss_ANDROID_TEST_DIRECTORY
-                "${CMAKE_CURRENT_BINARY_DIR}/android-tests/$<CONFIG>")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+            add_library(mpss_tests SHARED
+                ${mpss_TESTS_FILES}
+                "${CMAKE_CURRENT_LIST_DIR}/tests/test_runner.cpp"
+            )
+            target_link_libraries(mpss_tests PRIVATE log)
         else()
-            set(mpss_ANDROID_TEST_DIRECTORY
-                "${CMAKE_CURRENT_BINARY_DIR}/android-tests")
+            add_executable(mpss_tests
+                ${mpss_TESTS_FILES}
+                "${CMAKE_CURRENT_LIST_DIR}/tests/test_runner.cpp"
+            )
         endif()
-        set(mpss_ANDROID_TEST_JNI_DIRECTORY
-            "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs/${CMAKE_ANDROID_ARCH_ABI}")
-        set(mpss_ANDROID_TEST_APK
-            "${mpss_ANDROID_TEST_DIRECTORY}/mpss-tests.apk")
-        set(mpss_ANDROID_TEST_NATIVE_FILES
-            "$<TARGET_FILE:mpss_tests>"
-            "$<TARGET_FILE:${mpss_TARGET}>"
-            "${mpss_ANDROID_CXX_SHARED_LIBRARY}"
-        )
-        set(mpss_ANDROID_TEST_TARGETS mpss_tests mpss_jar ${mpss_TARGET})
-        get_target_property(mpss_ANDROID_TEST_JAR mpss_jar JAR_FILE)
-        if(CMAKE_HOST_WIN32)
-            set(mpss_ANDROID_TEST_GRADLEW
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew.bat")
-        else()
-            set(mpss_ANDROID_TEST_GRADLEW
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew")
-        endif()
-        set(mpss_ANDROID_TEST_GRADLE_FILES
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/settings.gradle"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/build.gradle"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/build.gradle"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/AndroidManifest.xml"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/java/com/microsoft/research/mpss/tests/TestRunner.java"
-            "${mpss_ANDROID_TEST_GRADLEW}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.jar"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.properties"
-        )
+        target_link_libraries(mpss_tests PRIVATE GTest::gtest)
 
         if(TARGET ${mpss_openssl_TARGET})
-            list(APPEND mpss_ANDROID_TEST_NATIVE_FILES
-                "$<TARGET_FILE:${mpss_openssl_TARGET}>")
-            list(APPEND mpss_ANDROID_TEST_TARGETS ${mpss_openssl_TARGET})
+            # mpss comes transitively through mpss_openssl's PUBLIC dependency.
+            target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})
+        elseif(TARGET ${mpss_TARGET})
+            target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
         endif()
 
-        add_custom_command(
-            OUTPUT "${mpss_ANDROID_TEST_APK}"
-            COMMAND ${CMAKE_COMMAND} -E rm -rf
-                "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs"
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${mpss_ANDROID_TEST_NATIVE_FILES}
-                "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
-            COMMAND "${mpss_ANDROID_TEST_GRADLEW}"
-                --no-daemon
-                --project-cache-dir
-                "${mpss_ANDROID_TEST_DIRECTORY}/gradle-cache"
-                "-PmpssBuildDir=${CMAKE_CURRENT_BINARY_DIR}"
-                "-PmpssTestDir=${mpss_ANDROID_TEST_DIRECTORY}"
-                "-PmpssCompileApi=${MPSS_ANDROID_COMPILE_API}"
-                "-PmpssMinApi=${mpss_ANDROID_MIN_API}"
-                "-PmpssCoreLibraryName=$<TARGET_FILE_BASE_NAME:${mpss_TARGET}>"
-                :app:assembleDebug
-            COMMAND ${CMAKE_COMMAND} -E copy
-                "${mpss_ANDROID_TEST_DIRECTORY}/gradle-build/outputs/apk/debug/app-debug.apk"
-                "${mpss_ANDROID_TEST_APK}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests/android"
-            DEPENDS
-                ${mpss_ANDROID_TEST_TARGETS}
-                ${mpss_ANDROID_TEST_NATIVE_FILES}
-                "${mpss_ANDROID_TEST_JAR}"
-                ${mpss_ANDROID_TEST_GRADLE_FILES}
-            COMMENT "Building Android test APK"
-            USES_TERMINAL
-            VERBATIM
-        )
+        if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+            if(CMAKE_CONFIGURATION_TYPES)
+                set(mpss_ANDROID_TEST_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/android-tests/$<CONFIG>")
+            else()
+                set(mpss_ANDROID_TEST_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/android-tests")
+            endif()
+            set(mpss_ANDROID_TEST_JNI_DIRECTORY
+                "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs/${CMAKE_ANDROID_ARCH_ABI}")
+            set(mpss_ANDROID_TEST_APK
+                "${mpss_ANDROID_TEST_DIRECTORY}/mpss-tests.apk")
+            set(mpss_ANDROID_TEST_NATIVE_FILES
+                "$<TARGET_FILE:mpss_tests>"
+                "$<TARGET_FILE:${mpss_TARGET}>"
+                "${mpss_ANDROID_CXX_SHARED_LIBRARY}"
+            )
+            set(mpss_ANDROID_TEST_TARGETS mpss_tests mpss_jar ${mpss_TARGET})
+            get_target_property(mpss_ANDROID_TEST_JAR mpss_jar JAR_FILE)
+            if(CMAKE_HOST_WIN32)
+                set(mpss_ANDROID_TEST_GRADLEW
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew.bat")
+            else()
+                set(mpss_ANDROID_TEST_GRADLEW
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew")
+            endif()
+            set(mpss_ANDROID_TEST_GRADLE_FILES
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/settings.gradle"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/build.gradle"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/build.gradle"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/AndroidManifest.xml"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/java/com/microsoft/research/mpss/tests/TestRunner.java"
+                "${mpss_ANDROID_TEST_GRADLEW}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.jar"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.properties"
+            )
 
-        add_custom_target(mpss_android_test_apk ALL
-            DEPENDS "${mpss_ANDROID_TEST_APK}"
-        )
+            if(TARGET ${mpss_openssl_TARGET})
+                list(APPEND mpss_ANDROID_TEST_NATIVE_FILES
+                    "$<TARGET_FILE:${mpss_openssl_TARGET}>")
+                list(APPEND mpss_ANDROID_TEST_TARGETS ${mpss_openssl_TARGET})
+            endif()
+
+            add_custom_command(
+                OUTPUT "${mpss_ANDROID_TEST_APK}"
+                COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs"
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${mpss_ANDROID_TEST_NATIVE_FILES}
+                    "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
+                COMMAND "${mpss_ANDROID_TEST_GRADLEW}"
+                    --no-daemon
+                    --project-cache-dir
+                    "${mpss_ANDROID_TEST_DIRECTORY}/gradle-cache"
+                    "-PmpssBuildDir=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-PmpssTestDir=${mpss_ANDROID_TEST_DIRECTORY}"
+                    "-PmpssCompileApi=${MPSS_ANDROID_COMPILE_API}"
+                    "-PmpssMinApi=${mpss_ANDROID_MIN_API}"
+                    "-PmpssCoreLibraryName=$<TARGET_FILE_BASE_NAME:${mpss_TARGET}>"
+                    :app:assembleDebug
+                COMMAND ${CMAKE_COMMAND} -E copy
+                    "${mpss_ANDROID_TEST_DIRECTORY}/gradle-build/outputs/apk/debug/app-debug.apk"
+                    "${mpss_ANDROID_TEST_APK}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests/android"
+                DEPENDS
+                    ${mpss_ANDROID_TEST_TARGETS}
+                    ${mpss_ANDROID_TEST_NATIVE_FILES}
+                    "${mpss_ANDROID_TEST_JAR}"
+                    ${mpss_ANDROID_TEST_GRADLE_FILES}
+                COMMENT "Building Android test APK"
+                USES_TERMINAL
+                VERBATIM
+            )
+
+            add_custom_target(mpss_android_test_apk ALL
+                DEPENDS "${mpss_ANDROID_TEST_APK}"
+            )
+        endif()
     endif()
 endif()

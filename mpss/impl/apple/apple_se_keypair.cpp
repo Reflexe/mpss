@@ -29,7 +29,7 @@ bool AppleSEKeyPair::do_delete_key()
     mpss::utils::log_trace("Deleting Secure Enclave key '{}'.", name());
     if (!MPSS_SE_RemoveExistingKey(name().c_str()))
     {
-        mpss::utils::log_and_set_error("Failed to delete Secure Enclave key: {}", utils::MPSS_SE_GetLastError());
+        utils::report_secure_enclave_error("delete key");
         return false;
     }
     mpss::utils::log_trace("Secure Enclave key '{}' deleted.", name());
@@ -44,7 +44,7 @@ std::size_t AppleSEKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
     if (!MPSS_SE_Sign(name().c_str(), reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
                       reinterpret_cast<std::uint8_t *>(sig.data()), &signature_size))
     {
-        mpss::utils::log_and_set_error("Failed to sign hash: {}", utils::MPSS_SE_GetLastError());
+        utils::report_secure_enclave_error("sign hash");
         return 0;
     }
 
@@ -54,12 +54,10 @@ std::size_t AppleSEKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
 
 bool AppleSEKeyPair::do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    const bool result =
+    const std::int32_t raw_result =
         MPSS_SE_VerifySignature(name().c_str(), reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
                                 reinterpret_cast<const std::uint8_t *>(sig.data()), sig.size());
-
-    // This should not fail at this point unless the signature is invalid. The caller already validated inputs.
-    return result;
+    return utils::handle_secure_enclave_verification_result(raw_result, "verify signature");
 }
 
 std::size_t AppleSEKeyPair::do_extract_key(std::span<std::byte> public_key) const
@@ -71,7 +69,7 @@ std::size_t AppleSEKeyPair::do_extract_key(std::span<std::byte> public_key) cons
         MPSS_SE_GetPublicKey(name().c_str(), reinterpret_cast<std::uint8_t *>(public_key.data()), &pk_size);
     if (!result)
     {
-        mpss::utils::log_and_set_error("Failed to retrieve public key: {}", utils::MPSS_SE_GetLastError());
+        utils::report_secure_enclave_error("retrieve public key");
         return 0;
     }
 

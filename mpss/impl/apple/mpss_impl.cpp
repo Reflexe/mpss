@@ -14,75 +14,130 @@ namespace mpss::impl::os
 
 using enum Algorithm;
 
+namespace
+{
+
+enum class OpenKeyStatus
+{
+    found,
+    not_found,
+    operational_error
+};
+
+struct OpenKeyResult
+{
+    OpenKeyStatus status;
+    std::unique_ptr<KeyPair> key;
+};
+
+OpenKeyResult try_open_key(const std::string &key_name)
+{
+    using enum utils::AppleOperationResult;
+
+    mpss::utils::log_trace("Attempting to open key '{}' on Apple backend.", key_name);
+    if (MPSS_SE_SecureEnclaveIsSupported())
+    {
+        const std::int32_t raw_result = MPSS_SE_OpenExistingKey(key_name.c_str());
+        switch (utils::decode_apple_result(raw_result))
+        {
+        case success:
+            mpss::utils::log_trace("Key '{}' found in Secure Enclave.", key_name);
+            return {OpenKeyStatus::found, std::make_unique<AppleSEKeyPair>(key_name, ecdsa_secp256r1_sha256)};
+        case expected_negative:
+            break;
+        case operational_error:
+            utils::report_secure_enclave_error("open key");
+            return {OpenKeyStatus::operational_error, nullptr};
+        case invalid_result:
+            utils::report_invalid_apple_result("Secure Enclave", "open key", raw_result);
+            return {OpenKeyStatus::operational_error, nullptr};
+        }
+    }
+
+    int bit_size = 0;
+    const std::int32_t raw_result = MPSS_OpenExistingKey(key_name.c_str(), &bit_size);
+    switch (utils::decode_apple_result(raw_result))
+    {
+    case success:
+        break;
+    case expected_negative:
+        return {OpenKeyStatus::not_found, nullptr};
+    case operational_error:
+        utils::report_keychain_error("open key");
+        return {OpenKeyStatus::operational_error, nullptr};
+    case invalid_result:
+        utils::report_invalid_apple_result("Keychain", "open key", raw_result);
+        return {OpenKeyStatus::operational_error, nullptr};
+    }
+
+    Algorithm algorithm = unsupported;
+    switch (bit_size)
+    {
+    case 256:
+        algorithm = ecdsa_secp256r1_sha256;
+        break;
+    case 384:
+        algorithm = ecdsa_secp384r1_sha384;
+        break;
+    case 521:
+        algorithm = ecdsa_secp521r1_sha512;
+        break;
+    default:
+        MPSS_RemoveKey(key_name.c_str());
+        mpss::utils::log_and_set_error("Opened key '{}' has unsupported bit size {}.", key_name, bit_size);
+        return {OpenKeyStatus::operational_error, nullptr};
+    }
+
+    mpss::utils::log_trace("Key '{}' found in Keychain with algorithm '{}'.", key_name,
+                           get_algorithm_info(algorithm).type_str);
+    return {OpenKeyStatus::found, std::make_unique<AppleKeychainKeyPair>(key_name, algorithm)};
+}
+
+} // namespace
+
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
+    mpss::utils::set_error({});
     const std::string key_name{name};
     if (key_name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
-    // Try secure enclave first if available.
-    mpss::utils::log_trace("Attempting to open key '{}' on Apple backend.", key_name);
-    if (MPSS_SE_SecureEnclaveIsSupported() && MPSS_SE_OpenExistingKey(key_name.c_str()))
+    OpenKeyResult result = try_open_key(key_name);
+    if (OpenKeyStatus::not_found == result.status)
     {
-        // If the key was found, it *has* to be an ECDSA P256 key, since that's the only type of key supported by
-        // the Secure Enclave.
-        mpss::utils::log_trace("Key '{}' found in Secure Enclave.", key_name);
-        return std::make_unique<AppleSEKeyPair>(key_name, ecdsa_secp256r1_sha256);
+        mpss::utils::log_debug("Key '{}' not found.", key_name);
     }
 
-    int bitSize = 0;
-    if (MPSS_OpenExistingKey(key_name.c_str(), &bitSize))
-    {
-        Algorithm algorithm = unsupported;
-        switch (bitSize)
-        {
-        case 256:
-            algorithm = ecdsa_secp256r1_sha256;
-            break;
-        case 384:
-            algorithm = ecdsa_secp384r1_sha384;
-            break;
-        case 521:
-            algorithm = ecdsa_secp521r1_sha512;
-            break;
-        default:
-            mpss::utils::log_warning("Opened a key, but it has unsupported bit size: {}", bitSize);
-            MPSS_RemoveKey(key_name.c_str());
-            return nullptr;
-        }
-
-        mpss::utils::log_trace("Key '{}' found in Keychain with algorithm '{}'.", key_name,
-                               get_algorithm_info(algorithm).type_str);
-        return std::make_unique<AppleKeychainKeyPair>(key_name, algorithm);
-    }
-
-    mpss::utils::log_debug("Key '{}' not found.", key_name);
-    return nullptr;
+    return std::move(result.key);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
 {
+    mpss::utils::set_error({});
     const std::string key_name{name};
     if (key_name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
-    // Fail if the key already exists or is already open.
-    std::unique_ptr<KeyPair> existing_key = open_key(name);
-    if (nullptr != existing_key)
+    OpenKeyResult existing_key = try_open_key(key_name);
+    if (OpenKeyStatus::operational_error == existing_key.status)
     {
-        mpss::utils::log_warning("Key '{}' already exists.", name);
+        return nullptr;
+    }
+    if (OpenKeyStatus::found == existing_key.status)
+    {
+        mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
     }
 
@@ -96,7 +151,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
             return std::make_unique<AppleSEKeyPair>(name, algorithm);
         }
 
-        mpss::utils::log_and_set_error("Failed to create key in Secure Enclave: {}", utils::MPSS_SE_GetLastError());
+        utils::report_secure_enclave_error("create key");
         return nullptr;
     }
 
@@ -107,22 +162,23 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return std::make_unique<AppleKeychainKeyPair>(name, algorithm);
     }
 
-    mpss::utils::log_and_set_error("Failed to create key in keychain: {}", utils::MPSS_GetLastError());
+    utils::report_keychain_error("create key");
     return nullptr;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig)
 {
+    mpss::utils::set_error({});
     if (hash.empty() || public_key.empty() || sig.empty())
     {
-        mpss::utils::log_warning("Hash, public key, and signature cannot be empty.");
+        mpss::utils::log_and_set_error("Hash, public key, and signature cannot be empty.");
         return false;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return false;
     }
 
@@ -135,21 +191,21 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
     if (MPSS_SE_SecureEnclaveIsSupported() && ecdsa_secp256r1_sha256 == algorithm)
     {
         // Secure Enclave only supports ECDSA P256.
-        const bool result = MPSS_SE_VerifyStandaloneSignature(
+        const std::int32_t raw_result = MPSS_SE_VerifyStandaloneSignature(
             reinterpret_cast<const std::uint8_t *>(public_key.data()), public_key.size(),
             reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
             reinterpret_cast<const std::uint8_t *>(sig.data()), sig.size());
-
+        const bool result = utils::handle_secure_enclave_verification_result(raw_result, "verify signature");
         mpss::utils::log_trace("Verification using (Secure Enclave) standalone signature verification {}.",
                                result ? "succeeded" : "failed");
         return result;
     }
 
-    const bool result = MPSS_VerifyStandaloneSignature(
+    const std::int32_t raw_result = MPSS_VerifyStandaloneSignature(
         static_cast<int>(algorithm), reinterpret_cast<const std::uint8_t *>(hash.data()), hash.size(),
         reinterpret_cast<const std::uint8_t *>(public_key.data()), public_key.size(),
         reinterpret_cast<const std::uint8_t *>(sig.data()), sig.size());
-
+    const bool result = utils::handle_keychain_verification_result(raw_result, "verify signature");
     mpss::utils::log_trace("Verification using (Keychain) standalone signature verification {}.",
                            result ? "succeeded" : "failed");
     return result;

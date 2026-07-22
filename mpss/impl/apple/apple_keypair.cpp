@@ -42,9 +42,10 @@ std::size_t AppleKeyPairBase::sign_hash(std::span<const std::byte> hash, std::sp
 
 bool AppleKeyPairBase::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
+    mpss::utils::set_error({});
     if (hash.empty() || sig.empty())
     {
-        mpss::utils::log_warning("Nothing to verify.");
+        mpss::utils::log_and_set_error("Nothing to verify.");
         return false;
     }
 
