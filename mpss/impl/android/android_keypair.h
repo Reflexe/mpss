@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "mpss/impl/android/JNIHelper.h"
 #include "mpss/mpss.h"
 
 namespace mpss::impl::os
@@ -39,14 +38,8 @@ class AndroidKeyPair : public mpss::KeyPair
 
   private:
     void close_key();
-    [[nodiscard]]
-    JNIEnv *env() const
-    {
-        return guard_.Env();
-    };
 
     std::string key_name_;
-    JNIEnvGuard guard_;
 };
 
 } // namespace mpss::impl::os

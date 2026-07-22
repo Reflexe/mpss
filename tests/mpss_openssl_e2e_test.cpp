@@ -3,7 +3,6 @@
 
 #include "mpss-openssl/api.h"
 #include <algorithm>
-#include <filesystem>
 #include <gtest/gtest.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
@@ -71,11 +70,6 @@ class CertificateChainSerializationTest : public ::testing::TestWithParam<const 
   protected:
     void TearDown() override
     {
-        // Clean up temp files that may have been left by a failed test run.
-        std::filesystem::remove("mpss_test_ca.pem");
-        std::filesystem::remove("mpss_test_end_cert.pem");
-        std::filesystem::remove("mpss_test_ca_pubkey.pem");
-
         // Clean up the mpss key in case the test failed before deleting it.
         const std::string ca_key_name = std::string("mpss_test_ca_key_") + GetParam();
         mpss_delete_key(ca_key_name.c_str());
@@ -265,41 +259,32 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     // -------------------------------------------------------------------------
     // 5. Serialize both certificates and the CA public key in PEM format.
     // -------------------------------------------------------------------------
-    BIO *ca_file = BIO_new_file("mpss_test_ca.pem", "w");
-    ASSERT_NE(nullptr, ca_file);
-    ASSERT_EQ(1, PEM_write_bio_X509(ca_file, ca_cert));
-    BIO_free(ca_file);
+    BIO *ca_bio = BIO_new(BIO_s_mem());
+    ASSERT_NE(nullptr, ca_bio);
+    ASSERT_EQ(1, PEM_write_bio_X509(ca_bio, ca_cert));
 
-    BIO *end_file = BIO_new_file("mpss_test_end_cert.pem", "w");
-    ASSERT_NE(nullptr, end_file);
-    ASSERT_EQ(1, PEM_write_bio_X509(end_file, end_cert));
-    BIO_free(end_file);
+    BIO *end_bio = BIO_new(BIO_s_mem());
+    ASSERT_NE(nullptr, end_bio);
+    ASSERT_EQ(1, PEM_write_bio_X509(end_bio, end_cert));
 
-    BIO *pubkey_file = BIO_new_file("mpss_test_ca_pubkey.pem", "w");
-    ASSERT_NE(nullptr, pubkey_file);
-    ASSERT_EQ(1, PEM_write_bio_PUBKEY_ex(pubkey_file, ca_pkey, mpss_libctx, "provider=mpss"));
-    BIO_free(pubkey_file);
+    BIO *pubkey_bio = BIO_new(BIO_s_mem());
+    ASSERT_NE(nullptr, pubkey_bio);
+    ASSERT_EQ(1, PEM_write_bio_PUBKEY_ex(pubkey_bio, ca_pkey, mpss_libctx, "provider=mpss"));
 
     // -------------------------------------------------------------------------
     // 6. Load all three objects back into the OpenSSL default provider.
     // -------------------------------------------------------------------------
-    BIO *ca_load_bio = BIO_new_file("mpss_test_ca.pem", "r");
-    ASSERT_NE(nullptr, ca_load_bio);
-    X509 *loaded_ca_cert = PEM_read_bio_X509(ca_load_bio, nullptr, nullptr, nullptr);
+    X509 *loaded_ca_cert = PEM_read_bio_X509(ca_bio, nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_ca_cert);
-    BIO_free(ca_load_bio);
+    BIO_free(ca_bio);
 
-    BIO *end_load_bio = BIO_new_file("mpss_test_end_cert.pem", "r");
-    ASSERT_NE(nullptr, end_load_bio);
-    X509 *loaded_end_cert = PEM_read_bio_X509(end_load_bio, nullptr, nullptr, nullptr);
+    X509 *loaded_end_cert = PEM_read_bio_X509(end_bio, nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_end_cert);
-    BIO_free(end_load_bio);
+    BIO_free(end_bio);
 
-    BIO *pubkey_load_bio = BIO_new_file("mpss_test_ca_pubkey.pem", "r");
-    ASSERT_NE(nullptr, pubkey_load_bio);
-    EVP_PKEY *loaded_pubkey = PEM_read_bio_PUBKEY(pubkey_load_bio, nullptr, nullptr, nullptr);
+    EVP_PKEY *loaded_pubkey = PEM_read_bio_PUBKEY(pubkey_bio, nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_pubkey);
-    BIO_free(pubkey_load_bio);
+    BIO_free(pubkey_bio);
 
     // -------------------------------------------------------------------------
     // 7. Check that the cert chain verifies with the OpenSSL default provider.

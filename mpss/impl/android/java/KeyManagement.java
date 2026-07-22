@@ -3,6 +3,7 @@
 
 package com.microsoft.research.mpss;
 
+import android.annotation.TargetApi;
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyInfo;
@@ -15,6 +16,7 @@ import java.math.BigInteger;
 import java.security.AlgorithmParameters;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -42,12 +44,13 @@ import java.util.Arrays;
 
 /**
  * The {@code KeyManagement} class contains the functionality necessary to manage long-term
- * key storage. It is used by the MPSS library.
+ * key storage.
  */
 public class KeyManagement {
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
 
-    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
+    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox)
+            throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
         if (null == keyName) {
             throw new IllegalArgumentException("keyName is null.");
         }
@@ -71,6 +74,36 @@ public class KeyManagement {
         return kpg.generateKeyPair();
     }
 
+    @TargetApi(Build.VERSION_CODES.S)
+    private static final class Api31Impl {
+        private Api31Impl() {
+        }
+
+        private static int GetKeySecurityLevel(KeyInfo keyInfo, String keyName) {
+            int level = keyInfo.getSecurityLevel();
+            switch(level) {
+                case KeyProperties.SECURITY_LEVEL_UNKNOWN:
+                    Log.i("MPSS", "Key has security level Unknown: " + keyName);
+                    return 0;
+                case KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE:
+                    Log.i("MPSS", "Key has security level UnknownSecure: " + keyName);
+                    return 2;
+                case KeyProperties.SECURITY_LEVEL_SOFTWARE:
+                    Log.i("MPSS", "Key has security level Software: " + keyName);
+                    return 1;
+                case KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT:
+                    Log.i("MPSS", "Key has security level TrustedEnvironment: " + keyName);
+                    return 3;
+                case KeyProperties.SECURITY_LEVEL_STRONGBOX:
+                    Log.i("MPSS", "Key has security level StrongBox: " + keyName);
+                    return 4;
+                default:
+                    Log.i("MPSS", "Key has unknown security level: " + keyName);
+                    return 0;
+            }
+        }
+    }
+
     /**
      * Get security level for the given key pair.
      * @param keyName Name of the keypair.
@@ -84,9 +117,10 @@ public class KeyManagement {
      */
     @SuppressWarnings("deprecation")
     public static int GetKeySecurityLevel(String keyName) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+
             KeyPair kp = GetExistingKeyPair(keyName);
             if (null == kp) {
                 String msg = "Could not get key: " + keyName;
@@ -101,27 +135,7 @@ public class KeyManagement {
             KeyInfo keyInfo = keyFactory.getKeySpec(pk, KeyInfo.class);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                int level = keyInfo.getSecurityLevel();
-                switch(level) {
-                    case KeyProperties.SECURITY_LEVEL_UNKNOWN:
-                        Log.i("MPSS", "Key has security level Unknown: " + keyName);
-                        return 0;
-                    case KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE:
-                        Log.i("MPSS", "Key has security level UnknownSecure: " + keyName);
-                        return 2;
-                    case KeyProperties.SECURITY_LEVEL_SOFTWARE:
-                        Log.i("MPSS", "Key has security level Software: " + keyName);
-                        return 1;
-                    case KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT:
-                        Log.i("MPSS", "Key has security level TrustedEnvironment: " + keyName);
-                        return 3;
-                    case KeyProperties.SECURITY_LEVEL_STRONGBOX:
-                        Log.i("MPSS", "Key has security level StrongBox: " + keyName);
-                        return 4;
-                    default:
-                        Log.i("MPSS", "Key has unknown security level: " + keyName);
-                        return 0;
-                }
+                return Api31Impl.GetKeySecurityLevel(keyInfo, keyName);
             } else {
                 if (keyInfo.isInsideSecureHardware()) {
                     Log.i("MPSS", "Key is inside secure hardware: " + keyName);
@@ -146,22 +160,27 @@ public class KeyManagement {
             Log.e("MPSS", msg);
             SetError(msg);
             return -1;
+        } catch (RuntimeException e) {
+            String msg = "Unexpected error getting key security level: " + e.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return -1;
         }
     }
 
     /**
      * Create a new long-term key.
-     * Tries to create first in StrongBox, will create in TEE if StrongBox is not available.
+     * Tries to create first in StrongBox when supported, then falls back to AndroidKeyStore.
      * @param keyName Name of the key to create.
      * @param algorithm Algorithm for the key.
      * @return True if key was created successfully, False otherwise.
      */
     public static Boolean CreateKey(String keyName, Algorithm algorithm) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-        if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
-
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+            if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
+
             // Fail-closed existence check. containsAlias tests presence without loading the key, so
             // a transiently unloadable key still reports as present, and if existence cannot be
             // determined we refuse to create rather than overwriting a live key.
@@ -192,7 +211,7 @@ public class KeyManagement {
             try {
                 kp = CreateKey(keyName, algorithm, useStrongbox);
             } catch (StrongBoxUnavailableException ex) {
-                Log.w("MPSS", "Strong box is not available.");
+                Log.w("MPSS", "StrongBox is not available.");
             }
 
             if (!useStrongbox && null == kp) {
@@ -219,6 +238,11 @@ public class KeyManagement {
             Log.e("MPSS", msg);
             SetError(msg);
             return false;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error creating key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return false;
         }
     }
 
@@ -229,12 +253,16 @@ public class KeyManagement {
      * @return Signature, or null if signature could not be created.
      */
     public static byte[] SignHash(String keyName, byte[] hash) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-        if (null == hash) throw new IllegalArgumentException("hash is null.");
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+            if (null == hash) throw new IllegalArgumentException("hash is null.");
+
             KeyPair kp = GetExistingKeyPair(keyName);
             if (null == kp) {
+                String msg = "Could not get key: " + keyName;
+                Log.e("MPSS", msg);
+                SetError(msg);
                 return null;
             }
 
@@ -245,6 +273,11 @@ public class KeyManagement {
             return signature.sign();
         } catch (InvalidKeyException | SignatureException | NoSuchAlgorithmException ex) {
             String msg = "Error signing hash: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error signing hash: " + ex.toString();
             Log.e("MPSS", msg);
             SetError(msg);
             return null;
@@ -259,14 +292,18 @@ public class KeyManagement {
      * @return True if signature verifies correctly, False otherwise.
      */
     public static Boolean VerifySignature(String keyName, byte[] hash, byte[] sig) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-        if (null == hash) throw new IllegalArgumentException("hash is null.");
-        if (null == sig) throw new IllegalArgumentException("sig is null.");
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+            if (null == hash) throw new IllegalArgumentException("hash is null.");
+            if (null == sig) throw new IllegalArgumentException("sig is null.");
+
             KeyPair kp = GetExistingKeyPair(keyName);
             if (null == kp) {
-                return false;
+                String msg = "Could not get key: " + keyName;
+                Log.e("MPSS", msg);
+                SetError(msg);
+                return null;
             }
 
             return VerifySignature(hash, sig, kp.getPublic());
@@ -274,7 +311,12 @@ public class KeyManagement {
             String msg = "Error verifying signature: " + ex.toString();
             Log.e("MPSS", msg);
             SetError(msg);
-            return false;
+            return null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error verifying signature: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
         }
     }
 
@@ -287,11 +329,12 @@ public class KeyManagement {
      * @return True if signature verifies correctly, False otherwise.
      */
     public static Boolean VerifySignature(byte[] hash, byte[] sig, byte[] pk) {
-        if (null == hash) throw new IllegalArgumentException("hash is null.");
-        if (null == sig) throw new IllegalArgumentException("sig is null.");
-        if (null == pk) throw new IllegalArgumentException("pk is null.");
-
+        ClearError();
         try {
+            if (null == hash) throw new IllegalArgumentException("hash is null.");
+            if (null == sig) throw new IllegalArgumentException("sig is null.");
+            if (null == pk) throw new IllegalArgumentException("pk is null.");
+
             PublicKey publicKey = FromUncompressedPoint(pk);
             return VerifySignature(hash, sig, publicKey);
         } catch (NoSuchAlgorithmException | SignatureException | InvalidKeyException |
@@ -299,11 +342,17 @@ public class KeyManagement {
             String msg = "Error verifying signature: " + ex.toString();
             Log.e("MPSS", msg);
             SetError(msg);
-            return false;
+            return null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error verifying signature: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
         }
     }
 
-    private static Boolean VerifySignature(byte[] hash, byte[] sig, PublicKey pk) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+    private static Boolean VerifySignature(byte[] hash, byte[] sig, PublicKey pk)
+            throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
         Signature signature = Signature.getInstance("NONEwithECDSA");
         signature.initVerify(pk);
         signature.update(hash);
@@ -317,11 +366,15 @@ public class KeyManagement {
      * @return Representation of the public key.
      */
     public static byte[] GetPublicKey(String keyName) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+
             KeyPair kp = GetExistingKeyPair(keyName);
             if (null == kp) {
+                String msg = "Could not get key: " + keyName;
+                Log.e("MPSS", msg);
+                SetError(msg);
                 return null;
             }
 
@@ -353,6 +406,11 @@ public class KeyManagement {
             Log.e("MPSS", msg);
             SetError(msg);
             return null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error getting public key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
         }
     }
 
@@ -361,6 +419,7 @@ public class KeyManagement {
      * @param keyName Name of the key to close.
      */
     public static void CloseKey(String keyName) {
+        ClearError();
         if (null == keyName) throw new IllegalArgumentException("keyName is null.");
         MemKeyStore.RemoveKey(keyName);
     }
@@ -371,9 +430,10 @@ public class KeyManagement {
      * @return True if the key was deleted successfully, False otherwise.
      */
     public static Boolean DeleteKey(String keyName) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-
+        ClearError();
         try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+
             KeyPair kp = GetExistingKeyPair(keyName);
             if (null == kp) {
                 String msg = "Could not get existing KeyPair.";
@@ -394,6 +454,11 @@ public class KeyManagement {
             Log.e("MPSS", msg);
             SetError(msg);
             return false;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error deleting key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return false;
         }
     }
 
@@ -403,8 +468,20 @@ public class KeyManagement {
      * @return True if the key pair was opened successfully, False otherwise.
      */
     public static Boolean OpenKey(String keyName) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-        return null != GetExistingKeyPair(keyName);
+        ClearError();
+        try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+            KeyPair kp = GetExistingKeyPair(keyName);
+            if (null != kp) {
+                return true;
+            }
+            return _lastError.get().isEmpty() ? false : null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error opening key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
+        }
     }
 
     /**
@@ -413,23 +490,34 @@ public class KeyManagement {
      * @return Algorithm used to create the key pair.
      */
     public static Algorithm GetKeyAlgorithm(String keyName) {
-        if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+        ClearError();
+        try {
+            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
 
-        // Deduce the type from the length of the public key.
-        byte[] pk = GetPublicKey(keyName);
-        if (null == pk) {
-            return Algorithm.undefined;
-        }
-
-        switch(pk.length) {
-            case 65:
-                return Algorithm.secp256r1;
-            case 97:
-                return Algorithm.secp384r1;
-            case 133:
-                return Algorithm.secp521r1;
-            default:
+            // Deduce the type from the length of the public key.
+            byte[] pk = GetPublicKey(keyName);
+            if (null == pk) {
                 return Algorithm.undefined;
+            }
+
+            switch(pk.length) {
+                case 65:
+                    return Algorithm.secp256r1;
+                case 97:
+                    return Algorithm.secp384r1;
+                case 133:
+                    return Algorithm.secp521r1;
+                default:
+                    String msg = "Unsupported public key length: " + pk.length;
+                    Log.e("MPSS", msg);
+                    SetError(msg);
+                    return Algorithm.undefined;
+            }
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error getting key algorithm: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return Algorithm.undefined;
         }
     }
 
@@ -443,13 +531,17 @@ public class KeyManagement {
 
             KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
             ks.load(null);
-            PrivateKey pk = (PrivateKey) ks.getKey(keyName, /* password */ null);
-            if (null == pk) {
-                String msg = "Failed to get private key from AndroidKeyStore.";
+            if (!ks.containsAlias(keyName)) {
+                return null;
+            }
+            Key key = ks.getKey(keyName, /* password */ null);
+            if (!(key instanceof PrivateKey)) {
+                String msg = "AndroidKeyStore entry is not a private key: " + keyName;
                 Log.w("MPSS", msg);
                 SetError(msg);
                 return null;
             }
+            PrivateKey pk = (PrivateKey) key;
 
             Certificate cert = ks.getCertificate(keyName);
             if (null == cert) {
@@ -469,19 +561,30 @@ public class KeyManagement {
             Log.e("MPSS", msg);
             SetError(msg);
             return null;
+        } catch (RuntimeException ex) {
+            String msg = "Unexpected error opening key: " + ex.toString();
+            Log.e("MPSS", msg);
+            SetError(msg);
+            return null;
         }
     }
 
     /**
-     * Get the text of the last error that occurred.
+     * Get and clear the text of the last error that occurred.
      * @return Last error that occurred.
      */
-    public static String GetError() {
-        return _lastError.get();
+    public static String TakeError() {
+        String error = _lastError.get();
+        _lastError.remove();
+        return error;
     }
 
     private static void SetError(String error) {
         _lastError.set(error);
+    }
+
+    private static void ClearError() {
+        _lastError.remove();
     }
 
     private static byte[] PadToSize(byte[] src, int size) {

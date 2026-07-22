@@ -66,6 +66,26 @@ if(MPSS_BACKEND_YUBIKEY)
     list(APPEND VCPKG_MANIFEST_FEATURES "yubikey")
 endif()
 
+get_filename_component(mpss_TOOLCHAIN_FILENAME "${CMAKE_TOOLCHAIN_FILE}" NAME)
+if(CMAKE_SYSTEM_NAME STREQUAL "Android"
+    OR ANDROID
+    OR DEFINED ANDROID_ABI
+    OR DEFINED CMAKE_ANDROID_ARCH_ABI
+    OR DEFINED CMAKE_ANDROID_NDK
+    OR mpss_TOOLCHAIN_FILENAME STREQUAL "android.toolchain.cmake")
+    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(ANDROID_STL c++_shared CACHE STRING "Android C++ runtime." FORCE)
+        set(CMAKE_ANDROID_STL_TYPE c++_shared CACHE STRING "Android C++ runtime." FORCE)
+    elseif((DEFINED ANDROID_STL AND NOT ANDROID_STL STREQUAL "c++_shared")
+        OR (DEFINED CMAKE_ANDROID_STL_TYPE
+            AND NOT CMAKE_ANDROID_STL_TYPE STREQUAL "c++_shared")
+        OR (NOT DEFINED ANDROID_STL AND NOT DEFINED CMAKE_ANDROID_STL_TYPE))
+        message(FATAL_ERROR
+            "MPSS requires CMAKE_ANDROID_STL_TYPE=c++_shared on Android. "
+            "Select the shared C++ runtime before enabling C++.")
+    endif()
+endif()
+
 project(mpss VERSION 1.2.3 LANGUAGES C CXX)
 
 if(MPSS_BACKEND_YUBIKEY)
@@ -82,6 +102,32 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     find_package(Java REQUIRED)
     include(UseJava)
+    if(DEFINED ANDROID_PLATFORM
+        AND EXISTS "${CMAKE_ANDROID_NDK}/build/cmake/adjust_api_level.cmake")
+        include("${CMAKE_ANDROID_NDK}/build/cmake/adjust_api_level.cmake")
+        adjust_api_level("${ANDROID_PLATFORM}" mpss_ANDROID_MIN_API)
+    elseif(DEFINED ANDROID_PLATFORM)
+        string(REGEX REPLACE "^android-" "" mpss_ANDROID_MIN_API "${ANDROID_PLATFORM}")
+    else()
+        set(mpss_ANDROID_MIN_API "${CMAKE_SYSTEM_VERSION}")
+    endif()
+    if(NOT mpss_ANDROID_MIN_API MATCHES "^[0-9]+$"
+        OR mpss_ANDROID_MIN_API VERSION_LESS 28)
+        message(FATAL_ERROR "MPSS requires Android API level 28 or later.")
+    endif()
+    if(NOT CMAKE_ANDROID_STL_TYPE STREQUAL "c++_shared"
+        OR (DEFINED ANDROID_STL AND NOT ANDROID_STL STREQUAL "c++_shared"))
+        message(FATAL_ERROR
+            "MPSS requires CMAKE_ANDROID_STL_TYPE=c++_shared on Android.")
+    endif()
+    set(MPSS_ANDROID_COMPILE_API "36" CACHE STRING
+        "Android API level used to compile the MPSS Java sources.")
+    if(NOT MPSS_ANDROID_COMPILE_API MATCHES "^[0-9]+$"
+        OR MPSS_ANDROID_COMPILE_API VERSION_LESS mpss_ANDROID_MIN_API)
+        message(FATAL_ERROR
+            "MPSS_ANDROID_COMPILE_API must be a numeric API level greater "
+            "than or equal to the Android minimum API level.")
+    endif()
 endif()
 
 # Security hardening flags. Applied as directory-scope options; do NOT
@@ -257,17 +303,26 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Android")
         message(FATAL_ERROR "Static libraries are not supported on Android.")
     endif()
 
-    # CMAKE_SYSTEM_VERSION contains the Android API level.
+    # CMAKE_SYSTEM_VERSION contains the minimum Android API level for native code.
     set(ANDROID_SDK $ENV{ANDROID_HOME})
-    set(ANDROID_JAR "${ANDROID_SDK}/platforms/android-${CMAKE_SYSTEM_VERSION}/android.jar")
+    set(ANDROID_JAR "${ANDROID_SDK}/platforms/android-${MPSS_ANDROID_COMPILE_API}/android.jar")
     if(NOT EXISTS "${ANDROID_JAR}")
         message(WARNING "Did not find: ${ANDROID_JAR}")
-        message(FATAL_ERROR "Android SDK not found. Please set ANDROID_HOME environment variable.")
+        message(FATAL_ERROR
+            "Android compile SDK not found. Set ANDROID_HOME and install "
+            "platforms;android-${MPSS_ANDROID_COMPILE_API}.")
     endif()
     set(CMAKE_JAVA_INCLUDE_PATH "${ANDROID_JAR}")
 
-    # This should match the Java version used in Android Studio.
-    set(CMAKE_JAVA_COMPILE_FLAGS --release 21)
+    # Emit bytecode compatible with the modern Android build-tool baseline.
+    set(CMAKE_JAVA_COMPILE_FLAGS --release 17)
+
+    find_file(mpss_ANDROID_CXX_SHARED_LIBRARY
+        NAMES libc++_shared.so
+        PATHS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES}
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
 
     # Add Jar file with Java part of the code.
     add_jar(mpss_jar
@@ -416,6 +471,10 @@ configure_package_config_file(
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     install_jar(mpss_jar DESTINATION "lib")
+    install(
+        FILES "${mpss_ANDROID_CXX_SHARED_LIBRARY}"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    )
 endif()
 
 install(
@@ -457,7 +516,12 @@ if(MPSS_BUILD_TESTS)
     set(mpss_TESTS_FILES "")
     add_subdirectory(tests)
 
-    add_executable(mpss_tests ${mpss_TESTS_FILES})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        add_library(mpss_tests SHARED ${mpss_TESTS_FILES})
+        target_link_libraries(mpss_tests PRIVATE log)
+    else()
+        add_executable(mpss_tests ${mpss_TESTS_FILES})
+    endif()
     target_link_libraries(mpss_tests PRIVATE GTest::gtest)
 
     if(TARGET ${mpss_openssl_TARGET})
@@ -465,5 +529,86 @@ if(MPSS_BUILD_TESTS)
         target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})
     elseif(TARGET ${mpss_TARGET})
         target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
+    endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        if(CMAKE_CONFIGURATION_TYPES)
+            set(mpss_ANDROID_TEST_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/android-tests/$<CONFIG>")
+        else()
+            set(mpss_ANDROID_TEST_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/android-tests")
+        endif()
+        set(mpss_ANDROID_TEST_JNI_DIRECTORY
+            "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs/${CMAKE_ANDROID_ARCH_ABI}")
+        set(mpss_ANDROID_TEST_APK
+            "${mpss_ANDROID_TEST_DIRECTORY}/mpss-tests.apk")
+        set(mpss_ANDROID_TEST_NATIVE_FILES
+            "$<TARGET_FILE:mpss_tests>"
+            "$<TARGET_FILE:${mpss_TARGET}>"
+            "${mpss_ANDROID_CXX_SHARED_LIBRARY}"
+        )
+        set(mpss_ANDROID_TEST_TARGETS mpss_tests mpss_jar ${mpss_TARGET})
+        get_target_property(mpss_ANDROID_TEST_JAR mpss_jar JAR_FILE)
+        if(CMAKE_HOST_WIN32)
+            set(mpss_ANDROID_TEST_GRADLEW
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew.bat")
+        else()
+            set(mpss_ANDROID_TEST_GRADLEW
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradlew")
+        endif()
+        set(mpss_ANDROID_TEST_GRADLE_FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/settings.gradle"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/build.gradle"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/build.gradle"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/AndroidManifest.xml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/app/src/main/java/com/microsoft/research/mpss/tests/TestRunner.java"
+            "${mpss_ANDROID_TEST_GRADLEW}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.jar"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/android/gradle/wrapper/gradle-wrapper.properties"
+        )
+
+        if(TARGET ${mpss_openssl_TARGET})
+            list(APPEND mpss_ANDROID_TEST_NATIVE_FILES
+                "$<TARGET_FILE:${mpss_openssl_TARGET}>")
+            list(APPEND mpss_ANDROID_TEST_TARGETS ${mpss_openssl_TARGET})
+        endif()
+
+        add_custom_command(
+            OUTPUT "${mpss_ANDROID_TEST_APK}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "${mpss_ANDROID_TEST_DIRECTORY}/jniLibs"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${mpss_ANDROID_TEST_NATIVE_FILES}
+                "${mpss_ANDROID_TEST_JNI_DIRECTORY}"
+            COMMAND "${mpss_ANDROID_TEST_GRADLEW}"
+                --no-daemon
+                --project-cache-dir
+                "${mpss_ANDROID_TEST_DIRECTORY}/gradle-cache"
+                "-PmpssBuildDir=${CMAKE_CURRENT_BINARY_DIR}"
+                "-PmpssTestDir=${mpss_ANDROID_TEST_DIRECTORY}"
+                "-PmpssCompileApi=${MPSS_ANDROID_COMPILE_API}"
+                "-PmpssMinApi=${mpss_ANDROID_MIN_API}"
+                "-PmpssCoreLibraryName=$<TARGET_FILE_BASE_NAME:${mpss_TARGET}>"
+                :app:assembleDebug
+            COMMAND ${CMAKE_COMMAND} -E copy
+                "${mpss_ANDROID_TEST_DIRECTORY}/gradle-build/outputs/apk/debug/app-debug.apk"
+                "${mpss_ANDROID_TEST_APK}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests/android"
+            DEPENDS
+                ${mpss_ANDROID_TEST_TARGETS}
+                ${mpss_ANDROID_TEST_NATIVE_FILES}
+                "${mpss_ANDROID_TEST_JAR}"
+                ${mpss_ANDROID_TEST_GRADLE_FILES}
+            COMMENT "Building Android test APK"
+            USES_TERMINAL
+            VERBATIM
+        )
+
+        add_custom_target(mpss_android_test_apk ALL
+            DEPENDS "${mpss_ANDROID_TEST_APK}"
+        )
     endif()
 endif()

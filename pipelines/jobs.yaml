@@ -123,9 +123,11 @@ jobs:
     - template: android.yaml
       parameters:
         ${{ if eq(parameters.debug, 'true') }}:
-          configuration: 'Debug'
+          x64Preset: 'android-x64-debug'
+          arm64Preset: 'android-arm64-debug'
         ${{ if eq(parameters.debug, 'false') }}:
-          configuration: 'Release'
+          x64Preset: 'android-x64-release'
+          arm64Preset: 'android-arm64-release'
 
 - ${{ if eq(parameters.name, 'iOS') }}:
   - job: ${{ parameters.name }}

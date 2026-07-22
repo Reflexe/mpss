@@ -162,18 +162,28 @@ void DoubleCreation(Algorithm algorithm, std::string_view suffix)
     std::unique_ptr<mpss::KeyPair> handle = mpss::KeyPair::Create(key_name, algorithm);
     ASSERT_NE(nullptr, handle);
 
+    const std::size_t public_key_size = handle->extract_key({});
+    ASSERT_NE(0, public_key_size);
+    std::vector<std::byte> original_public_key(public_key_size);
+    ASSERT_EQ(public_key_size, handle->extract_key(original_public_key));
+
     // Try to create the key pair again
     std::unique_ptr<mpss::KeyPair> handle2 = mpss::KeyPair::Create(key_name, algorithm);
     // It should fail
     ASSERT_EQ(nullptr, handle2);
 
-    // Delete the key pair
-    bool deleted = false;
-    if (nullptr != handle)
-    {
-        deleted = handle->delete_key();
-    }
-    ASSERT_TRUE(deleted);
+    handle->release_key();
+    handle.reset();
+
+    std::unique_ptr<mpss::KeyPair> reopened_handle = mpss::KeyPair::Open(key_name);
+    ASSERT_NE(nullptr, reopened_handle);
+    const std::size_t reopened_public_key_size = reopened_handle->extract_key({});
+    ASSERT_EQ(public_key_size, reopened_public_key_size);
+    std::vector<std::byte> reopened_public_key(reopened_public_key_size);
+    ASSERT_EQ(reopened_public_key_size, reopened_handle->extract_key(reopened_public_key));
+    ASSERT_EQ(original_public_key, reopened_public_key);
+
+    ASSERT_TRUE(reopened_handle->delete_key());
 }
 
 TEST_F(MPSS, SignAndVerify256)

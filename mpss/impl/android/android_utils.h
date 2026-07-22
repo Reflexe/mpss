@@ -4,17 +4,21 @@
 #pragma once
 
 #include <jni.h>
+#include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 
 namespace mpss::impl::os::utils
 {
 
 /**
- * Get KeyManagement java class
+ * Clear a pending Java exception and report it through the MPSS error channel.
  * @param env Java environment
- * @return KeyManagement java class
+ * @param operation Operation that raised the exception
+ * @return True if an exception was cleared
  */
-jclass GetKeyManagementClass(JNIEnv *env);
+bool CheckAndClearException(JNIEnv *env, std::string_view operation);
 
 /**
  * Convert a std::span of bytes to a Java byte array
@@ -37,16 +41,16 @@ std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::b
  * Unbox a Java Boolean object into a C++ bool
  * @param env Java environment
  * @param booleanObj Java boolean object to unbox
- * @return Value of the Java boolean object
+ * @return Value of the Java boolean object, or no value on failure
  */
-bool UnboxBoolean(JNIEnv *env, jobject booleanObj);
+std::optional<bool> UnboxBoolean(JNIEnv *env, jobject booleanObj);
 
 /**
- * Get value of KeyManagement.GetError
+ * Consume the current KeyManagement error and report it with operation context.
  * @param env Java environment
- * @return Last error in KeyManagement.GetError
+ * @param operation Java operation that failed
  */
-std::string GetError(JNIEnv *env);
+void ReportJavaError(JNIEnv *env, std::string_view operation);
 
 /**
  * Convert a Java String into a std::string

@@ -22,6 +22,15 @@
 
 include(CMakeFindDependencyMacro)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    if(NOT CMAKE_ANDROID_STL_TYPE STREQUAL "c++_shared"
+        OR (DEFINED ANDROID_STL AND NOT ANDROID_STL STREQUAL "c++_shared"))
+        message(FATAL_ERROR
+            "MPSS requires CMAKE_ANDROID_STL_TYPE=c++_shared on Android. "
+            "Select the shared C++ runtime before enabling C++.")
+    endif()
+endif()
+
 # Version variables, baked in at configure time.
 set(MPSS_VERSION @PROJECT_VERSION@)
 set(MPSS_VERSION_MAJOR @PROJECT_VERSION_MAJOR@)

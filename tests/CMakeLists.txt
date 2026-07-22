@@ -12,6 +12,9 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     if(TARGET ${mpss_TARGET})
         list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp")
     endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/android_tests.cpp")
+    endif()
     if(TARGET ${mpss_openssl_TARGET})
         list(APPEND mpss_TESTS_FILES
             "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_tests.cpp"
@@ -33,6 +36,12 @@ endif()
 #         -DCMAKE_BUILD_TYPE=<Debug|Release>
 #   cmake --build build_tests --target mpss_tests
 project(mpss_tests LANGUAGES CXX)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    message(FATAL_ERROR
+        "Standalone Android tests are not supported. Configure the top-level "
+        "MPSS project with MPSS_BUILD_TESTS=ON.")
+endif()
 
 # Accept MPSS_ROOT as a case-insensitive alias for mpss_ROOT.
 if(DEFINED MPSS_ROOT AND NOT DEFINED mpss_ROOT)

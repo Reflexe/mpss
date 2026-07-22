@@ -190,54 +190,174 @@ xcodebuild -create-xcframework                                              \
 
 ### Android
 
-Generate Ninja build files for cross-compiling to the x64 Android simulator.
-```cmd
-cmake -S . -B buildX64                                                      ^
-  -GNinja                                                                   ^
-  -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"    ^
-  -DVCPKG_TARGET_TRIPLET=x64-android                                        ^
-  -DCMAKE_SYSTEM_NAME=Android                                               ^
-  -DCMAKE_SYSTEM_VERSION=%ANDROID_API_VERSION%                              ^
-  -DCMAKE_ANDROID_ARCH_ABI=x86_64                                           ^
-  -DCMAKE_MAKE_PROGRAM="%NINJA_ROOT%\ninja.exe"                             ^
-  -DCMAKE_ANDROID_NDK="%ANDROID_NDK_HOME%"
+The checked-in Android presets pin the minimum API to 28, the Java compile API to 36, and the NDK to
+29.0.14206865. They build shared MPSS libraries with `libc++_shared.so` and select the matching vcpkg
+triplet. Set `ANDROID_HOME`, `JAVA_HOME`, and `VCPKG_ROOT`; the presets derive `ANDROID_NDK_HOME` from
+the SDK location.
+
+Configure and build for x86_64 Android:
+
+```bash
+cmake --preset android-x64-release
+cmake --build --preset android-x64-release
+
+cmake --install out/build/android-x64-release \
+  --prefix out/install/android-x64-release
 ```
 
-Generate Ninja build files for cross-compiling to arm64.
+Configure and build for arm64 Android:
 
-```cmd
-cmake -S . -B buildArm                                                      ^
-  -GNinja                                                                   ^
-  -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"    ^
-  -DVCPKG_TARGET_TRIPLET=arm64-android                                      ^
-  -DCMAKE_SYSTEM_NAME=Android                                               ^
-  -DCMAKE_SYSTEM_VERSION=%ANDROID_API_VERSION%                              ^
-  -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a                                        ^
-  -DCMAKE_MAKE_PROGRAM="%NINJA_ROOT%\ninja.exe"                             ^
-  -DCMAKE_ANDROID_NDK="%ANDROID_NDK_HOME%"
+```bash
+cmake --preset android-arm64-release
+cmake --build --preset android-arm64-release
+
+cmake --install out/build/android-arm64-release \
+  --prefix out/install/android-arm64-release
 ```
 
-**Note**: You will need to also set the following environment variables:
+The Debug variants are `android-x64-debug` and `android-arm64-debug`.
+
+The presets require the following environment variables:
+
 | Variable | Value |
 | -------- | ----- |
 | ANDROID_HOME | Path to your Android SDK installation |
-| ANDROID_NDK_HOME | Path to your Android NDK installation |
 | JAVA_HOME | Path to your Java SDK installation |
-| JAVA_COMPILER | Path to the Java compiler |
+| VCPKG_ROOT | Path to your vcpkg installation |
 
-**Note**: `CMAKE_SYSTEM_VERSION` is used to build a full path to `android.jar`, which needs to be linked against when generating the MPSS jar file. **Make sure this path exists**. The full path to `android.jar` is composed like this:
-```cmd
-%ANDROID_HOME%\platforms\android-%CMAKE_SYSTEM_VERSION%\android.jar
+`CMAKE_SYSTEM_VERSION` sets the minimum Android API level for the native library. MPSS supports
+API level 28 and later. `MPSS_ANDROID_COMPILE_API` selects the Android platform used to compile the
+Java sources; it defaults to API level 36 and does not raise the runtime minimum. Make sure the
+corresponding platform is installed. The full path to `android.jar` is:
+```text
+$ANDROID_HOME/platforms/android-36/android.jar
 ```
+
+P-256 key creation first requests StrongBox and falls back to AndroidKeyStore when StrongBox is
+unavailable. Before API level 31, hardware-backed storage is reported as `Unknown Secure`; API
+level 31 and later report the specific Android security level.
+
+API level 28 is a compatibility floor, not a security-maintenance guarantee. Applications using
+MPSS should require devices that receive current security updates and have a current Android
+security patch level.
+
+The Android presets enable the shared OpenSSL provider and the test suite. Pass
+`-DMPSS_BUILD_MPSS_OPENSSL_SHARED=OFF` or `-DMPSS_BUILD_TESTS=OFF` after the preset name for a
+smaller library-only build.
+
+All Android MPSS builds use `libc++_shared.so`. MPSS exposes a C++ API from a shared library, so a
+native application linking to MPSS must use the same C++ runtime for objects, allocations, and
+exceptions that cross the shared-library boundary. Using a statically linked libc++ in either
+library would put two C++ runtimes in one process.
+
+When MPSS is the top-level CMake project, it selects `c++_shared` automatically and installs the
+matching `libc++_shared.so` beside the MPSS libraries. When MPSS is used through `add_subdirectory()`
+or `find_package()`, the consuming project must select the shared runtime before CMake enables C++.
+For an Android Gradle module using `externalNativeBuild`, pass the selection to CMake:
+
+```groovy
+android {
+    ndkVersion = "29.0.14206865"
+
+    defaultConfig {
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+}
+```
+
+For CMake's native Android toolchain, configure the parent project with
+`-DCMAKE_ANDROID_STL_TYPE=c++_shared` instead.
+
+The native target can then link to the exported MPSS target normally:
+
+```cmake
+find_package(mpss CONFIG REQUIRED)
+
+add_library(app_native SHARED app_native.cpp)
+target_link_libraries(app_native PRIVATE mpss::mpss)
+```
+
+MPSS rejects Android dependency builds configured with another C++ runtime rather than allowing an
+unsafe mixed-runtime process. Use the same NDK version for MPSS, the consuming native library, and
+the packaged `libc++_shared.so`. The APK must contain one `libc++_shared.so` for each packaged ABI,
+alongside every native library that needs it. The Java classes from `mpss.jar` are packaged
+separately as a Gradle dependency and do not replace the native C++ runtime. Gradle packages the
+selected shared runtime for an `externalNativeBuild`; do not also add a second copy through
+`jniLibs`.
+
+Packaging the native library does not initialize its Java bridge. Before calling MPSS from native
+code, load MPSS explicitly from Java or Kotlin so Android runs `JNI_OnLoad` with the application's
+class loader:
+
+```java
+static
+{
+    System.loadLibrary("mpss");
+    System.loadLibrary("app_native");
+}
+```
+
+Load `mpss` before a native application library that links to it. Initialization resolves the Java
+classes supplied by `mpss.jar`; if the JAR or native library is missing, the load fails immediately
+instead of leaving a partially initialized backend. Loading `libmpss.so` only as an ELF dependency
+or through native `dlopen` is not a substitute for `System.loadLibrary("mpss")`.
+The argument is the packaged filename without its `lib` prefix or `.so` suffix; use `mpss_debug`
+when packaging MPSS's default Debug output.
+
+#### Running the Android tests
+
+Android tests run inside a headless instrumentation APK so they have an ART runtime, an application
+UID and AndroidKeyStore namespace, and the Java class-loader environment required by the JNI
+backend. The Android presets enable `MPSS_BUILD_TESTS`; their default build compiles the C++ tests as
+`libmpss_tests.so`, packages the Java and native components, and creates:
+
+```text
+<build-directory>/android-tests/mpss-tests.apk
+```
+
+The test build automatically uses and packages `libc++_shared.so`; no separate C++ runtime setup is
+required. The checked-in Gradle wrapper supplies the required Gradle version, so a global Gradle
+installation is also unnecessary. CMake passes its normalized minimum API and
+`MPSS_ANDROID_COMPILE_API` values to Gradle, which uses them as the APK's `minSdk` and
+compile/target SDK respectively.
+
+Start an emulator or connect a device whose ABI matches the CMake build, then install and run the
+APK:
+
+```bash
+adb install -r <build-directory>/android-tests/mpss-tests.apk
+adb logcat -c
+adb shell am instrument -w com.microsoft.research.mpss.tests/.TestRunner
+adb logcat -d -s MPSS:V MPSS_TESTS:V '*:S'
+```
+
+`MPSS` contains library trace and error messages; `MPSS_TESTS` contains GoogleTest events and the
+final pass, skip, and failure counts.
+
+An emulator validates the Android runtime, JNI, AndroidKeyStore integration, signing, verification,
+and key-management behavior, but it does not establish hardware-backed security. Verify TEE and
+StrongBox behavior separately on suitable physical devices.
 
 After building and installing, you will find:
 - `lib/libmpss.so` — the native shared library.
 - `lib/mpss.jar` — the Java classes for the JNI bridge (`KeyManagement`, `Algorithm`, etc.).
+- `lib/libc++_shared.so` — the matching NDK C++ runtime.
+- When the OpenSSL provider is enabled, `lib/libmpss_openssl.so`.
 
-To use in an Android Studio project:
+To use prebuilt MPSS binaries through an Android Studio project's `jniLibs`:
 1. Copy `libmpss.so` to `app/src/main/jniLibs/<abi>/` (e.g., `arm64-v8a/` or `x86_64/`).
 2. Copy `mpss.jar` to `app/libs/`.
 3. Add the JAR as a file dependency in your module's `build.gradle`.
+4. If using the OpenSSL provider, copy `libmpss_openssl.so` beside `libmpss.so`.
+
+If the module does not use `externalNativeBuild`, also copy `libc++_shared.so` from the same MPSS
+installation beside `libmpss.so`. If the module builds any native target with
+`externalNativeBuild`, do not put another `libc++_shared.so` in `jniLibs`; configure that native
+build for `c++_shared` as shown above and let Gradle package its runtime.
 
 **Note**: Only shared libraries are supported on Android. Static builds will produce a configuration error.
 
@@ -854,4 +974,3 @@ The tests are built automatically when `MPSS_BUILD_TESTS=ON` is set, provided th
 MPSS is released under the MIT license.
 We welcome contributions, including feature additions and bug fixes.
 If you have a feature request or a question about how to use the library, please [submit an issue](https://github.com/microsoft/mpss/issues).
-

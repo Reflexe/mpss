@@ -7,8 +7,8 @@
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/impl/os_backend.h"
 #include "mpss/utils/utilities.h"
+#include <optional>
 
-using jni_class = mpss::impl::os::utils::JNIObj<jclass>;
 using jni_string = mpss::impl::os::utils::JNIObj<jstring>;
 using jni_object = mpss::impl::os::utils::JNIObj<jobject>;
 using jni_bytearray = mpss::impl::os::utils::JNIObj<jbyteArray>;
@@ -28,32 +28,51 @@ void GetKeyProperties(std::string_view name, bool &hardware_backed, const char *
     *storage_description = nullptr;
 
     mpss::impl::os::JNIEnvGuard guard;
-    jni_class km(guard.Env(), mpss::impl::os::utils::GetKeyManagementClass(guard.Env()));
-    if (km.is_null())
+    if (!guard.valid())
+    {
+        mpss::utils::log_and_set_error("Android JNI environment is unavailable.");
+        return;
+    }
+    JNIEnv *const env = guard.Env();
+
+    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement Java class");
         return;
     }
 
-    jmethodID mid = guard->GetStaticMethodID(km.get(), "GetKeySecurityLevel", "(Ljava/lang/String;)I");
-    if (nullptr == mid)
+    jmethodID method = env->GetStaticMethodID(key_management, "GetKeySecurityLevel", "(Ljava/lang/String;)I");
+    if (mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement.GetKeySecurityLevel"))
+    {
+        return;
+    }
+    if (nullptr == method)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.GetKeySecurityLevel Java method");
         return;
     }
 
     const std::string keyNameStr(name);
-    jni_string keyName(guard.Env(), guard->NewStringUTF(keyNameStr.c_str()));
+    jni_string keyName(env, env->NewStringUTF(keyNameStr.c_str()));
+    if (mpss::impl::os::utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    {
+        return;
+    }
     if (keyName.is_null())
     {
         mpss::utils::log_and_set_error("Could not convert key name to Java String");
         return;
     }
 
-    const jint result = guard->CallStaticIntMethod(km.get(), mid, keyName.get());
+    const jint result = env->CallStaticIntMethod(key_management, method, keyName.get());
+    if (mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement.GetKeySecurityLevel"))
+    {
+        return;
+    }
     if (-1 == result)
     {
-        mpss::utils::log_and_set_error("Error calling KeyManagement.GetKeySecurityLevel Java method");
+        mpss::impl::os::utils::ReportJavaError(env, "KeyManagement.GetKeySecurityLevel");
         return;
     }
 
@@ -103,80 +122,123 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     mpss::utils::log_trace("Attempting to open key '{}' on Android backend.", name);
 
     JNIEnvGuard guard;
-    jni_class km(guard.Env(), utils::GetKeyManagementClass(guard.Env()));
-    if (km.is_null())
+    if (!guard.valid())
+    {
+        mpss::utils::log_and_set_error("Android JNI environment is unavailable.");
+        return nullptr;
+    }
+    JNIEnv *const env = guard.Env();
+
+    jclass key_management = JNIHelper::KeyManagementClass();
+    if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement Java class.");
         return nullptr;
     }
 
     const std::string nameStr{name};
-    jni_string keyName(guard.Env(), guard->NewStringUTF(nameStr.c_str()));
+    jni_string keyName(env, env->NewStringUTF(nameStr.c_str()));
+    if (utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    {
+        return nullptr;
+    }
     if (keyName.is_null())
     {
         mpss::utils::log_and_set_error("Could not create key name Java string.");
         return nullptr;
     }
 
-    jmethodID mid = guard->GetStaticMethodID(km.get(), "OpenKey", "(Ljava/lang/String;)Ljava/lang/Boolean;");
-    if (nullptr == mid)
+    jmethodID method = env->GetStaticMethodID(key_management, "OpenKey", "(Ljava/lang/String;)Ljava/lang/Boolean;");
+    if (utils::CheckAndClearException(env, "resolving KeyManagement.OpenKey"))
+    {
+        return nullptr;
+    }
+    if (nullptr == method)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.OpenKey Java method.");
         return nullptr;
     }
 
-    jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mid, keyName.get()));
+    jni_object result(env, env->CallStaticObjectMethod(key_management, method, keyName.get()));
+    if (utils::CheckAndClearException(env, "calling KeyManagement.OpenKey"))
+    {
+        return nullptr;
+    }
     if (result.is_null())
     {
-        mpss::utils::log_and_set_error("KeyManagement.OpenKey returned null.");
+        utils::ReportJavaError(env, "KeyManagement.OpenKey");
         return nullptr;
     }
 
-    if (!utils::UnboxBoolean(guard.Env(), result.get()))
+    const std::optional<bool> opened = utils::UnboxBoolean(env, result.get());
+    if (!opened.has_value())
+    {
+        return nullptr;
+    }
+    if (!opened.value())
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
         return nullptr;
     }
 
     // Now we need the Algorithm.
-    jmethodID mid_algo = guard->GetStaticMethodID(km.get(), "GetKeyAlgorithm",
-                                                  "(Ljava/lang/String;)Lcom/microsoft/research/mpss/Algorithm;");
+    jmethodID mid_algo = env->GetStaticMethodID(key_management, "GetKeyAlgorithm",
+                                                "(Ljava/lang/String;)Lcom/microsoft/research/mpss/Algorithm;");
+    if (utils::CheckAndClearException(env, "resolving KeyManagement.GetKeyAlgorithm"))
+    {
+        return nullptr;
+    }
     if (nullptr == mid_algo)
     {
         mpss::utils::log_and_set_error("Failed to get KeyManagement.GetKeyAlgorithm method.");
         return nullptr;
     }
 
-    jni_object algo_result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mid_algo, keyName.get()));
+    jni_object algo_result(env, env->CallStaticObjectMethod(key_management, mid_algo, keyName.get()));
+    if (utils::CheckAndClearException(env, "calling KeyManagement.GetKeyAlgorithm"))
+    {
+        return nullptr;
+    }
     if (algo_result.is_null())
     {
-        mpss::utils::log_and_set_error("KeyManagement.GetKeyAlgorithm returned null.");
+        utils::ReportJavaError(env, "KeyManagement.GetKeyAlgorithm");
         return nullptr;
     }
 
-    jni_class algo_class(guard.Env(), guard->GetObjectClass(algo_result.get()));
-    if (algo_class.is_null())
+    jclass algorithm_class = JNIHelper::AlgorithmClass();
+    if (nullptr == algorithm_class)
     {
         mpss::utils::log_and_set_error("Failed to get Java class for Algorithm.");
         return nullptr;
     }
 
-    jmethodID nameMethod = guard->GetMethodID(algo_class.get(), "name", "()Ljava/lang/String;");
+    jmethodID nameMethod = env->GetMethodID(algorithm_class, "name", "()Ljava/lang/String;");
+    if (utils::CheckAndClearException(env, "resolving Algorithm.name"))
+    {
+        return nullptr;
+    }
     if (nullptr == nameMethod)
     {
         mpss::utils::log_and_set_error("Could not get method id for Algorithm.name.");
         return nullptr;
     }
 
-    jni_string algo_name(guard.Env(),
-                         reinterpret_cast<jstring>(guard->CallObjectMethod(algo_result.get(), nameMethod)));
+    jni_string algo_name(env, reinterpret_cast<jstring>(env->CallObjectMethod(algo_result.get(), nameMethod)));
+    if (utils::CheckAndClearException(env, "calling Algorithm.name"))
+    {
+        return nullptr;
+    }
     if (algo_name.is_null())
     {
         mpss::utils::log_and_set_error("Could not get name of enum Algorithm.");
         return nullptr;
     }
 
-    const std::string algo_name_str = mpss::impl::os::utils::GetString(guard.Env(), algo_name.get());
+    const std::string algo_name_str = mpss::impl::os::utils::GetString(env, algo_name.get());
+    if (algo_name_str.empty())
+    {
+        return nullptr;
+    }
     Algorithm algorithm = unsupported;
 
     if (algo_name_str == "secp256r1")
@@ -190,6 +252,11 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     else if (algo_name_str == "secp521r1")
     {
         algorithm = ecdsa_secp521r1_sha512;
+    }
+    if (unsupported == algorithm)
+    {
+        utils::ReportJavaError(env, "KeyManagement.GetKeyAlgorithm");
+        return nullptr;
     }
 
     bool hardware_backed = false;
@@ -233,31 +300,46 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
                            get_algorithm_info(algorithm).type_str);
 
     JNIEnvGuard guard;
-    jni_class km(guard.Env(), utils::GetKeyManagementClass(guard.Env()));
-    if (km.is_null())
+    if (!guard.valid())
+    {
+        mpss::utils::log_and_set_error("Android JNI environment is unavailable.");
+        return nullptr;
+    }
+    JNIEnv *const env = guard.Env();
+
+    jclass key_management = JNIHelper::KeyManagementClass();
+    if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement Java class.");
         return nullptr;
     }
 
-    jmethodID mid = guard->GetStaticMethodID(
-        km.get(), "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;)Ljava/lang/Boolean;");
-    if (nullptr == mid)
+    jmethodID method = env->GetStaticMethodID(
+        key_management, "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;)Ljava/lang/Boolean;");
+    if (utils::CheckAndClearException(env, "resolving KeyManagement.CreateKey"))
+    {
+        return nullptr;
+    }
+    if (nullptr == method)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.CreateKey Java method.");
         return nullptr;
     }
 
     const std::string keyNameStr(name);
-    jni_string keyName(guard.Env(), guard->NewStringUTF(keyNameStr.c_str()));
+    jni_string keyName(env, env->NewStringUTF(keyNameStr.c_str()));
+    if (utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    {
+        return nullptr;
+    }
     if (keyName.is_null())
     {
         mpss::utils::log_and_set_error("Could not convert key name to Java String.");
         return nullptr;
     }
 
-    jni_class algorithmClass(guard.Env(), guard->FindClass("com/microsoft/research/mpss/Algorithm"));
-    if (algorithmClass.is_null())
+    jclass algorithmClass = JNIHelper::AlgorithmClass();
+    if (nullptr == algorithmClass)
     {
         mpss::utils::log_and_set_error("Could not get Algorithm Java class.");
         return nullptr;
@@ -268,46 +350,59 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     switch (algorithm)
     {
     case ecdsa_secp256r1_sha256:
-        algoFieldId =
-            guard->GetStaticFieldID(algorithmClass.get(), "secp256r1", "Lcom/microsoft/research/mpss/Algorithm;");
+        algoFieldId = env->GetStaticFieldID(algorithmClass, "secp256r1", "Lcom/microsoft/research/mpss/Algorithm;");
         break;
     case ecdsa_secp384r1_sha384:
-        algoFieldId =
-            guard->GetStaticFieldID(algorithmClass.get(), "secp384r1", "Lcom/microsoft/research/mpss/Algorithm;");
+        algoFieldId = env->GetStaticFieldID(algorithmClass, "secp384r1", "Lcom/microsoft/research/mpss/Algorithm;");
         break;
     case ecdsa_secp521r1_sha512:
-        algoFieldId =
-            guard->GetStaticFieldID(algorithmClass.get(), "secp521r1", "Lcom/microsoft/research/mpss/Algorithm;");
+        algoFieldId = env->GetStaticFieldID(algorithmClass, "secp521r1", "Lcom/microsoft/research/mpss/Algorithm;");
         break;
     default:
         mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
+    if (utils::CheckAndClearException(env, "resolving an Algorithm enum value"))
+    {
+        return nullptr;
+    }
     if (nullptr == algoFieldId)
     {
         mpss::utils::log_and_set_error("Could not find appropriate enum value for Algorithm.");
         return nullptr;
     }
 
-    jni_object algorithmValue(guard.Env(), guard->GetStaticObjectField(algorithmClass.get(), algoFieldId));
+    jni_object algorithmValue(env, env->GetStaticObjectField(algorithmClass, algoFieldId));
+    if (utils::CheckAndClearException(env, "getting an Algorithm enum value"))
+    {
+        return nullptr;
+    }
     if (algorithmValue.is_null())
     {
         mpss::utils::log_and_set_error("Could not get object for Algorithm value.");
         return nullptr;
     }
 
-    jni_object result(guard.Env(), guard->CallStaticObjectMethod(km.get(), mid, keyName.get(), algorithmValue.get()));
+    jni_object result(env, env->CallStaticObjectMethod(key_management, method, keyName.get(), algorithmValue.get()));
+    if (utils::CheckAndClearException(env, "calling KeyManagement.CreateKey"))
+    {
+        return nullptr;
+    }
     if (result.is_null())
     {
-        mpss::utils::log_and_set_error("KeyManagement.CreateKey returned null.");
+        utils::ReportJavaError(env, "KeyManagement.CreateKey");
         return nullptr;
     }
 
-    if (!utils::UnboxBoolean(guard.Env(), result.get()))
+    const std::optional<bool> created = utils::UnboxBoolean(env, result.get());
+    if (!created.has_value())
     {
-        // Error happened in Java side.
-        mpss::utils::log_and_set_error(mpss::impl::os::utils::GetError(guard.Env()));
+        return nullptr;
+    }
+    if (!created.value())
+    {
+        utils::ReportJavaError(env, "KeyManagement.CreateKey");
         return nullptr;
     }
 
@@ -351,61 +446,76 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
     const std::size_t expected_pk_size = mpss::utils::get_public_key_size(algorithm);
     if (public_key.size() != expected_pk_size)
     {
-        mpss::utils::log_warning("Public key length {} does not match algorithm '{}' (expected {}).",
-                                 public_key.size(), get_algorithm_info(algorithm).type_str, expected_pk_size);
+        mpss::utils::log_warning("Public key length {} does not match algorithm '{}' (expected {}).", public_key.size(),
+                                 get_algorithm_info(algorithm).type_str, expected_pk_size);
         return false;
     }
 
     JNIEnvGuard guard;
+    if (!guard.valid())
+    {
+        mpss::utils::log_and_set_error("Android JNI environment is unavailable.");
+        return false;
+    }
+    JNIEnv *const env = guard.Env();
 
-    jni_class km(guard.Env(), utils::GetKeyManagementClass(guard.Env()));
-    if (km.is_null())
+    jclass key_management = JNIHelper::KeyManagementClass();
+    if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement Java class.");
         return false;
     }
 
-    jmethodID mid = guard->GetStaticMethodID(km.get(), "VerifySignature", "([B[B[B)Ljava/lang/Boolean;");
-    if (nullptr == mid)
+    jmethodID method = env->GetStaticMethodID(key_management, "VerifySignature", "([B[B[B)Ljava/lang/Boolean;");
+    if (utils::CheckAndClearException(env, "resolving KeyManagement.VerifySignature"))
+    {
+        return false;
+    }
+    if (nullptr == method)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.VerifySignature Java method.");
         return false;
     }
 
-    jni_bytearray hash_arr(guard.Env(), utils::ToJByteArray(guard.Env(), hash));
+    jni_bytearray hash_arr(env, utils::ToJByteArray(env, hash));
     if (hash_arr.is_null())
     {
-        mpss::utils::log_and_set_error("Could not convert hash to jbyte array.");
         return false;
     }
 
-    jni_bytearray pk_arr(guard.Env(), utils::ToJByteArray(guard.Env(), public_key));
+    jni_bytearray pk_arr(env, utils::ToJByteArray(env, public_key));
     if (pk_arr.is_null())
     {
-        mpss::utils::log_and_set_error("Could not convert public key to jbyte array.");
         return false;
     }
 
-    jni_bytearray sig_arr(guard.Env(), utils::ToJByteArray(guard.Env(), sig));
+    jni_bytearray sig_arr(env, utils::ToJByteArray(env, sig));
     if (sig_arr.is_null())
     {
-        mpss::utils::log_and_set_error("Could not convert signature to jbyte array.");
         return false;
     }
 
-    jni_object result(guard.Env(),
-                      guard->CallStaticObjectMethod(km.get(), mid, hash_arr.get(), sig_arr.get(), pk_arr.get()));
+    jni_object result(env,
+                      env->CallStaticObjectMethod(key_management, method, hash_arr.get(), sig_arr.get(), pk_arr.get()));
+    if (utils::CheckAndClearException(env, "calling KeyManagement.VerifySignature"))
+    {
+        return false;
+    }
     if (result.is_null())
     {
-        mpss::utils::log_and_set_error("KeyManagement.VerifySignature returned null.");
+        utils::ReportJavaError(env, "KeyManagement.VerifySignature");
         return false;
     }
 
-    const bool verified = utils::UnboxBoolean(guard.Env(), result.get());
+    const std::optional<bool> verified = utils::UnboxBoolean(env, result.get());
+    if (!verified.has_value())
+    {
+        return false;
+    }
 
     mpss::utils::log_trace("Verification using standalone signature verification {}.",
-                           verified ? "succeeded" : "failed");
-    return verified;
+                           verified.value() ? "succeeded" : "failed");
+    return verified.value();
 }
 
 } // namespace mpss::impl::os

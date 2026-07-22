@@ -4,17 +4,18 @@
 package com.microsoft.research.mpss;
 
 import java.security.KeyPair;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public class MemKeyStore {
-    private static HashMap<String, KeyPair> KeyPairs = new HashMap<>();
+    private static final ConcurrentMap<String, KeyPair> KeyPairs = new ConcurrentHashMap<>();
 
     public static void AddKey(String keyName, KeyPair kp) {
         KeyPairs.put(keyName, kp);
     }
 
     public static KeyPair GetKey(String keyName) {
-        return KeyPairs.getOrDefault(keyName, null);
+        return KeyPairs.get(keyName);
     }
 
     public static void RemoveKey(String keyName) {

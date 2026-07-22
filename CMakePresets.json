@@ -339,6 +339,62 @@
             }
         },
         {
+            "name": "android-base",
+            "hidden": true,
+            "inherits": "base",
+            "generator": "Ninja",
+            "environment": {
+                "ANDROID_NDK_HOME": "$env{ANDROID_HOME}/ndk/29.0.14206865"
+            },
+            "cacheVariables": {
+                "CMAKE_SYSTEM_NAME": "Android",
+                "CMAKE_SYSTEM_VERSION": "28",
+                "CMAKE_ANDROID_NDK": "$env{ANDROID_HOME}/ndk/29.0.14206865",
+                "CMAKE_ANDROID_STL_TYPE": "c++_shared",
+                "MPSS_ANDROID_COMPILE_API": "36",
+                "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
+                "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
+                "MPSS_BUILD_MPSS_OPENSSL_STATIC": "NO",
+                "MPSS_BUILD_MPSS_OPENSSL_SHARED": "YES"
+            }
+        },
+        {
+            "name": "android-arm64-debug",
+            "displayName": "Android Debug (arm64, Ninja)",
+            "inherits": "android-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_ANDROID_ARCH_ABI": "arm64-v8a",
+                "VCPKG_TARGET_TRIPLET": "arm64-android"
+            }
+        },
+        {
+            "name": "android-arm64-release",
+            "displayName": "Android Release (arm64, Ninja)",
+            "inherits": "android-arm64-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "android-x64-debug",
+            "displayName": "Android Debug (x64, Ninja)",
+            "inherits": "android-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_ANDROID_ARCH_ABI": "x86_64",
+                "VCPKG_TARGET_TRIPLET": "x64-android"
+            }
+        },
+        {
+            "name": "android-x64-release",
+            "displayName": "Android Release (x64, Ninja)",
+            "inherits": "android-x64-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
             "name": "macos-arm64-debug",
             "displayName": "macOS Debug (arm64, Ninja)",
             "inherits": "base",
@@ -981,6 +1037,26 @@
                 "lhs": "${hostSystemName}",
                 "rhs": "Linux"
             }
+        },
+        {
+            "name": "android-arm64-debug",
+            "configurePreset": "android-arm64-debug",
+            "jobs": 0
+        },
+        {
+            "name": "android-arm64-release",
+            "configurePreset": "android-arm64-release",
+            "jobs": 0
+        },
+        {
+            "name": "android-x64-debug",
+            "configurePreset": "android-x64-debug",
+            "jobs": 0
+        },
+        {
+            "name": "android-x64-release",
+            "configurePreset": "android-x64-release",
+            "jobs": 0
         },
         {
             "name": "macos-arm64-debug",
