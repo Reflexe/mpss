@@ -148,4 +148,6 @@ jobs:
             Sort-Object Name -Descending | Select-Object -First 1
           $env:PATH = "$($msvc.FullName)\bin\Hostx64\x64;$env:PATH"
           & "out/build/win-vs2022-x64/bin/Release/mpss_tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "out/build/win-vs2022-x64/bin/Release/mpss_win32_mock_tests.exe"
           exit $LASTEXITCODE
