@@ -260,19 +260,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
-          script: |
-            cmake -S . --preset "${{ matrix.preset }}" || exit $?
-            cmake --build "out/build/${{ matrix.preset }}" --target mpss_android_test_apk || exit $?
-            APK=$(find "out/build/${{ matrix.preset }}" tests/android -name '*.apk' | head -n 1)
-            [ -n "$APK" ] || { echo "APK not found" >&2; find "out/build/${{ matrix.preset }}" tests/android -name '*.apk' >&2; exit 1; }
-            echo "Installing $APK"
-            adb install -r "$APK" || exit $?
-            adb shell am instrument -w com.microsoft.research.mpss.tests/com.microsoft.research.mpss.tests.TestRunner > instrumentation.log
-            rc=$?
-            cat instrumentation.log
-            if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-            grep -q 'MPSS tests passed' instrumentation.log || exit $?
-            if grep -Eq 'FAILURES!!!|MPSS tests failed|INSTRUMENTATION_CODE: -1' instrumentation.log; then exit 1; fi
+          script: bash .github/scripts/run-android-instrumentation.sh "${{ matrix.preset }}"
 
   # -------------------------------------------------------------------------
   # iOS XCFramework: mirrors the ADO iOS pipeline.
