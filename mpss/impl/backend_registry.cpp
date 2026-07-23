@@ -69,7 +69,8 @@ namespace
 // a C-string sink (CNG wide strings, Keychain CFString, JNI NewStringUTF, X.509 CN with len=-1) and
 // alias one key onto another; it also avoids UTF-8 widening / Modified-UTF-8 ambiguity that would
 // let the value seen by the API diverge from the value stored on the backend.
-[[nodiscard]] bool is_valid_key_name(std::string_view name)
+[[nodiscard]]
+bool is_valid_key_name(std::string_view name)
 {
     if (name.empty() || name.size() > max_key_name_length)
     {

@@ -264,8 +264,12 @@ cmake -S . -B /path/to/build-ios-device -G Xcode \
   -DVCPKG_TARGET_TRIPLET=arm64-ios \
   -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
   -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
-  -DMPSS_BUILD_TESTS=ON
+  -DMPSS_BUILD_TESTS=ON \
+  -DMPSS_IOS_TEST_BUNDLE_IDENTIFIER=com.yourdomain.mpss.tests
 ```
+
+Replace `com.yourdomain.mpss.tests` with a reverse-DNS identifier that your development team can
+sign. The XCTest bundle uses the same identifier with `.xctest` appended.
 
 Open `mpss.xcodeproj`, configure signing for `mpss_ios_test_host`, confirm
 `mpss_ios_xctest` appears in the host scheme's Test action, choose the connected device, and run the
@@ -277,10 +281,10 @@ model, iOS version, signing team, and test result when making hardware-backed se
 
 ### Android
 
-The checked-in Android presets pin the minimum API to 28, the Java compile API to 36, and the NDK to
-29.0.14206865. They build shared MPSS libraries with `libc++_shared.so` and select the matching vcpkg
-triplet. Set `ANDROID_HOME`, `JAVA_HOME`, and `VCPKG_ROOT`; the presets derive `ANDROID_NDK_HOME` from
-the SDK location.
+The `android-base` preset is the source of truth for the Android compile API, Build Tools, and NDK
+versions. It pins the minimum API to 28 and uses JDK 21 to emit Java 17 bytecode. The Android presets
+build shared MPSS libraries with `libc++_shared.so`, select the matching vcpkg triplet, and derive
+`ANDROID_NDK_HOME` from `ANDROID_HOME`. Set `ANDROID_HOME`, `JAVA_HOME`, and `VCPKG_ROOT`.
 
 Configure and build for x86_64 Android:
 
@@ -288,8 +292,7 @@ Configure and build for x86_64 Android:
 cmake --preset android-x64-release
 cmake --build --preset android-x64-release
 
-cmake --install out/build/android-x64-release \
-  --prefix out/install/android-x64-release
+cmake --install out/build/android-x64-release --prefix out/install/android-x64-release
 ```
 
 Configure and build for arm64 Android:
@@ -298,8 +301,7 @@ Configure and build for arm64 Android:
 cmake --preset android-arm64-release
 cmake --build --preset android-arm64-release
 
-cmake --install out/build/android-arm64-release \
-  --prefix out/install/android-arm64-release
+cmake --install out/build/android-arm64-release --prefix out/install/android-arm64-release
 ```
 
 The Debug variants are `android-x64-debug` and `android-arm64-debug`.
@@ -309,16 +311,23 @@ The presets require the following environment variables:
 | Variable | Value |
 | -------- | ----- |
 | ANDROID_HOME | Path to your Android SDK installation |
-| JAVA_HOME | Path to your Java SDK installation |
+| JAVA_HOME | Path to your JDK 21 installation |
 | VCPKG_ROOT | Path to your vcpkg installation |
+
+Install the SDK packages selected by `android-base` with:
+
+```bash
+cmake -P scripts/bootstrap_android_sdk.cmake
+```
+
+This is an explicit, idempotent workstation-setup command; normal configure and build commands do
+not run it. Run it after installing the Android command-line tools and whenever `android-base`
+changes. The Android CI pipeline invokes the same helper before configuring either Android preset.
 
 `CMAKE_SYSTEM_VERSION` sets the minimum Android API level for the native library. MPSS supports
 API level 28 and later. `MPSS_ANDROID_COMPILE_API` selects the Android platform used to compile the
-Java sources; it defaults to API level 36 and does not raise the runtime minimum. Make sure the
-corresponding platform is installed. The full path to `android.jar` is:
-```text
-$ANDROID_HOME/platforms/android-36/android.jar
-```
+Java sources and does not raise the runtime minimum. The installer reads its value directly from the
+preset rather than duplicating it here.
 
 P-256 key creation first requests StrongBox and falls back to AndroidKeyStore when StrongBox is
 unavailable. Before API level 31, hardware-backed storage is reported as `Unknown Secure`; API
@@ -344,8 +353,6 @@ For an Android Gradle module using `externalNativeBuild`, pass the selection to 
 
 ```groovy
 android {
-    ndkVersion = "29.0.14206865"
-
     defaultConfig {
         externalNativeBuild {
             cmake {
@@ -356,7 +363,8 @@ android {
 }
 ```
 
-For CMake's native Android toolchain, configure the parent project with
+Configure the consuming Gradle project to use the NDK version selected by `android-base`. For
+CMake's native Android toolchain, configure the parent project with
 `-DCMAKE_ANDROID_STL_TYPE=c++_shared` instead.
 
 The native target can then link to the exported MPSS target normally:
@@ -406,21 +414,47 @@ backend. The Android presets enable `MPSS_BUILD_TESTS`; their default build comp
 <build-directory>/android-tests/mpss-tests.apk
 ```
 
+For a typical arm64 physical device, configure and build the Debug test APK with:
+
+```bash
+cmake --preset android-arm64-debug
+cmake --build --preset android-arm64-debug
+```
+
+This creates `out/build/android-arm64-debug/android-tests/mpss-tests.apk`. Use the
+`android-x64-debug` preset and matching build directory for an x86_64 emulator.
+
 The test build automatically uses and packages `libc++_shared.so`; no separate C++ runtime setup is
 required. The checked-in Gradle wrapper supplies the required Gradle version, so a global Gradle
 installation is also unnecessary. CMake passes its normalized minimum API and
 `MPSS_ANDROID_COMPILE_API` values to Gradle, which uses them as the APK's `minSdk` and
 compile/target SDK respectively.
 
-Start an emulator or connect a device whose ABI matches the CMake build, then install and run the
-APK:
+For a physical device, enable Developer options and USB debugging, connect the device, and accept
+the computer authorization prompt on the device. Confirm that Android Debug Bridge lists it with
+the `device` status rather than `unauthorized`:
 
 ```bash
-adb install -r <build-directory>/android-tests/mpss-tests.apk
+adb devices
+adb shell getprop ro.product.cpu.abi
+```
+
+The reported ABI must match the CMake build; most current physical devices report `arm64-v8a` and
+use the `android-arm64-debug` preset. The device must run Android API level 28 or later. Start a
+matching emulator or connect an authorized physical device, then install and run the APK:
+
+```bash
+adb install -r out/build/android-arm64-debug/android-tests/mpss-tests.apk
 adb logcat -c
 adb shell am instrument -w com.microsoft.research.mpss.tests/.TestRunner
 adb logcat -d -s MPSS:V MPSS_TESTS:V '*:S'
 ```
+
+Unlike an Apple bundle identifier, the Android application ID is not claimed through a central
+developer account. The test APK is signed with Gradle's local debug key, so it can run unchanged on
+a physical device. If another APK with the same application ID but a different signing key is
+already installed, remove it with `adb uninstall com.microsoft.research.mpss.tests` before
+installing this APK.
 
 `MPSS` contains library trace and error messages; `MPSS_TESTS` contains GoogleTest events and the
 final pass, skip, and failure counts.

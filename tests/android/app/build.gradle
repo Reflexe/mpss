@@ -17,6 +17,8 @@ def mpssTestDirectory = providers.gradleProperty("mpssTestDir")
 def mpssCompileApi = providers.gradleProperty("mpssCompileApi")
     .map { it.toInteger() }
     .getOrElse(36)
+def mpssBuildToolsVersion = providers.gradleProperty("mpssBuildToolsVersion")
+    .getOrElse("${mpssCompileApi}.0.0")
 def mpssMinApi = providers.gradleProperty("mpssMinApi")
     .map { it.toInteger() }
     .getOrElse(28)
@@ -30,6 +32,7 @@ android
 {
     namespace = "com.microsoft.research.mpss.tests"
     compileSdk = mpssCompileApi
+    buildToolsVersion = mpssBuildToolsVersion
 
     defaultConfig
     {

@@ -13,7 +13,8 @@ class JNIHelper
   public:
     static bool Init(JavaVM *vm);
     static void Uninit(JavaVM *vm);
-    [[nodiscard]] static bool Initialized();
+    [[nodiscard]]
+    static bool Initialized();
     static void Detach();
     static JNIEnv *GetEnv(bool *did_attach = nullptr);
     static jclass KeyManagementClass();

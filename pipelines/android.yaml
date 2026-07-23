@@ -14,33 +14,8 @@ steps:
   displayName: 'Prepare Android SDK'
   inputs:
     script: |
-      COMPILE_API_LEVEL=36
-      NDK_VERSION=29.0.14206865
-      SDK_ROOT="$ANDROID_HOME"
-      NDK_ROOT="$SDK_ROOT/ndk/$NDK_VERSION"
-      SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-      if [ -z "$SDK_ROOT" ]; then
-        echo "##[error]Android SDK not found."
-        exit 1
-      fi
-
-      if [ ! -f "$SDK_ROOT/platforms/android-$COMPILE_API_LEVEL/android.jar" ] ||
-         [ ! -d "$NDK_ROOT" ]; then
-        if [ ! -x "$SDKMANAGER" ]; then
-          echo "##[error]Required Android SDK packages are missing and sdkmanager is unavailable."
-          exit 1
-        fi
-      fi
-
-      if [ ! -f "$SDK_ROOT/platforms/android-$COMPILE_API_LEVEL/android.jar" ]; then
-        yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-$COMPILE_API_LEVEL"
-      fi
-      if [ ! -d "$NDK_ROOT" ]; then
-        yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "ndk;$NDK_VERSION"
-      fi
-
-      echo "Compile API level: $COMPILE_API_LEVEL"
-      echo "NDK: $NDK_ROOT"
+      yes | cmake -P scripts/bootstrap_android_sdk.cmake
+    workingDirectory: '$(Build.SourcesDirectory)'
 
 - task: CmdLine@2
   displayName: 'Bootstrap vcpkg'

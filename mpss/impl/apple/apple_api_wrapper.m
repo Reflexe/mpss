@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
+#import <TargetConditionals.h>
 
 #include "mpss/impl/apple/apple_result.h"
 #include "mpss/log_c.h"
@@ -235,16 +236,43 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
       (id)kSecAttrAccessible :
           (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly
     };
-    NSDictionary *keyAttributes = @{
+#if TARGET_OS_OSX
+    SecAccessRef keyAccess = NULL;
+    NSString *keyDescription =
+        [NSString stringWithFormat:@"MPSS key: %@", [NSString stringWithUTF8String:keyName]];
+
+    // SecAccess is the only macOS API that names legacy Keychain items in authorization dialogs.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    const OSStatus accessStatus =
+        SecAccessCreate((__bridge CFStringRef)keyDescription, NULL, &keyAccess);
+#pragma clang diagnostic pop
+
+    if (accessStatus != errSecSuccess) {
+      NSString *error = [NSString
+          stringWithFormat:@"Failed to create key access controls with status: %d",
+                           (int)accessStatus];
+      SetThreadLocalError(error);
+      return false;
+    }
+
+#endif
+    NSMutableDictionary *keyAttributes = [NSMutableDictionary dictionaryWithDictionary:@{
       (id)kSecAttrKeyType : SupportedKeychainKeyType(),
       (id)kSecAttrKeySizeInBits : @(keyBitSize), // NOLINT(readability-redundant-parentheses)
       (id)kSecPrivateKeyAttrs : privateKeyAttributes
-    };
+    }];
+#if TARGET_OS_OSX
+    keyAttributes[(id)kSecAttrAccess] = (__bridge id)keyAccess;
+#endif
 
     // Generate the key.
     CFErrorRef error = NULL;
     SecKeyRef keyRef =
         SecKeyCreateRandomKey((__bridge CFDictionaryRef)keyAttributes, &error);
+#if TARGET_OS_OSX
+    CFRelease(keyAccess);
+#endif
 
     if (keyRef == NULL) {
       NSError *err = CFBridgingRelease(error);

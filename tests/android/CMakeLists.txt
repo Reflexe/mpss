@@ -82,6 +82,7 @@ add_custom_command(
         "-PmpssBuildDir=${CMAKE_BINARY_DIR}"
         "-PmpssTestDir=${mpss_ANDROID_TEST_DIRECTORY}"
         "-PmpssCompileApi=${MPSS_ANDROID_COMPILE_API}"
+        "-PmpssBuildToolsVersion=${MPSS_ANDROID_BUILD_TOOLS_VERSION}"
         "-PmpssMinApi=${mpss_ANDROID_MIN_API}"
         "-PmpssCoreLibraryName=$<TARGET_FILE_BASE_NAME:${mpss_TARGET}>"
         :app:assembleDebug

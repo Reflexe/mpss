@@ -6,7 +6,7 @@
 #include "mpss/mpss.h"
 #include "mpss/utils/utilities.h"
 #include "tests/compat_env.h"
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(MPSS_CORE_IS_SHARED)
 #include "mpss/impl/apple/apple_api_wrapper.h"
 #include "mpss/impl/apple/apple_result.h"
 #include "mpss/impl/apple/apple_se_wrapper.h"
@@ -25,7 +25,9 @@
 
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
+#ifndef MPSS_CORE_IS_SHARED
 #include "mpss/impl/yubikey/yk_utils.h"
+#endif
 #endif
 
 namespace mpss::tests
@@ -418,7 +420,7 @@ TEST_F(MPSS, VerifyStandaloneSignature521)
     VerifyStandaloneSignature(ecdsa_secp521r1_sha512, "521", 64);
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(MPSS_CORE_IS_SHARED)
 TEST(AppleErrorPropagation, MissingOpenHasNoErrorDetail)
 {
     constexpr char key_name[] = "mpss_apple_missing_error_test_key";
@@ -467,7 +469,9 @@ TEST(AppleErrorPropagation, WrapperErrorsAreConsumedOnce)
     const std::string unicode_error = mpss::impl::os::utils::take_secure_enclave_error();
     EXPECT_NE(std::string::npos, unicode_error.find(unicode_key_name));
 }
+#endif
 
+#ifdef __APPLE__
 TEST_F(MPSS, InvalidSignatureClearsOperationalError)
 {
     if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
@@ -1081,6 +1085,7 @@ TEST_F(CrossBackendTest, CreateKeyOnEachBackend)
 
 #ifdef MPSS_BACKEND_YUBIKEY
 
+#ifndef MPSS_CORE_IS_SHARED
 // Env-driven pin/touch policy resolution. Device-independent: exercises the pure resolver logic
 // (resolve_pin_policy / resolve_touch_policy) with the policy environment variables, no hardware.
 class YubiKeyPolicyEnv : public ::testing::Test
@@ -1207,13 +1212,16 @@ TEST_F(YubiKeyMgmKeyEnv, SuppliedKeyMustAuthenticateNoDefaultFallback)
     setenv("MPSS_YUBIKEY_MGM_KEY", "not-hex", 1); // NOLINT(concurrency-mt-unsafe)
     EXPECT_FALSE(piv.authenticate_mgm_key());
 }
+#endif
 
 // The sentinel name used to mark free/deleted slots is reserved and must not be accepted as a user key
 // name. The reject happens before any device access, so the test needs no connected YubiKey.
 TEST(YubiKeyReservedName, MarkerNameRejected)
 {
+#ifndef MPSS_CORE_IS_SHARED
     EXPECT_TRUE(mpss::impl::yubikey::is_reserved_key_name("(available)"));
     EXPECT_FALSE(mpss::impl::yubikey::is_reserved_key_name("my-key"));
+#endif
 
     EXPECT_EQ(nullptr, mpss::KeyPair::Create("(available)", ecdsa_secp256r1_sha256, "yubikey"));
     EXPECT_EQ(nullptr, mpss::KeyPair::Open("(available)", "yubikey"));

@@ -129,6 +129,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
             "MPSS_ANDROID_COMPILE_API must be a numeric API level greater "
             "than or equal to the Android minimum API level.")
     endif()
+    set(MPSS_ANDROID_BUILD_TOOLS_VERSION "${MPSS_ANDROID_COMPILE_API}.0.0"
+        CACHE STRING "Android SDK Build Tools version used by the test host.")
+    if(NOT MPSS_ANDROID_BUILD_TOOLS_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+        message(FATAL_ERROR
+            "MPSS_ANDROID_BUILD_TOOLS_VERSION must be a numeric version.")
+    endif()
 endif()
 
 # Security hardening flags. Applied as directory-scope options; do NOT

@@ -266,14 +266,18 @@
             "inherits": "base",
             "generator": "Ninja",
             "environment": {
-                "ANDROID_NDK_HOME": "$env{ANDROID_HOME}/ndk/29.0.14206865"
+                "MPSS_ANDROID_COMPILE_API": "36",
+                "MPSS_ANDROID_BUILD_TOOLS_VERSION": "36.0.0",
+                "MPSS_ANDROID_NDK_VERSION": "29.0.14206865",
+                "ANDROID_NDK_HOME": "$env{ANDROID_HOME}/ndk/$env{MPSS_ANDROID_NDK_VERSION}"
             },
             "cacheVariables": {
                 "CMAKE_SYSTEM_NAME": "Android",
                 "CMAKE_SYSTEM_VERSION": "28",
-                "CMAKE_ANDROID_NDK": "$env{ANDROID_HOME}/ndk/29.0.14206865",
+                "CMAKE_ANDROID_NDK": "$env{ANDROID_NDK_HOME}",
                 "CMAKE_ANDROID_STL_TYPE": "c++_shared",
-                "MPSS_ANDROID_COMPILE_API": "36",
+                "MPSS_ANDROID_COMPILE_API": "$env{MPSS_ANDROID_COMPILE_API}",
+                "MPSS_ANDROID_BUILD_TOOLS_VERSION": "$env{MPSS_ANDROID_BUILD_TOOLS_VERSION}",
                 "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
                 "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
                 "MPSS_BUILD_MPSS_OPENSSL_STATIC": "NO",
