@@ -2,13 +2,14 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
-#include "mpss-openssl/provider/provider.h"
 #include "mpss/key_policy.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
 #include <openssl/core.h>
+#include <openssl/core_dispatch.h>
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
@@ -19,16 +20,34 @@
 #include <random>
 #include <vector>
 
-// White-box access to the provider's one-shot digest dispatch (OSSL_FUNC_DIGEST_DIGEST). This entry
-// point is not reachable through the public EVP one-shot API -- EVP_Q_digest / EVP_Digest route
-// through the Init/Update/Final dispatch, which frees its context correctly -- so a direct call is
-// the only way to exercise the one-shot wrapper (newctx -> internal -> freectx). Declared with C
-// linkage to match the definition in digest.cpp.
-extern "C" int mpss_digest_digest_SHA256(void *provctx, const unsigned char *in, std::size_t inl, unsigned char *out,
-                                         std::size_t *outl, std::size_t outsz);
-
 namespace
 {
+
+[[nodiscard]]
+bool has_algorithm_name(const char *algorithm_names, std::string_view expected)
+{
+    if (nullptr == algorithm_names)
+    {
+        return false;
+    }
+
+    std::string_view remaining{algorithm_names};
+    while (!remaining.empty())
+    {
+        const std::size_t separator = remaining.find(':');
+        if (remaining.substr(0, separator) == expected)
+        {
+            return true;
+        }
+        if (std::string_view::npos == separator)
+        {
+            break;
+        }
+        remaining.remove_prefix(separator + 1);
+    }
+
+    return false;
+}
 
 class MPSSDigest : public ::testing::Test
 {
@@ -145,13 +164,38 @@ TEST_F(MPSSDigest, SHA512)
 
 TEST_F(MPSSDigest, OneShotDigest)
 {
-    // Drive the provider's one-shot digest dispatch directly (see the forward declaration above for
-    // why the public EVP API can't reach it). This is the entry point that previously leaked a
-    // context (+ EVP_MD + EVP_MD_CTX) on every call; looping it here exercises the newctx ->
-    // internal -> freectx path and confirms the added free leaves the returned digest correct across
-    // repeated invocations. The provider ctx only needs a libctx (what newctx reads).
-    mpss_openssl::provider::mpss_provider_ctx pctx{};
-    pctx.libctx = mpss_libctx;
+    int no_cache = 0;
+    const auto unquery_operation = [provider = mpss_prov](const OSSL_ALGORITHM *algorithms) {
+        OSSL_PROVIDER_unquery_operation(provider, OSSL_OP_DIGEST, algorithms);
+    };
+    const std::unique_ptr<const OSSL_ALGORITHM, decltype(unquery_operation)> digest_algorithms{
+        OSSL_PROVIDER_query_operation(mpss_prov, OSSL_OP_DIGEST, &no_cache), unquery_operation};
+    ASSERT_NE(nullptr, digest_algorithms);
+
+    const OSSL_ALGORITHM *sha256_algorithm = nullptr;
+    for (const OSSL_ALGORITHM *algorithm = digest_algorithms.get(); nullptr != algorithm->algorithm_names; ++algorithm)
+    {
+        if (has_algorithm_name(algorithm->algorithm_names, "SHA256"))
+        {
+            sha256_algorithm = algorithm;
+            break;
+        }
+    }
+    ASSERT_NE(nullptr, sha256_algorithm);
+
+    OSSL_FUNC_digest_digest_fn *one_shot_digest = nullptr;
+    for (const OSSL_DISPATCH *function = sha256_algorithm->implementation; 0 != function->function_id; ++function)
+    {
+        if (OSSL_FUNC_DIGEST_DIGEST == function->function_id)
+        {
+            one_shot_digest = OSSL_FUNC_digest_digest(function);
+            break;
+        }
+    }
+    ASSERT_NE(nullptr, one_shot_digest);
+
+    void *provider_ctx = OSSL_PROVIDER_get0_provider_ctx(mpss_prov);
+    ASSERT_NE(nullptr, provider_ctx);
 
     // Known-answer test: SHA-256("abc").
     const std::string_view abc = "abc";
@@ -164,8 +208,8 @@ TEST_F(MPSSDigest, OneShotDigest)
     {
         unsigned char mpss_digest[EVP_MAX_MD_SIZE];
         std::size_t mpss_digest_len = 0;
-        ASSERT_EQ(1, mpss_digest_digest_SHA256(&pctx, reinterpret_cast<const unsigned char *>(abc.data()), abc.size(),
-                                               mpss_digest, &mpss_digest_len, sizeof(mpss_digest)));
+        ASSERT_EQ(1, one_shot_digest(provider_ctx, reinterpret_cast<const unsigned char *>(abc.data()), abc.size(),
+                                     mpss_digest, &mpss_digest_len, sizeof(mpss_digest)));
         ASSERT_EQ(sizeof(sha256_abc), mpss_digest_len);
         ASSERT_TRUE(std::equal(mpss_digest, mpss_digest + mpss_digest_len, sha256_abc)); // NOLINT(modernize-use-ranges)
 
@@ -174,16 +218,16 @@ TEST_F(MPSSDigest, OneShotDigest)
         std::string input_data(size, '\0');
         std::ranges::generate(input_data, [&rd]() { return static_cast<char>(rd() % 256); });
 
-        ASSERT_EQ(1, mpss_digest_digest_SHA256(&pctx, reinterpret_cast<const unsigned char *>(input_data.data()),
-                                               input_data.size(), mpss_digest, &mpss_digest_len, sizeof(mpss_digest)));
+        ASSERT_EQ(1, one_shot_digest(provider_ctx, reinterpret_cast<const unsigned char *>(input_data.data()),
+                                     input_data.size(), mpss_digest, &mpss_digest_len, sizeof(mpss_digest)));
 
         unsigned char default_digest[EVP_MAX_MD_SIZE];
         std::size_t default_digest_len = 0;
         ASSERT_EQ(1, EVP_Q_digest(mpss_libctx, "SHA256", "provider=default", input_data.data(), input_data.size(),
                                   default_digest, &default_digest_len));
         ASSERT_EQ(mpss_digest_len, default_digest_len);
-        ASSERT_TRUE(std::equal(
-            mpss_digest, mpss_digest + mpss_digest_len, default_digest)); // NOLINT(modernize-use-ranges)
+        ASSERT_TRUE(
+            std::equal(mpss_digest, mpss_digest + mpss_digest_len, default_digest)); // NOLINT(modernize-use-ranges)
     }
 }
 
