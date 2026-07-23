@@ -10,6 +10,7 @@ endif()
 if(NOT TARGET ${mpss_TARGET})
     message(FATAL_ERROR "The iOS test host requires the MPSS core target.")
 endif()
+find_package(XCTest REQUIRED)
 
 set(mpss_IOS_TEST_HOST mpss_ios_test_host)
 set(mpss_IOS_XCTEST_TARGET mpss_ios_xctest)
@@ -36,42 +37,19 @@ add_library(mpss_ios_tests OBJECT
     ${mpss_TESTS_FILES}
 )
 target_link_libraries(mpss_ios_tests PRIVATE
-    GTest::gtest
-    ${mpss_TARGET}
+    ${mpss_TESTS_LINK_LIBRARIES}
 )
-if(TARGET ${mpss_openssl_TARGET})
-    target_link_libraries(mpss_ios_tests PRIVATE ${mpss_openssl_TARGET})
-endif()
 
-add_library(${mpss_IOS_XCTEST_TARGET} MODULE
+xctest_add_bundle(${mpss_IOS_XCTEST_TARGET} ${mpss_IOS_TEST_HOST}
     mpss_xctest.mm
     $<TARGET_OBJECTS:mpss_ios_tests>
 )
 set_target_properties(${mpss_IOS_XCTEST_TARGET} PROPERTIES
-    BUNDLE TRUE
-    BUNDLE_EXTENSION xctest
-    LIBRARY_OUTPUT_DIRECTORY
-        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
-    XCODE_PRODUCT_TYPE "com.apple.product-type.bundle.unit-test"
-    XCODE_ATTRIBUTE_BUNDLE_LOADER "$<TARGET_FILE:${mpss_IOS_TEST_HOST}>"
     XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED YES
     XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED NO
     XCODE_ATTRIBUTE_GENERATE_INFOPLIST_FILE YES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.microsoft.research.mpss.tests.xctest"
-    XCODE_ATTRIBUTE_TEST_HOST "$<TARGET_FILE:${mpss_IOS_TEST_HOST}>"
 )
 target_link_libraries(${mpss_IOS_XCTEST_TARGET} PRIVATE
-    GTest::gtest
-    ${mpss_TARGET}
-    "-framework XCTest"
+    ${mpss_TESTS_LINK_LIBRARIES}
 )
-if(TARGET ${mpss_openssl_TARGET})
-    target_compile_definitions(${mpss_IOS_XCTEST_TARGET} PRIVATE
-        MPSS_IOS_EXPECTED_FAILED=0
-        MPSS_IOS_EXPECTED_PASSED=71
-        MPSS_IOS_EXPECTED_SKIPPED=2
-        MPSS_IOS_EXPECTED_TOTAL=73
-    )
-    target_link_libraries(${mpss_IOS_XCTEST_TARGET} PRIVATE ${mpss_openssl_TARGET})
-endif()
-add_dependencies(${mpss_IOS_XCTEST_TARGET} ${mpss_IOS_TEST_HOST})

@@ -48,6 +48,7 @@ import java.util.Arrays;
  */
 public class KeyManagement {
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
+    private static final Object _keyLock = new Object();
 
     private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox)
             throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
@@ -177,72 +178,74 @@ public class KeyManagement {
      */
     public static Boolean CreateKey(String keyName, Algorithm algorithm) {
         ClearError();
-        try {
-            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-            if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
-
-            // Fail-closed existence check. containsAlias tests presence without loading the key, so
-            // a transiently unloadable key still reports as present, and if existence cannot be
-            // determined we refuse to create rather than overwriting a live key.
+        synchronized (_keyLock) {
             try {
-                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
-                ks.load(null);
-                if (ks.containsAlias(keyName)) {
-                    String msg = "Key with same name already exists: " + keyName;
+                if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+                if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
+
+                // Fail-closed existence check. containsAlias tests presence without loading the key, so
+                // a transiently unloadable key still reports as present, and if existence cannot be
+                // determined we refuse to create rather than overwriting a live key.
+                try {
+                    KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                    ks.load(null);
+                    if (ks.containsAlias(keyName)) {
+                        String msg = "Key with same name already exists: " + keyName;
+                        Log.e("MPSS", msg);
+                        SetError(msg);
+                        return false;
+                    }
+                } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
+                    String msg = "Could not determine whether key exists; refusing to create: " + ex.toString();
                     Log.e("MPSS", msg);
                     SetError(msg);
                     return false;
                 }
-            } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
-                String msg = "Could not determine whether key exists; refusing to create: " + ex.toString();
+
+                KeyPair kp = null;
+                boolean useStrongbox = false;
+
+                // Only P-256 is supported in StrongBox.
+                if (algorithm == Algorithm.secp256r1) {
+                    useStrongbox = true;
+                }
+
+                try {
+                    kp = CreateKey(keyName, algorithm, useStrongbox);
+                } catch (StrongBoxUnavailableException ex) {
+                    Log.w("MPSS", "StrongBox is not available.");
+                }
+
+                if (!useStrongbox && null == kp) {
+                    // If we are not using StrongBox, no need to try again.
+                    String msg = "Failed to create key in TEE.";
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return false;
+                }
+
+                // Try again without StrongBox.
+                if (null == kp) {
+                    kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
+                }
+
+                if (null != kp) {
+                    MemKeyStore.AddKey(keyName, kp);
+                }
+
+                return true;
+            } catch (InvalidAlgorithmParameterException | NoSuchAlgorithmException |
+                     NoSuchProviderException | InvalidKeySpecException ex) {
+                String msg = "Error creating key: " + ex.toString();
+                Log.e("MPSS", msg);
+                SetError(msg);
+                return false;
+            } catch (RuntimeException ex) {
+                String msg = "Unexpected error creating key: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
                 return false;
             }
-
-            KeyPair kp = null;
-            boolean useStrongbox = false;
-
-            // Only P-256 is supported in StrongBox.
-            if (algorithm == Algorithm.secp256r1) {
-                useStrongbox = true;
-            }
-
-            try {
-                kp = CreateKey(keyName, algorithm, useStrongbox);
-            } catch (StrongBoxUnavailableException ex) {
-                Log.w("MPSS", "StrongBox is not available.");
-            }
-
-            if (!useStrongbox && null == kp) {
-                // If we are not using StrongBox, no need to try again.
-                String msg = "Failed to create key in TEE.";
-                Log.w("MPSS", msg);
-                SetError(msg);
-                return false;
-            }
-
-            // Try again without StrongBox.
-            if (null == kp) {
-                kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
-            }
-
-            if (null != kp) {
-                MemKeyStore.AddKey(keyName, kp);
-            }
-
-            return true;
-        } catch (InvalidAlgorithmParameterException | NoSuchAlgorithmException |
-                 NoSuchProviderException | InvalidKeySpecException ex) {
-            String msg = "Error creating key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return false;
-        } catch (RuntimeException ex) {
-            String msg = "Unexpected error creating key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return false;
         }
     }
 
@@ -421,7 +424,9 @@ public class KeyManagement {
     public static void CloseKey(String keyName) {
         ClearError();
         if (null == keyName) throw new IllegalArgumentException("keyName is null.");
-        MemKeyStore.RemoveKey(keyName);
+        synchronized (_keyLock) {
+            MemKeyStore.RemoveKey(keyName);
+        }
     }
 
     /**
@@ -431,34 +436,35 @@ public class KeyManagement {
      */
     public static Boolean DeleteKey(String keyName) {
         ClearError();
-        try {
-            if (null == keyName) throw new IllegalArgumentException("keyName is null.");
+        synchronized (_keyLock) {
+            try {
+                if (null == keyName) throw new IllegalArgumentException("keyName is null.");
 
-            KeyPair kp = GetExistingKeyPair(keyName);
-            if (null == kp) {
-                String msg = "Could not get existing KeyPair.";
-                Log.w("MPSS", msg);
+                KeyPair kp = GetExistingKeyPair(keyName);
+                if (null == kp) {
+                    String msg = "Could not get existing KeyPair.";
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return false;
+                }
+
+                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                ks.load(/* param */ null);
+                ks.deleteEntry(keyName);
+                MemKeyStore.RemoveKey(keyName);
+                return true;
+            } catch (KeyStoreException | IOException | CertificateException |
+                     NoSuchAlgorithmException ex) {
+                String msg = "Error deleting key: " + ex.toString();
+                Log.e("MPSS", msg);
+                SetError(msg);
+                return false;
+            } catch (RuntimeException ex) {
+                String msg = "Unexpected error deleting key: " + ex.toString();
+                Log.e("MPSS", msg);
                 SetError(msg);
                 return false;
             }
-
-            CloseKey(keyName);
-
-            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
-            ks.load(/* param */ null);
-            ks.deleteEntry(keyName);
-            return true;
-        } catch (KeyStoreException | IOException | CertificateException |
-                 NoSuchAlgorithmException ex) {
-            String msg = "Error deleting key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return false;
-        } catch (RuntimeException ex) {
-            String msg = "Unexpected error deleting key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return false;
         }
     }
 
@@ -522,50 +528,52 @@ public class KeyManagement {
     }
 
     private static KeyPair GetExistingKeyPair(String keyName) {
-        try {
-            // Check mem store first.
-            KeyPair kp = MemKeyStore.GetKey(keyName);
-            if (null != kp) {
+        synchronized (_keyLock) {
+            try {
+                // Check mem store first.
+                KeyPair kp = MemKeyStore.GetKey(keyName);
+                if (null != kp) {
+                    return kp;
+                }
+
+                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                ks.load(null);
+                if (!ks.containsAlias(keyName)) {
+                    return null;
+                }
+                Key key = ks.getKey(keyName, /* password */ null);
+                if (!(key instanceof PrivateKey)) {
+                    String msg = "AndroidKeyStore entry is not a private key: " + keyName;
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return null;
+                }
+                PrivateKey pk = (PrivateKey) key;
+
+                Certificate cert = ks.getCertificate(keyName);
+                if (null == cert) {
+                    String msg = "Key present but has no certificate: " + keyName;
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return null;
+                }
+                PublicKey pubKey = cert.getPublicKey();
+                kp = new KeyPair(pubKey, pk);
+                MemKeyStore.AddKey(keyName, kp);
+
                 return kp;
-            }
-
-            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
-            ks.load(null);
-            if (!ks.containsAlias(keyName)) {
+            } catch (UnrecoverableKeyException | KeyStoreException | NoSuchAlgorithmException |
+                     CertificateException | IOException ex) {
+                String msg = "Error opening key: " + ex.toString();
+                Log.e("MPSS", msg);
+                SetError(msg);
                 return null;
-            }
-            Key key = ks.getKey(keyName, /* password */ null);
-            if (!(key instanceof PrivateKey)) {
-                String msg = "AndroidKeyStore entry is not a private key: " + keyName;
-                Log.w("MPSS", msg);
+            } catch (RuntimeException ex) {
+                String msg = "Unexpected error opening key: " + ex.toString();
+                Log.e("MPSS", msg);
                 SetError(msg);
                 return null;
             }
-            PrivateKey pk = (PrivateKey) key;
-
-            Certificate cert = ks.getCertificate(keyName);
-            if (null == cert) {
-                String msg = "Key present but has no certificate: " + keyName;
-                Log.w("MPSS", msg);
-                SetError(msg);
-                return null;
-            }
-            PublicKey pubKey = cert.getPublicKey();
-            kp = new KeyPair(pubKey, pk);
-            MemKeyStore.AddKey(keyName, kp);
-
-            return kp;
-        } catch (UnrecoverableKeyException | KeyStoreException | NoSuchAlgorithmException |
-                 CertificateException | IOException ex) {
-            String msg = "Error opening key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return null;
-        } catch (RuntimeException ex) {
-            String msg = "Unexpected error opening key: " + ex.toString();
-            Log.e("MPSS", msg);
-            SetError(msg);
-            return null;
         }
     }
 

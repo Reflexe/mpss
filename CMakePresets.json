@@ -36,8 +36,7 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe",
-                "VCPKG_TARGET_TRIPLET": "x64-windows",
-                "VCPKG_HOST_TRIPLET": "x64-windows"
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
             },
             "condition": {
                 "type": "equals",
@@ -57,8 +56,7 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe",
-                "VCPKG_TARGET_TRIPLET": "arm64-windows",
-                "VCPKG_HOST_TRIPLET": "arm64-windows"
+                "VCPKG_TARGET_TRIPLET": "arm64-windows"
             },
             "condition": {
                 "type": "equals",
@@ -201,9 +199,7 @@
             "hidden": true,
             "generator": "Ninja",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "VCPKG_TARGET_TRIPLET": "x64-linux",
-                "VCPKG_HOST_TRIPLET": "x64-linux"
+                "CMAKE_BUILD_TYPE": "Debug"
             },
             "condition": {
                 "type": "equals",
@@ -218,9 +214,7 @@
             "hidden": true,
             "generator": "Ninja",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "VCPKG_TARGET_TRIPLET": "x64-linux",
-                "VCPKG_HOST_TRIPLET": "x64-linux"
+                "CMAKE_BUILD_TYPE": "Release"
             },
             "condition": {
                 "type": "equals",
@@ -245,56 +239,6 @@
             }
         },
         {
-            "name": "linux-arm64-debug",
-            "displayName": "Linux Debug (arm64, Ninja)",
-            "inherits": "base",
-            "hidden": true,
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "VCPKG_TARGET_TRIPLET": "arm64-linux",
-                "VCPKG_HOST_TRIPLET": "arm64-linux"
-            },
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-release",
-            "displayName": "Linux Release (arm64, Ninja)",
-            "inherits": "base",
-            "hidden": true,
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "VCPKG_TARGET_TRIPLET": "arm64-linux",
-                "VCPKG_HOST_TRIPLET": "arm64-linux"
-            },
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-debug",
-            "displayName": "Linux Debug (arm64, Ninja) [YubiKey]",
-            "inherits": "linux-arm64-debug",
-            "cacheVariables": {
-                "MPSS_BACKEND_YUBIKEY": "YES"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-release",
-            "displayName": "Linux Release (arm64, Ninja) [YubiKey]",
-            "inherits": "linux-arm64-release",
-            "cacheVariables": {
-                "MPSS_BACKEND_YUBIKEY": "YES"
-            }
-        },
-        {
             "name": "linux-with-yubikey-shared-debug",
             "displayName": "Linux Debug (Ninja) [Shared, YubiKey]",
             "inherits": "linux-with-yubikey-debug",
@@ -309,28 +253,6 @@
             "name": "linux-with-yubikey-shared-release",
             "displayName": "Linux Release (Ninja) [Shared, YubiKey]",
             "inherits": "linux-with-yubikey-release",
-            "cacheVariables": {
-                "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
-                "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
-                "MPSS_BUILD_MPSS_OPENSSL_STATIC": "NO",
-                "MPSS_BUILD_MPSS_OPENSSL_SHARED": "YES"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-shared-debug",
-            "displayName": "Linux Debug (arm64, Ninja) [Shared, YubiKey]",
-            "inherits": "linux-arm64-with-yubikey-debug",
-            "cacheVariables": {
-                "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
-                "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
-                "MPSS_BUILD_MPSS_OPENSSL_STATIC": "NO",
-                "MPSS_BUILD_MPSS_OPENSSL_SHARED": "YES"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-shared-release",
-            "displayName": "Linux Release (arm64, Ninja) [Shared, YubiKey]",
-            "inherits": "linux-arm64-with-yubikey-release",
             "cacheVariables": {
                 "MPSS_BUILD_MPSS_CORE_STATIC": "NO",
                 "MPSS_BUILD_MPSS_CORE_SHARED": "YES",
@@ -395,6 +317,24 @@
             }
         },
         {
+            "name": "ios-simulator-arm64-debug",
+            "displayName": "iOS Simulator Debug (arm64, Xcode)",
+            "inherits": "base",
+            "generator": "Xcode",
+            "cacheVariables": {
+                "CMAKE_SYSTEM_NAME": "iOS",
+                "CMAKE_OSX_SYSROOT": "iphonesimulator",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "16.3",
+                "VCPKG_TARGET_TRIPLET": "arm64-ios-simulator"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
             "name": "macos-arm64-debug",
             "displayName": "macOS Debug (arm64, Ninja)",
             "inherits": "base",
@@ -402,8 +342,9 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_OSX_ARCHITECTURES": "arm64",
-                "VCPKG_TARGET_TRIPLET": "arm64-osx",
-                "VCPKG_HOST_TRIPLET": "arm64-osx"
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3",
+                "CMAKE_Swift_COMPILER_TARGET": "arm64-apple-macosx13.3",
+                "VCPKG_TARGET_TRIPLET": "arm64-osx"
             },
             "condition": {
                 "type": "equals",
@@ -443,8 +384,9 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_OSX_ARCHITECTURES": "x86_64",
-                "VCPKG_TARGET_TRIPLET": "x64-osx",
-                "VCPKG_HOST_TRIPLET": "x64-osx"
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3",
+                "CMAKE_Swift_COMPILER_TARGET": "x86_64-apple-macosx13.3",
+                "VCPKG_TARGET_TRIPLET": "x64-osx"
             },
             "condition": {
                 "type": "equals",
@@ -959,46 +901,6 @@
             }
         },
         {
-            "name": "linux-arm64-debug",
-            "configurePreset": "linux-arm64-debug",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-release",
-            "configurePreset": "linux-arm64-release",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-debug",
-            "configurePreset": "linux-arm64-with-yubikey-debug",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-release",
-            "configurePreset": "linux-arm64-with-yubikey-release",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
             "name": "linux-with-yubikey-shared-debug",
             "configurePreset": "linux-with-yubikey-shared-debug",
             "jobs": 0,
@@ -1011,26 +913,6 @@
         {
             "name": "linux-with-yubikey-shared-release",
             "configurePreset": "linux-with-yubikey-shared-release",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-shared-debug",
-            "configurePreset": "linux-arm64-with-yubikey-shared-debug",
-            "jobs": 0,
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Linux"
-            }
-        },
-        {
-            "name": "linux-arm64-with-yubikey-shared-release",
-            "configurePreset": "linux-arm64-with-yubikey-shared-release",
             "jobs": 0,
             "condition": {
                 "type": "equals",
@@ -1057,6 +939,17 @@
             "name": "android-x64-release",
             "configurePreset": "android-x64-release",
             "jobs": 0
+        },
+        {
+            "name": "ios-simulator-arm64-debug",
+            "configurePreset": "ios-simulator-arm64-debug",
+            "configuration": "Debug",
+            "jobs": 0,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
         },
         {
             "name": "macos-arm64-debug",

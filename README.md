@@ -26,20 +26,24 @@ The OpenSSL provider naturally requires [OpenSSL](https://GitHub.com/openssl/ope
 
 A [vcpkg port](ports/mpss/) is provided for **desktop platforms only** (Windows, macOS, Linux). On these platforms, downstream projects can consume MPSS as a vcpkg package once the port is published to a registry. **iOS and Android are not covered by the vcpkg port** — on those platforms, build MPSS directly from source using the dedicated paths described in the platform-specific sections below (the iOS XCFramework helper for iOS, and the direct NDK-based CMake build for Android). Note that even on iOS and Android, vcpkg may still be used as the *dependency manager* (for example, to fetch OpenSSL) — that is independent of the port.
 
-### Using CMake Presets (Windows, macOS, Linux)
+### Using CMake Presets
 
-The easiest way to build MPSS on desktop platforms is using [CMake presets](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html).
+MPSS provides [CMake presets](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html)
+for desktop builds, Android builds, and Apple Silicon iOS Simulator testing.
 Ensure [vcpkg](https://GitHub.com/Microsoft/vcpkg) is installed and the environment variable `VCPKG_ROOT` is set, then run:
 
 ```bash
 cmake -S . --preset <configure-preset-name>
 cmake --build --preset <build-preset-name>
-cmake --install out/build/<build-preset-name> # optional; to install in custom destination, include --prefix <destination>
+cmake --install out/build/<configure-preset-name> # optional; to install in custom destination, include --prefix <destination>
 ```
 
 The list of available presets can be seen by running `cmake --list-presets=all`.
 Presets whose name includes `-with-yubikey` additionally enable the YubiKey PIV backend ([see prerequisites below](#prerequisites)).
 Presets whose name includes `-shared` build MPSS (and the OpenSSL provider) as shared libraries; otherwise the default is static.
+Linux presets build for the native host architecture. Architecture-specific Windows and macOS presets
+select that output architecture explicitly; Android and iOS presets target their named platform
+architecture independently of the host.
 
 If you do not want to use presets, you can configure manually as shown in the platform-specific sections below.
 
@@ -79,23 +83,29 @@ sudo dnf install pcsc-lite-devel
 
 #### Build Configuration
 
-- **macOS/Linux:**
+- **Linux:**
   ```bash
-  cmake -S . -B build \
-      -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-      -DMPSS_BACKEND_YUBIKEY=ON \
-      -DCMAKE_BUILD_TYPE=Release
-
-  cmake --build build
+  cmake --preset linux-with-yubikey-release
+  cmake --build --preset linux-with-yubikey-release
   ```
+
+  The Linux presets build for the host's native architecture. They do not provide cross-compilation
+  toolchains.
+
+- **macOS:**
+  ```bash
+  cmake --preset macos-arm64-with-yubikey-release
+  cmake --build --preset macos-arm64-with-yubikey-release
+  ```
+
+  Use the corresponding `macos-x64-...` preset when targeting x64. The macOS presets
+  target macOS 13.3 or later and apply the selected architecture to both C-family and
+  Swift compilation.
 
 - **Windows:**
   ```cmd
-  cmake -S . -B build ^
-      -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
-      -DMPSS_BACKEND_YUBIKEY=ON
-
-  cmake --build build --config Release
+  cmake --preset win-vs2022-x64-with-yubikey
+  cmake --build --preset win-vs2022-x64-with-yubikey-release
   ```
 
 On Linux, the YubiKey backend will be used as the default since Linux has no OS-native backend.
@@ -198,18 +208,45 @@ Keychain-backed fallback without making hardware-security claims.
 Run the complete native core and OpenSSL test suite with:
 
 ```bash
-cmake \
-  -DMPSS_BUILD_DIR=/path/to/build-ios-simulator \
-  -DMPSS_VCPKG_ROOT=/path/to/vcpkg \
-  -P cmake/ios_simulator_tests.cmake
+export VCPKG_ROOT=/absolute/path/to/vcpkg
+
+cmake --preset ios-simulator-arm64-debug
+cmake --build --preset ios-simulator-arm64-debug \
+  --target mpss_ios_xctest
 ```
 
-If `MPSS_BUILD_DIR` is omitted, the helper uses `build-ios-simulator` under the source tree.
-`MPSS_VCPKG_ROOT` can be omitted when `VCPKG_ROOT` is set or vcpkg is checked out next to this
-repository. The helper defaults to an iOS 16.3 deployment target; override it with
-`-DMPSS_IOS_DEPLOYMENT_TARGET=<version>` when necessary. It configures an arm64 simulator build,
-selects and boots a compatible iPhone simulator, runs the generated XCTest scheme, and fails unless
-the expected GoogleTest totals are observed.
+List the destinations supported by the generated scheme:
+
+```bash
+xcodebuild \
+  -project out/build/ios-simulator-arm64-debug/mpss.xcodeproj \
+  -scheme mpss_ios_test_host \
+  -showdestinations
+```
+
+Select an arm64 iPhone Simulator UDID from that output, then boot it if necessary and wait until it
+is ready:
+
+```bash
+xcrun simctl bootstatus <simulator-udid> -b
+```
+
+Run the tests with:
+
+```bash
+xcodebuild \
+  -project out/build/ios-simulator-arm64-debug/mpss.xcodeproj \
+  -scheme mpss_ios_test_host \
+  -configuration Debug \
+  -destination "platform=iOS Simulator,id=<simulator-udid>" \
+  -parallel-testing-enabled NO \
+  test
+```
+
+The preset targets Apple Silicon Macs, uses the iOS 16.3 deployment target, and builds the static
+core and OpenSSL provider with the complete test suite. Override a setting after the preset name
+when investigating another supported configuration. The XCTest bridge fails on GoogleTest failures
+or if no native tests are discovered.
 
 #### Running on a physical iOS device
 
@@ -230,12 +267,12 @@ cmake -S . -B /path/to/build-ios-device -G Xcode \
   -DMPSS_BUILD_TESTS=ON
 ```
 
-Open `mpss.xcodeproj`, configure signing for `mpss_ios_test_host`, add
-`mpss_ios_xctest` to the host scheme's Test action, choose the connected device, and run the Test
-action. The test host carries a Keychain access-group entitlement derived from its signed
+Open `mpss.xcodeproj`, configure signing for `mpss_ios_test_host`, confirm
+`mpss_ios_xctest` appears in the host scheme's Test action, choose the connected device, and run the
+Test action. The test host carries a Keychain access-group entitlement derived from its signed
 application identifier.
 
-The helper script and simulator suite do not validate Secure Enclave behavior. Record the device
+The Simulator suite does not validate Secure Enclave behavior. Record the device
 model, iOS version, signing team, and test result when making hardware-backed security claims.
 
 ### Android
@@ -774,7 +811,7 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 To run the tests with the YubiKey backend (assuming [PIN-protected management key](#setting-up-yubikey-piv) is set):
 ```bash
-MPSS_DEFAULT_BACKEND=yubikey MPSS_YUBIKEY_PIN=123456 out/build/macos-arm64-debug/bin/mpss_tests
+MPSS_DEFAULT_BACKEND=yubikey MPSS_YUBIKEY_PIN=123456 out/build/macos-arm64-with-yubikey-debug/bin/mpss_tests
 ```
 If you do not supply the PIN, you will see the default terminal-based interaction handler requesting the PIN.
 Since the default touch policy is `cached`, you will see the touch prompt from the default interaction handler. To skip touch during testing, set `MPSS_YUBIKEY_TOUCHPOLICY=never MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` (the opt-in flag is required because `never` is a permanent policy downgrade).

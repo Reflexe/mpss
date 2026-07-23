@@ -27,24 +27,11 @@
     const int skipped = unit_test->skipped_test_count();
     const int failed = unit_test->failed_test_count();
 
-    bool contract_failed = 0 != result || 0 != failed;
-#ifdef MPSS_IOS_EXPECTED_TOTAL
-    contract_failed = contract_failed || MPSS_IOS_EXPECTED_TOTAL != total || MPSS_IOS_EXPECTED_PASSED != passed ||
-                      MPSS_IOS_EXPECTED_SKIPPED != skipped || MPSS_IOS_EXPECTED_FAILED != failed;
-#endif
-    if (contract_failed)
+    if (0 != result || 0 != failed)
     {
-#ifdef MPSS_IOS_EXPECTED_TOTAL
-        const std::string message =
-            std::format("Native GoogleTest suite contract failed: exit={}, total={}, passed={}, skipped={}, failed={}; "
-                        "expected total={}, passed={}, skipped={}, failed={}",
-                        result, total, passed, skipped, failed, MPSS_IOS_EXPECTED_TOTAL, MPSS_IOS_EXPECTED_PASSED,
-                        MPSS_IOS_EXPECTED_SKIPPED, MPSS_IOS_EXPECTED_FAILED);
-#else
         const std::string message =
             std::format("Native GoogleTest suite failed: exit={}, total={}, passed={}, skipped={}, failed={}", result,
                         total, passed, skipped, failed);
-#endif
         NSString *description = [NSString stringWithUTF8String:message.c_str()];
         XCTIssue *issue = [[XCTIssue alloc] initWithType:XCTIssueTypeAssertionFailure
                                      compactDescription:description

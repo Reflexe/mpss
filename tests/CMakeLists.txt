@@ -3,27 +3,37 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-# When invoked as a subdirectory, just collect source files and return.
+# Integrated mode: select the common tests, then let each platform own its runner
+# and packaging.
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    # In any case, compile the reusable test entry point.
-    list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/test_entry.cpp")
+    set(mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/test_entry.cpp")
+    set(mpss_TESTS_LINK_LIBRARIES GTest::gtest)
 
-    # Conditionally add tests depending on what is being built.
     if(TARGET ${mpss_TARGET})
         list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp")
-    endif()
-    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-        list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/android_tests.cpp")
     endif()
     if(TARGET ${mpss_openssl_TARGET})
         list(APPEND mpss_TESTS_FILES
             "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_tests.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/mpss_openssl_e2e_test.cpp"
         )
+        # mpss comes transitively through mpss_openssl's PUBLIC dependency.
+        list(APPEND mpss_TESTS_LINK_LIBRARIES ${mpss_openssl_TARGET})
+    elseif(TARGET ${mpss_TARGET})
+        list(APPEND mpss_TESTS_LINK_LIBRARIES ${mpss_TARGET})
     endif()
 
-    # Update mpss_TESTS_FILES variable in the parent scope.
-    set(mpss_TESTS_FILES ${mpss_TESTS_FILES} PARENT_SCOPE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_subdirectory(ios)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        add_subdirectory(android)
+    else()
+        add_executable(mpss_tests
+            ${mpss_TESTS_FILES}
+            "${CMAKE_CURRENT_LIST_DIR}/test_runner.cpp"
+        )
+        target_link_libraries(mpss_tests PRIVATE ${mpss_TESTS_LINK_LIBRARIES})
+    endif()
     return()
 endif()
 

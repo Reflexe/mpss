@@ -7,6 +7,7 @@
 #include "mpss/log.h"
 #include "mpss/mpss.h"
 #include "mpss/utils/scope_guard.h"
+#include "mpss/utils/utilities.h"
 #include <array>
 #include <cstddef>
 #include <future>
@@ -156,6 +157,63 @@ bool java_verify_signature(std::span<const std::byte> hash, std::span<const std:
 
     const std::optional<bool> verified = mpss::impl::os::utils::UnboxBoolean(env, result.get());
     return verified.value_or(false);
+}
+
+std::optional<bool> java_key_operation(std::string_view operation, std::string_view key_name)
+{
+    mpss::impl::os::JNIEnvGuard guard;
+    if (!guard.valid())
+    {
+        mpss::utils::set_error("Could not get JNI environment.");
+        return std::nullopt;
+    }
+    JNIEnv *const env = guard.Env();
+
+    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    if (nullptr == key_management)
+    {
+        mpss::utils::set_error("Could not get KeyManagement Java class.");
+        return std::nullopt;
+    }
+
+    const std::string operation_string{operation};
+    jmethodID method =
+        env->GetStaticMethodID(key_management, operation_string.c_str(), "(Ljava/lang/String;)Ljava/lang/Boolean;");
+    if (mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement operation"))
+    {
+        return std::nullopt;
+    }
+    if (nullptr == method)
+    {
+        mpss::utils::set_error("Could not get KeyManagement Java method.");
+        return std::nullopt;
+    }
+
+    const std::string key_name_string{key_name};
+    jni_string java_key_name(env, env->NewStringUTF(key_name_string.c_str()));
+    if (mpss::impl::os::utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    {
+        return std::nullopt;
+    }
+    if (java_key_name.is_null())
+    {
+        mpss::utils::set_error("Could not convert key name to Java String.");
+        return std::nullopt;
+    }
+
+    jni_object result(env, env->CallStaticObjectMethod(key_management, method, java_key_name.get()));
+    if (mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement operation"))
+    {
+        return std::nullopt;
+    }
+    if (result.is_null())
+    {
+        const std::string operation_name = "KeyManagement." + operation_string;
+        mpss::impl::os::utils::ReportJavaError(env, operation_name);
+        return std::nullopt;
+    }
+
+    return mpss::impl::os::utils::UnboxBoolean(env, result.get());
 }
 
 } // namespace
@@ -460,6 +518,86 @@ TEST(AndroidJNITest, ConcurrentKeyCacheAccessIsSafe)
     {
         ASSERT_TRUE(succeeded[worker_index]) << key_names[worker_index] << ": " << errors[worker_index];
     }
+}
+
+TEST(AndroidJNITest, ConcurrentOpenAndDeleteLeaveCacheConsistent)
+{
+    using enum mpss::Algorithm;
+
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Required algorithm is not supported by the Android backend.";
+    }
+
+    const std::string key_name = "test_android_concurrent_open_delete";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    std::unique_ptr<mpss::KeyPair> key = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, key) << mpss::get_error();
+    key.reset();
+
+    constexpr std::size_t opener_count = 8;
+    std::latch ready(opener_count + 1);
+    std::latch start(1);
+    std::array<std::optional<bool>, opener_count> open_results;
+    std::array<std::string, opener_count> open_errors;
+    std::array<std::thread, opener_count> openers;
+    for (std::size_t opener_index = 0; opener_index < openers.size(); ++opener_index)
+    {
+        openers[opener_index] = std::thread([&, opener_index]() {
+            ready.count_down();
+            start.wait();
+            open_results[opener_index] = java_key_operation("OpenKey", key_name);
+            if (!open_results[opener_index].has_value())
+            {
+                open_errors[opener_index] = mpss::get_error();
+            }
+        });
+    }
+
+    std::optional<bool> delete_result;
+    std::string delete_error;
+    std::thread deleter([&]() {
+        ready.count_down();
+        start.wait();
+        delete_result = java_key_operation("DeleteKey", key_name);
+        if (!delete_result.has_value())
+        {
+            delete_error = mpss::get_error();
+        }
+    });
+
+    ready.wait();
+    start.count_down();
+    for (std::thread &opener : openers)
+    {
+        opener.join();
+    }
+    deleter.join();
+
+    ASSERT_TRUE(delete_result.has_value()) << delete_error;
+    ASSERT_TRUE(*delete_result);
+    for (std::size_t opener_index = 0; opener_index < open_results.size(); ++opener_index)
+    {
+        ASSERT_TRUE(open_results[opener_index].has_value()) << open_errors[opener_index];
+    }
+
+    const std::optional<bool> final_open_result = java_key_operation("OpenKey", key_name);
+    ASSERT_TRUE(final_open_result.has_value()) << mpss::get_error();
+    ASSERT_FALSE(*final_open_result);
+
+    std::unique_ptr<mpss::KeyPair> replacement = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, replacement) << mpss::get_error();
+    ASSERT_TRUE(replacement->delete_key()) << mpss::get_error();
 }
 
 TEST(AndroidJNITest, PendingJavaExceptionIsCleared)
