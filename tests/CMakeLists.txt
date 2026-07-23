@@ -24,6 +24,11 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_executable(mpss_tests MACOSX_BUNDLE
+            ${mpss_TESTS_FILES}
+            "${CMAKE_CURRENT_LIST_DIR}/test_runner.cpp"
+        )
+        target_link_libraries(mpss_tests PRIVATE ${mpss_TESTS_LINK_LIBRARIES})
         add_subdirectory(ios)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
         add_subdirectory(android)
