@@ -1,9 +1,8 @@
 name: CI
 
-# Regression pipeline: builds mpss + mpss-openssl on every supported platform and
-# runs the test suite where the host can execute it (Windows, macOS). Linux, Android
-# and iOS are build-only because they either lack a runnable OS backend on hosted
-# runners (Linux needs a YubiKey) or require a device/emulator we do not gate on.
+# Regression pipeline: builds mpss + mpss-openssl across the ADO and GitHub
+# coverage union. Desktop, Android emulator, and iOS simulator jobs run tests;
+# Linux and mobile packaging jobs cover build-only axes.
 on:
   pull_request:
   push:
@@ -130,13 +129,11 @@ jobs:
         run: cmake --build "out/build/${{ matrix.preset }}"
 
   # -------------------------------------------------------------------------
-  # Android: build-only (matches the ADO upstream pipeline). Cross-compiles the
-  # shipped shared libraries for x86_64 and arm64-v8a as a portability/packaging
-  # guard. No emulator run: the ADO baseline's Android harness is build/install
-  # only, so we mirror that here.
+  # Android build-only: mirrors the ADO Android pipeline and cross-compiles the
+  # shipped shared libraries for both supported ABIs.
   # -------------------------------------------------------------------------
-  android:
-    name: Android ${{ matrix.configuration }}
+  android-build:
+    name: Android build ${{ matrix.configuration }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -148,14 +145,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # JDK 21: the mpss JAR is compiled with --release 21 by the Android CMake.
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           distribution: temurin
           java-version: "21"
 
-      # The android presets pin CMAKE_ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865
-      # and compile the JAR against platform android-36; ensure both are present.
       - name: Prepare Android SDK (NDK 29.0.14206865 + platform 36)
         shell: bash
         run: |
@@ -177,10 +171,10 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/vcpkg/archives
-          key: android-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          key: android-build-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
           restore-keys: |
-            android-vcpkg-${{ hashFiles('vcpkg.json') }}-
-            android-vcpkg-
+            android-build-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            android-build-vcpkg-
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
@@ -200,12 +194,98 @@ jobs:
           cmake --build "out/build/${{ matrix.arm64 }}"
 
   # -------------------------------------------------------------------------
-  # iOS: build-only (matches the ADO upstream pipeline). Builds the iOS
-  # XCFrameworks via cmake/ios_xcframework.cmake. The check names stay
-  # "iOS Debug" / "iOS Release".
+  # Android emulator: builds ADO's instrumentation APK from tests/android and
+  # runs its native gtest suite through TestRunner on an x86_64 emulator.
   # -------------------------------------------------------------------------
-  ios:
-    name: iOS ${{ matrix.configuration }}
+  android-emulator:
+    name: Android emulator ${{ matrix.configuration }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { configuration: Debug,   preset: android-x64-debug }
+          - { configuration: Release, preset: android-x64-release }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare Android SDK (NDK 29.0.14206865 + platforms 34/36)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$SDK_ROOT" ] || { echo "Android SDK not found" >&2; exit 1; }
+          [ -n "${ANDROID_HOME:-}" ] || echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          [ -d "$SDK_ROOT/ndk/29.0.14206865" ] || yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "ndk;29.0.14206865" > /dev/null
+          [ -f "$SDK_ROOT/platforms/android-36/android.jar" ] || yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-36" > /dev/null
+          [ -f "$SDK_ROOT/platforms/android-34/android.jar" ] || yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-34" > /dev/null
+          set -o pipefail
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: android-emulator-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          restore-keys: |
+            android-emulator-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            android-emulator-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Build instrumentation APK (x86_64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . --preset "${{ matrix.preset }}"
+          cmake --build "out/build/${{ matrix.preset }}" --target mpss_android_test_apk
+
+      - name: Run instrumentation tests on emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            APK="out/build/${{ matrix.preset }}/android-tests/mpss-tests.apk"
+            [ -f "$APK" ] || { echo "APK not found: $APK" >&2; find out/build/${{ matrix.preset }} -name '*.apk' >&2; exit 1; }
+            adb install -r "$APK"
+            set +e
+            adb shell am instrument -w com.microsoft.research.mpss.tests/com.microsoft.research.mpss.tests.TestRunner | tee instrumentation.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            cat instrumentation.log
+            if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+            grep -q 'MPSS tests passed' instrumentation.log
+            ! grep -Eq 'FAILURES!!!|MPSS tests failed|INSTRUMENTATION_CODE: -1' instrumentation.log
+
+  # -------------------------------------------------------------------------
+  # iOS XCFramework: mirrors the ADO iOS pipeline.
+  # -------------------------------------------------------------------------
+  ios-xcframework:
+    name: iOS XCFramework ${{ matrix.configuration }}
     runs-on: macos-15
     timeout-minutes: 45
     strategy:
@@ -223,16 +303,81 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/vcpkg/archives
-          key: ios-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          key: ios-xcframework-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
           restore-keys: |
-            ios-vcpkg-${{ hashFiles('vcpkg.json') }}-
-            ios-vcpkg-
+            ios-xcframework-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ios-xcframework-vcpkg-
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
 
       - name: Build iOS XCFrameworks
         shell: bash
+        run: cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
+
+  # -------------------------------------------------------------------------
+  # iOS simulator: builds ADO's XCTest bundle and runs it with xcodebuild on a
+  # booted iOS simulator. x86_64 avoids the arm64 simulator keychain entitlement
+  # issue seen with SecItemAdd.
+  # -------------------------------------------------------------------------
+  ios-simulator:
+    name: iOS simulator ${{ matrix.configuration }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    env:
+      BUILD_DIR: out/build/ios-simulator-x64
+      IOS_SCHEME: mpss_ios_test_host
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: ios-simulator-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          restore-keys: |
+            ios-simulator-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ios-simulator-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure XCTest project (iphonesimulator, x86_64)
+        shell: bash
         run: |
           set -euo pipefail
-          cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
+          cmake -S . -B "$BUILD_DIR" -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.3 \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-ios \
+            -DVCPKG_HOST_TRIPLET=arm64-osx \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=YES \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=YES \
+            -DMPSS_BUILD_TESTS=YES \
+            -DMPSS_BACKEND_YUBIKEY=NO
+
+      - name: List generated schemes
+        shell: bash
+        run: xcodebuild -list -project "$BUILD_DIR/mpss.xcodeproj"
+
+      - name: Run XCTest bundle on simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project "$BUILD_DIR/mpss.xcodeproj" \
+            -scheme "$IOS_SCHEME" \
+            -configuration "${{ matrix.configuration }}" \
+            -destination 'platform=iOS Simulator,name=iPhone 16,arch=x86_64' \
+            CODE_SIGNING_ALLOWED=NO

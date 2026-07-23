@@ -19,13 +19,12 @@
 #include <random>
 #include <vector>
 
+#ifndef MPSS_OPENSSL_IS_SHARED
 // White-box access to the provider's one-shot digest dispatch (OSSL_FUNC_DIGEST_DIGEST). This entry
-// point is not reachable through the public EVP one-shot API -- EVP_Q_digest / EVP_Digest route
-// through the Init/Update/Final dispatch, which frees its context correctly -- so a direct call is
-// the only way to exercise the one-shot wrapper (newctx -> internal -> freectx). Declared with C
-// linkage to match the definition in digest.cpp.
+// point is provider-internal, so it is only linkable when mpss_openssl is built statically.
 extern "C" int mpss_digest_digest_SHA256(void *provctx, const unsigned char *in, std::size_t inl, unsigned char *out,
                                          std::size_t *outl, std::size_t outsz);
+#endif
 
 namespace
 {
@@ -145,6 +144,9 @@ TEST_F(MPSSDigest, SHA512)
 
 TEST_F(MPSSDigest, OneShotDigest)
 {
+#ifdef MPSS_OPENSSL_IS_SHARED
+    GTEST_SKIP() << "Provider-internal one-shot digest entry point is not exported by shared mpss_openssl builds.";
+#else
     // Drive the provider's one-shot digest dispatch directly (see the forward declaration above for
     // why the public EVP API can't reach it). This is the entry point that previously leaked a
     // context (+ EVP_MD + EVP_MD_CTX) on every call; looping it here exercises the newctx ->
@@ -185,6 +187,7 @@ TEST_F(MPSSDigest, OneShotDigest)
         ASSERT_TRUE(std::equal(
             mpss_digest, mpss_digest + mpss_digest_len, default_digest)); // NOLINT(modernize-use-ranges)
     }
+#endif
 }
 
 TEST(MPSS_OpenSSL, GetKeyDescriptors)
