@@ -473,6 +473,9 @@ if(MPSS_BUILD_TESTS)
     if(TARGET ${mpss_openssl_TARGET})
         # mpss comes transitively through mpss_openssl's PUBLIC dependency.
         target_link_libraries(mpss_tests PRIVATE ${mpss_openssl_TARGET})
+        # The mTLS handshake test needs libssl; OpenSSL::SSL comes from the find_package(OpenSSL)
+        # already done above for OpenSSL::Crypto (mpss-openssl itself only pulls in libcrypto).
+        target_link_libraries(mpss_tests PRIVATE OpenSSL::SSL)
     elseif(TARGET ${mpss_TARGET})
         target_link_libraries(mpss_tests PRIVATE ${mpss_TARGET})
     endif()
