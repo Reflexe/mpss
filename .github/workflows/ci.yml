@@ -78,7 +78,7 @@ jobs:
           [ "$RUNNER_OS" = "Windows" ] && BIN="${BIN}.exe"
           if [ ! -f "$BIN" ]; then
             echo "Test binary not found at $BIN" >&2
-            find "out/build/${{ matrix.preset }}/bin" -name 'mpss_tests*' -maxdepth 2 || true
+            find "out/build/${{ matrix.preset }}/bin" -maxdepth 2 -name 'mpss_tests*' || true
             exit 1
           fi
           "$BIN"

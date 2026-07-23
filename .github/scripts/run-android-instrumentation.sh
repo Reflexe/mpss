@@ -6,10 +6,10 @@ preset="$1"
 cmake -S . --preset "$preset"
 cmake --build "out/build/$preset" --target mpss_android_test_apk
 
-apk="$(find "out/build/$preset" tests/android -name '*.apk' | head -n 1)"
+apk="$(find "out/build/$preset/android-tests" -maxdepth 1 -name 'mpss-tests.apk' -print 2>/dev/null | head -n 1 || true)"
 if [[ -z "$apk" ]]; then
-  echo "APK not found" >&2
-  find "out/build/$preset" tests/android -name '*.apk' >&2
+  echo "APK not found at out/build/$preset/android-tests/mpss-tests.apk" >&2
+  find "out/build/$preset" tests/android -name '*.apk' -print 2>/dev/null >&2 || true
   exit 1
 fi
 
