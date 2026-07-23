@@ -1,0 +1,149 @@
+name: Sanitizers
+
+# Memory-safety / UB verification for the mpss test suite. Kept in its own workflow
+# so it evolves independently of the main build+test pipeline (ci.yml). Two jobs:
+#
+# * Linux ASan+UBSan (gcc/clang): the only target with UndefinedBehaviorSanitizer.
+#   mpss has no native Linux backend, so it is built with the YubiKey backend and the
+#   hardware-backed key tests self-skip; the backend-INDEPENDENT code still runs under
+#   the sanitizers — most importantly the reference-PEM binary parser/encoder
+#   (mpss-openssl/provider/reference.cpp) and its bounds checks (untrusted input).
+#
+# * Windows ASan (MSVC /fsanitize=address, VS2019 16.9+): on the hosted Windows runner
+#   the CNG backend is live, so the key/provider tests actually RUN and ASan covers the
+#   real exercised code (the Windows backend + the provider using real keys). MSVC has
+#   no UBSan, so this job is ASan-only. Docs:
+#   https://learn.microsoft.com/en-us/cpp/sanitizers/asan
+#
+# (A macOS ASan+UBSan job was attempted but dropped: the Apple Secure Enclave backend
+#  is built with Swift, and swiftc rejects the clang `-fsanitize=address,undefined`
+#  flag that CMake's global linker flags feed it, breaking the Swift compiler check.
+#  The C++ provider/parser code is already covered by the Linux and Windows jobs.)
+on:
+  pull_request:
+  push:
+    branches: [main, ado]
+  workflow_dispatch:
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  asan-ubsan:
+    name: Linux ASan+UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install pcsclite (YubiKey backend dependency)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: sanitizers-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ env.ImageVersion }}
+          restore-keys: |
+            sanitizers-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure (Debug, ASan + UBSan)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAN_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g"
+          cmake -S . -B build-asan -GNinja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+            -DMPSS_BUILD_TESTS=ON \
+            -DMPSS_BACKEND_YUBIKEY=ON \
+            -DMPSS_ENABLE_HARDENING=OFF \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_C_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_CXX_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-asan
+
+      - name: Run test suite under sanitizers
+        shell: bash
+        env:
+          # Leak detection is intentionally disabled here: this job targets
+          # memory-safety errors (OOB / use-after-free) and UB, not leaks. LeakSanitizer
+          # is a distinct axis (integrated into ASan, toggled via ASAN_OPTIONS); enabling
+          # it first requires auditing the suite + third-party (OpenSSL/gtest) allocations
+          # for reachable-at-exit reports and adding suppressions.
+          # Ref: https://clang.llvm.org/docs/LeakSanitizer.html
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        # Restricted to backend-INDEPENDENT tests: mpss has no native Linux backend, so
+        # it is built with the YubiKey backend, whose key tests FAIL (not skip) without a
+        # physical key. MPSSDigest.* is the backend-free digest suite that runs under the
+        # sanitizers here.
+        run: build-asan/bin/mpss_tests "--gtest_filter=MPSSDigest.*"
+
+  asan-windows:
+    name: Windows ASan
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: sanitizers-win-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ env.ImageVersion }}
+          restore-keys: |
+            sanitizers-win-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      # Release config: MSVC ASan is incompatible with /RTC and incremental linking,
+      # both of which the Debug config enables by default. Release has neither.
+      # Run in pwsh, not bash: git-bash's MSYS path conversion mangles the leading-slash
+      # /fsanitize=address flag into a bogus path.
+      - name: Configure (Release + ASan)
+        shell: pwsh
+        run: |
+          cmake -S . --preset win-vs2022-x64 `
+            -DMPSS_ENABLE_HARDENING=OFF `
+            -DCMAKE_TRY_COMPILE_CONFIGURATION=Release `
+            "-DCMAKE_C_FLAGS=/fsanitize=address" `
+            "-DCMAKE_CXX_FLAGS=/fsanitize=address"
+
+      - name: Build
+        shell: bash
+        run: cmake --build out/build/win-vs2022-x64 --config Release
+
+      - name: Run test suite under ASan
+        shell: pwsh
+        env:
+          ASAN_OPTIONS: abort_on_error=1
+        run: |
+          # The ASan runtime DLL ships with the MSVC toolset; it must be on PATH to run.
+          $msvc = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC" -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+          $env:PATH = "$($msvc.FullName)\bin\Hostx64\x64;$env:PATH"
+          & "out/build/win-vs2022-x64/bin/Release/mpss_tests.exe"
+          exit $LASTEXITCODE
