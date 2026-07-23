@@ -28,6 +28,14 @@
 #include "mpss/impl/yubikey/yk_utils.h"
 #endif
 
+#ifdef _WIN32
+#include <Windows.h>
+#include <bcrypt.h>
+#include <ncrypt.h>
+
+#include "mpss/impl/windows/ncrypt_handle.h"
+#endif
+
 namespace mpss::tests
 {
 
@@ -349,6 +357,286 @@ TEST_F(MPSS, GetKeySmallBuffer521)
 {
     GetKeySmallBuffer(ecdsa_secp521r1_sha512, "521");
 }
+
+#ifdef _WIN32
+#ifndef NCRYPT_REQUIRE_VBS_FLAG
+#define NCRYPT_REQUIRE_VBS_FLAG 0x00020000
+#endif
+
+std::wstring WideKeyName(const std::string &name)
+{
+    return std::wstring(name.begin(), name.end());
+}
+
+// Create a persisted, non-exportable ECDSA P-256 key directly through CNG in a chosen provider.
+// This lets a test force a specific storage tier regardless of what the mpss ladder would pick.
+SECURITY_STATUS RawCreatePersistedKey(LPCWSTR provider_name, const std::wstring &key_name, DWORD create_flags)
+{
+    mpss::impl::os::NcryptHandle provider;
+    SECURITY_STATUS status = ::NCryptOpenStorageProvider(provider.out_ptr(), provider_name, 0);
+    if (ERROR_SUCCESS != status)
+    {
+        return status;
+    }
+
+    mpss::impl::os::NcryptHandle key;
+    status = ::NCryptCreatePersistedKey(provider.get(), key.out_ptr(), NCRYPT_ECDSA_P256_ALGORITHM, key_name.c_str(), 0,
+                                        create_flags);
+    if (ERROR_SUCCESS != status)
+    {
+        return status;
+    }
+
+    DWORD export_policy = 0;
+    status = ::NCryptSetProperty(key.get(), NCRYPT_EXPORT_POLICY_PROPERTY, reinterpret_cast<PBYTE>(&export_policy),
+                                 sizeof(export_policy), 0);
+    if (ERROR_SUCCESS == status)
+    {
+        status = ::NCryptFinalizeKey(key.get(), 0);
+    }
+
+    // On failure, remove the half-created persisted key. NCryptDeleteKey frees the handle on success,
+    // so relinquish ownership to avoid a double free; otherwise NcryptHandle frees it.
+    if (ERROR_SUCCESS != status && ERROR_SUCCESS == ::NCryptDeleteKey(key.get(), 0))
+    {
+        key.release();
+    }
+    return status;
+}
+
+// Reopen a key by name in a provider and attempt to export its private key. Sets opened=true if the
+// key could be reopened; returns true only if the private key actually exported.
+bool TryExportWindowsPrivateKey(const std::wstring &key_name, LPCWSTR provider_name, bool &opened)
+{
+    mpss::impl::os::NcryptHandle provider;
+    if (ERROR_SUCCESS != ::NCryptOpenStorageProvider(provider.out_ptr(), provider_name, 0))
+    {
+        return false;
+    }
+
+    mpss::impl::os::NcryptHandle key;
+    if (ERROR_SUCCESS != ::NCryptOpenKey(provider.get(), key.out_ptr(), key_name.c_str(), 0, 0))
+    {
+        return false;
+    }
+
+    opened = true;
+    DWORD private_key_size = 0;
+    return ERROR_SUCCESS == ::NCryptExportKey(key.get(), 0, BCRYPT_ECCPRIVATE_BLOB, nullptr, nullptr, 0,
+                                              &private_key_size, 0);
+}
+
+// Reopen a key by name in a provider and read its export policy. Returns true and sets policy_out only
+// if the key could be reopened and the property read.
+bool TryReadExportPolicy(const std::wstring &key_name, LPCWSTR provider_name, DWORD &policy_out)
+{
+    mpss::impl::os::NcryptHandle provider;
+    if (ERROR_SUCCESS != ::NCryptOpenStorageProvider(provider.out_ptr(), provider_name, 0))
+    {
+        return false;
+    }
+
+    mpss::impl::os::NcryptHandle key;
+    if (ERROR_SUCCESS != ::NCryptOpenKey(provider.get(), key.out_ptr(), key_name.c_str(), 0, 0))
+    {
+        return false;
+    }
+
+    DWORD policy = 0;
+    DWORD output_size = 0;
+    if (ERROR_SUCCESS != ::NCryptGetProperty(key.get(), NCRYPT_EXPORT_POLICY_PROPERTY,
+                                             reinterpret_cast<PBYTE>(&policy), sizeof(policy), &output_size, 0))
+    {
+        return false;
+    }
+
+    policy_out = policy;
+    return true;
+}
+
+// Scenario: On Windows the creation ladder prefers the TPM-backed Platform Crypto Provider, then VBS, then a software key.
+// Expected behavior: creation succeeds and the storage tier matches the hardware-backed flag.
+TEST_F(MPSS, WindowsTieredCreationReportsStorage)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_tiered_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> handle = MPSS::CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    const mpss::KeyInfo info = handle->key_info();
+    ASSERT_NE(nullptr, info.storage_description);
+    const std::string storage_description = info.storage_description;
+
+    const bool is_hardware_desc =
+        storage_description == "TPM Protection" || storage_description == "Virtualization Based Security";
+    const bool is_software_desc = storage_description == "Software Protection";
+    EXPECT_TRUE(is_hardware_desc || is_software_desc) << "Unexpected storage description: " << storage_description;
+    EXPECT_EQ(is_hardware_desc, info.is_hardware_backed);
+
+    handle->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: A Windows key is created, its handle released, and then reopened by name.
+// Expected behavior: the reopened key reports the same storage tier as it did at creation.
+TEST_F(MPSS, WindowsReopenStorageReporting)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_reopen_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> created = MPSS::CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, created);
+    ASSERT_NE(nullptr, created->key_info().storage_description);
+    const std::string created_description = created->key_info().storage_description;
+    const bool created_hardware_backed = created->key_info().is_hardware_backed;
+    created->release_key();
+
+    std::unique_ptr<mpss::KeyPair> reopened = mpss::KeyPair::Open(key_name);
+    ASSERT_NE(nullptr, reopened);
+    ASSERT_NE(nullptr, reopened->key_info().storage_description);
+    EXPECT_EQ(created_description, std::string(reopened->key_info().storage_description));
+    EXPECT_EQ(created_hardware_backed, reopened->key_info().is_hardware_backed);
+
+    reopened->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: On a host without the primary tier (TPM), the create ladder's primary attempt fails
+//           internally before the fallback tier succeeds, previously leaving a stale thread-local error.
+// Expected behavior: a successful create leaves no error; get_error() is empty right after Create succeeds.
+TEST_F(MPSS, WindowsSuccessfulCreateClearsStaleError)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_no_stale_error_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> created = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, created);
+    EXPECT_TRUE(mpss::get_error().empty()) << "Successful create left a stale error: " << mpss::get_error();
+
+    created->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: mpss creates a signing key, then a caller tries to export its private key through CNG.
+// Expected behavior: the key still signs and verifies, but private-key export is refused.
+TEST_F(MPSS, WindowsCreatedKeyRefusesPrivateExport)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_non_exportable_key";
+    MPSS::DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> handle = MPSS::CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    // A non-exportable key must still be usable for signing.
+    const std::vector<std::byte> hash(32, static_cast<std::byte>('a'));
+    std::vector<std::byte> signature(handle->sign_hash(hash, {}));
+    const std::size_t written = handle->sign_hash(hash, signature);
+    ASSERT_NE(0u, written);
+    signature.resize(written);
+    EXPECT_TRUE(handle->verify(hash, signature));
+
+    handle->release_key();
+
+    // The private key must not be exportable from any provider it could live in.
+    const std::wstring wide_name = WideKeyName(key_name);
+    bool opened = false;
+    bool exported = TryExportWindowsPrivateKey(wide_name, MS_KEY_STORAGE_PROVIDER, opened);
+    exported = TryExportWindowsPrivateKey(wide_name, MS_PLATFORM_KEY_STORAGE_PROVIDER, opened) || exported;
+    EXPECT_TRUE(opened);
+    EXPECT_FALSE(exported);
+
+    // The export policy must also read back as non-exportable (0) wherever the key lives.
+    DWORD export_policy = 0xFFFFFFFF;
+    const bool policy_read = TryReadExportPolicy(wide_name, MS_KEY_STORAGE_PROVIDER, export_policy) ||
+                             TryReadExportPolicy(wide_name, MS_PLATFORM_KEY_STORAGE_PROVIDER, export_policy);
+    EXPECT_TRUE(policy_read);
+    EXPECT_EQ(0u, export_policy);
+
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: a plain software key (created without VBS) is opened through mpss.
+// Expected behavior: mpss reports "Software Protection" and is_hardware_backed == false.
+TEST_F(MPSS, WindowsSoftwareKeyReportsSoftwareStorage)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_software_tier_key";
+    MPSS::DeleteKey(key_name);
+
+    ASSERT_EQ(ERROR_SUCCESS, RawCreatePersistedKey(MS_KEY_STORAGE_PROVIDER, WideKeyName(key_name), 0));
+
+    std::unique_ptr<mpss::KeyPair> handle = mpss::KeyPair::Open(key_name);
+    ASSERT_NE(nullptr, handle);
+    ASSERT_NE(nullptr, handle->key_info().storage_description);
+    EXPECT_EQ("Software Protection", std::string(handle->key_info().storage_description));
+    EXPECT_FALSE(handle->key_info().is_hardware_backed);
+
+    handle->release_key();
+    MPSS::DeleteKey(key_name);
+}
+
+// Scenario: a VBS-isolated key (created with the require_vbs flag) is opened through mpss.
+// Expected behavior: mpss reports "Virtualization Based Security" and is_hardware_backed == true.
+TEST_F(MPSS, WindowsVbsKeyReportsVbsStorage)
+{
+    const char *const backend = mpss::get_default_backend_name();
+    if (nullptr == backend || std::string(backend) != "os")
+    {
+        GTEST_SKIP() << "OS backend is not the default";
+    }
+
+    const std::string key_name = "test_windows_vbs_tier_key";
+    MPSS::DeleteKey(key_name);
+
+    const SECURITY_STATUS status =
+        RawCreatePersistedKey(MS_KEY_STORAGE_PROVIDER, WideKeyName(key_name), NCRYPT_REQUIRE_VBS_FLAG);
+    if (static_cast<SECURITY_STATUS>(NTE_VBS_UNAVAILABLE) == status ||
+        static_cast<SECURITY_STATUS>(NTE_NOT_SUPPORTED) == status)
+    {
+        GTEST_SKIP() << "VBS is not available on this host";
+    }
+    ASSERT_EQ(ERROR_SUCCESS, status);
+
+    std::unique_ptr<mpss::KeyPair> handle = mpss::KeyPair::Open(key_name);
+    ASSERT_NE(nullptr, handle);
+    ASSERT_NE(nullptr, handle->key_info().storage_description);
+    EXPECT_EQ("Virtualization Based Security", std::string(handle->key_info().storage_description));
+    EXPECT_TRUE(handle->key_info().is_hardware_backed);
+
+    handle->release_key();
+    MPSS::DeleteKey(key_name);
+}
+#endif
 
 void VerifyStandaloneSignature(Algorithm algorithm, std::string_view suffix, std::size_t hash_size)
 {

@@ -5,6 +5,7 @@
 
 #include <Windows.h>
 #include <ncrypt.h>
+#include <bcrypt.h>
 
 namespace mpss::impl::os
 {

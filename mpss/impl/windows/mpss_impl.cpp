@@ -21,40 +21,44 @@ using enum mpss::Algorithm;
 // Legacy key spec. We only store signing keys.
 constexpr DWORD key_spec = 0;
 
-// Choose the provider name. To use TPM, use MS_PLATFORM_KEY_STORAGE_PROVIDER.
-// To use software provider, use MS_KEY_STORAGE_PROVIDER instead.
-constexpr LPCWSTR provider_name = MS_KEY_STORAGE_PROVIDER;
+// Primary provider: prefer the TPM-backed Platform Crypto Provider as the strongest available root of trust.
+constexpr LPCWSTR provider_name = MS_PLATFORM_KEY_STORAGE_PROVIDER;
 
-// The fallback provider will be used if we cannot create a key backed by VBS.
-constexpr LPCWSTR fallback_provider_name = MS_PLATFORM_KEY_STORAGE_PROVIDER;
+// Fallback when the TPM is unavailable: VBS, requested via the require_vbs flag.
+constexpr LPCWSTR fallback_provider_name = MS_KEY_STORAGE_PROVIDER;
 
 // A description of our default provider
-constexpr LPCSTR provider_description = "Virtualization Based Security";
+constexpr LPCSTR provider_description = "TPM Protection";
 
 // A description of our fallback provider
-constexpr LPCSTR fallback_provider_description = "TPM Protection";
+constexpr LPCSTR fallback_provider_description = "Virtualization Based Security";
 
-// For some reason NCRYPT_REQUIRE_VBS_FLAG is not defined in the headers.
+// A description of the software fallback, used when no hardware-backed provider is available.
+constexpr LPCSTR software_description = "Software Protection";
+
+// Older SDK headers do not define NCRYPT_REQUIRE_VBS_FLAG; fall back to its documented value.
+#ifdef NCRYPT_REQUIRE_VBS_FLAG
+constexpr DWORD require_vbs = NCRYPT_REQUIRE_VBS_FLAG;
+#else
 constexpr DWORD require_vbs = 0x00020000;
+#endif
+
+// Per-key property reporting whether a key in MS_KEY_STORAGE_PROVIDER is VBS-isolated. Older SDK
+// headers do not define it.
+#ifndef NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY
+#define NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY L"Virtual Iso"
+#endif
 
 // To open the key for the local machine, set this to NCRYPT_MACHINE_KEY_FLAG.
 // Setting this to 0 opens the key for the current user.
 constexpr DWORD key_open_mode = 0;
 
-// Additional flags to specify only when creating a key.
-constexpr DWORD key_create_flags = require_vbs;
-
-// Additional flags to specify only when creating a fallback key.
-constexpr DWORD key_create_flags_fallback = 0;
-
-NCRYPT_PROV_HANDLE GetProvider(bool fallback = false)
+NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name_to_use)
 {
     NCRYPT_PROV_HANDLE provider_handle = 0;
 
     // This function uses no extra flags.
     DWORD flags = 0;
-
-    LPCWSTR provider_name_to_use = fallback ? fallback_provider_name : provider_name;
 
     SECURITY_STATUS status = ::NCryptOpenStorageProvider(&provider_handle, provider_name_to_use, flags);
     if (ERROR_SUCCESS != status)
@@ -75,7 +79,7 @@ NCRYPT_PROV_HANDLE GetProvider(bool fallback = false)
 
 NCRYPT_KEY_HANDLE GetKeyFromProvider(std::string_view name, bool fallback)
 {
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(fallback);
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(fallback ? fallback_provider_name : provider_name);
     if (0 == provider_handle)
     {
         return 0;
@@ -95,33 +99,57 @@ NCRYPT_KEY_HANDLE GetKeyFromProvider(std::string_view name, bool fallback)
         return 0;
     }
 
+    // This tier opened the key; clear any error a previously-tried tier left set (a not-found tier
+    // deliberately leaves its error) so a successful open reports no error.
+    mpss::utils::set_error({});
     return key_handle;
 }
 
-NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description)
+bool IsVirtualIsolationKey(NCRYPT_KEY_HANDLE key_handle)
+{
+    DWORD virtual_isolation = 0;
+    DWORD output_size = 0;
+    SECURITY_STATUS status = ::NCryptGetProperty(key_handle, NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY,
+                                                 reinterpret_cast<PBYTE>(&virtual_isolation), sizeof(virtual_isolation),
+                                                 &output_size, /* dwFlags */ 0);
+    return ERROR_SUCCESS == status && 0 != virtual_isolation;
+}
+
+NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
 {
     *storage_description = nullptr;
+    *hardware_backed = false;
 
-    // Try to open the key using the primary provider.
+    // Try the TPM provider first.
     NCRYPT_KEY_HANDLE key_handle = GetKeyFromProvider(name, /* fallback */ false);
     if (0 != key_handle)
     {
         *storage_description = provider_description;
+        *hardware_backed = true;
         return key_handle;
     }
 
-    // Try to open the key using the fallback provider.
+    // The software KSP holds both VBS-isolated and plain software keys; tell them apart per key.
     key_handle = GetKeyFromProvider(name, /* fallback */ true);
     if (0 != key_handle)
     {
-        *storage_description = fallback_provider_description;
+        if (IsVirtualIsolationKey(key_handle))
+        {
+            *storage_description = fallback_provider_description;
+            *hardware_backed = true;
+        }
+        else
+        {
+            *storage_description = software_description;
+            *hardware_backed = false;
+        }
         return key_handle;
     }
 
     return 0;
 }
 
-NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bool fallback)
+NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bool fallback, DWORD create_flags)
 {
     mpss::impl::os::crypto_params const *const crypto = mpss::impl::os::utils::get_crypto_params(algorithm);
     if (nullptr == crypto)
@@ -130,7 +158,7 @@ NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bo
         return 0;
     }
 
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(fallback);
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(fallback ? fallback_provider_name : provider_name);
     if (0 == provider_handle)
     {
         return 0;
@@ -140,13 +168,34 @@ NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bo
     NCRYPT_KEY_HANDLE key_handle = 0;
     const std::wstring wname(name.begin(), name.end());
 
-    const DWORD creation_flags = fallback ? key_create_flags_fallback : key_create_flags;
-
     SECURITY_STATUS status = ::NCryptCreatePersistedKey(provider_handle, &key_handle, crypto->key_type_name(),
-                                                        wname.c_str(), key_spec, key_open_mode | creation_flags);
+                                                        wname.c_str(), key_spec, key_open_mode | create_flags);
     if (ERROR_SUCCESS != status)
     {
         mpss::utils::log_and_set_error("NCryptCreatePersistedKey failed with error code {}.",
+                                       mpss::utils::to_hex(status));
+        return 0;
+    }
+
+    // Delete the half-created key if we fail before handing it to the caller. NCryptDeleteKey frees
+    // the handle on success; free it explicitly if the delete itself fails.
+    SCOPE_GUARD({
+        if (0 != key_handle)
+        {
+            if (ERROR_SUCCESS != ::NCryptDeleteKey(key_handle, /* dwFlags */ 0))
+            {
+                ::NCryptFreeObject(key_handle);
+            }
+        }
+    });
+
+    // Make the private key non-exportable. Must be set before the key is finalized.
+    DWORD export_policy = 0;
+    status = ::NCryptSetProperty(key_handle, NCRYPT_EXPORT_POLICY_PROPERTY, reinterpret_cast<PBYTE>(&export_policy),
+                                 sizeof(export_policy), /* dwFlags */ 0);
+    if (ERROR_SUCCESS != status)
+    {
+        mpss::utils::log_and_set_error("NCryptSetProperty (export policy) failed with error code {}.",
                                        mpss::utils::to_hex(status));
         return 0;
     }
@@ -158,7 +207,13 @@ NCRYPT_KEY_HANDLE CreateKey(std::string_view name, mpss::Algorithm algorithm, bo
         return 0;
     }
 
-    return key_handle;
+    // This tier created the key; clear any error a previously-tried tier left set so a successful
+    // create reports no error.
+    mpss::utils::set_error({});
+
+    const NCRYPT_KEY_HANDLE result = key_handle;
+    key_handle = 0; // Disarm the cleanup guard: ownership passes to the caller.
+    return result;
 }
 
 mpss::Algorithm GetAlgorithmFromName(NCRYPT_KEY_HANDLE key_handle)
@@ -261,7 +316,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     Algorithm algorithm{unsupported};
 
     const char *storage_description = nullptr;
-    NCRYPT_KEY_HANDLE key_handle = GetKey(name, &storage_description);
+    bool hardware_backed = false;
+    NCRYPT_KEY_HANDLE key_handle = GetKey(name, &storage_description, &hardware_backed);
     if (0 == key_handle)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
@@ -289,7 +345,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     }
 
     mpss::utils::log_trace("Key '{}' opened with {} storage.", name, storage_description);
-    return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true, storage_description);
+    return std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
@@ -315,31 +371,40 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
-    // Try to create the key using the primary provider.
+    // Try the TPM provider first.
     mpss::utils::log_trace("Creating key '{}' with {} provider.", name, provider_description);
-    NCRYPT_KEY_HANDLE key_handle = CreateKey(name, algorithm, /* fallback */ false);
+    NCRYPT_KEY_HANDLE key_handle = CreateKey(name, algorithm, /* fallback */ false, /* create_flags */ 0);
     if (0 != key_handle)
     {
         mpss::utils::log_trace("Key '{}' created with {} provider.", name, provider_description);
         return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
                                                 provider_description);
     }
+    std::string errors = std::string{provider_description} + ": " + mpss::utils::get_error();
 
-    const std::string primary_error = mpss::utils::get_error();
-
-    // Try to create the key using the fallback provider.
-    mpss::utils::log_debug("Primary provider failed, trying fallback ({}) for key '{}'.", fallback_provider_description,
-                           name);
-    key_handle = CreateKey(name, algorithm, /* fallback */ true);
+    // Fall back to a VBS-isolated key in the software KSP.
+    mpss::utils::log_trace("Creating key '{}' with {} provider.", name, fallback_provider_description);
+    key_handle = CreateKey(name, algorithm, /* fallback */ true, /* create_flags */ require_vbs);
     if (0 != key_handle)
     {
         mpss::utils::log_trace("Key '{}' created with {} provider.", name, fallback_provider_description);
         return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
                                                 fallback_provider_description);
     }
+    errors += "; " + std::string{fallback_provider_description} + ": " + mpss::utils::get_error();
 
-    // If we get here, we failed to create the key in both providers. Report both.
-    mpss::utils::log_and_set_error("{}; fallback: {}", primary_error, mpss::utils::get_error());
+    // Last resort: a plain software key. Still non-exportable, but not hardware-backed.
+    mpss::utils::log_trace("Creating key '{}' with {} provider.", name, software_description);
+    key_handle = CreateKey(name, algorithm, /* fallback */ true, /* create_flags */ 0);
+    if (0 != key_handle)
+    {
+        mpss::utils::log_trace("Key '{}' created with {} provider.", name, software_description);
+        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ false,
+                                                software_description);
+    }
+    errors += "; " + std::string{software_description} + ": " + mpss::utils::get_error();
+
+    mpss::utils::log_and_set_error("Failed to create key '{}': {}", name, errors);
 
     return nullptr;
 }
@@ -399,7 +464,9 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
     std::transform(public_key.begin() + 1, public_key.end(), key_blob_buffer.get() + sizeof(crypto_params::key_blob_t),
                    [](auto in) { return static_cast<BYTE>(in); });
 
-    NCRYPT_PROV_HANDLE provider = GetProvider();
+    // verify() imports an external public key, which only the software KSP supports. Open it
+    // explicitly so verification does not depend on the create/open ladder ordering.
+    NCRYPT_PROV_HANDLE provider = GetProvider(MS_KEY_STORAGE_PROVIDER);
     if (0 == provider)
     {
         return false;
