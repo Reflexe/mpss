@@ -251,13 +251,6 @@ jobs:
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
 
-      - name: Build instrumentation APK (x86_64)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . --preset "${{ matrix.preset }}"
-          cmake --build "out/build/${{ matrix.preset }}" --target mpss_android_test_apk
-
       - name: Run instrumentation tests on emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -268,8 +261,11 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           script: |
-            APK="out/build/${{ matrix.preset }}/android-tests/mpss-tests.apk"
-            [ -f "$APK" ] || { echo "APK not found: $APK" >&2; find out/build/${{ matrix.preset }} -name '*.apk' >&2; exit 1; }
+            cmake -S . --preset "${{ matrix.preset }}" || exit $?
+            cmake --build "out/build/${{ matrix.preset }}" --target mpss_android_test_apk || exit $?
+            APK=$(find "out/build/${{ matrix.preset }}" tests/android -name '*.apk' | head -n 1)
+            [ -n "$APK" ] || { echo "APK not found" >&2; find "out/build/${{ matrix.preset }}" tests/android -name '*.apk' >&2; exit 1; }
+            echo "Installing $APK"
             adb install -r "$APK" || exit $?
             adb shell am instrument -w com.microsoft.research.mpss.tests/com.microsoft.research.mpss.tests.TestRunner > instrumentation.log
             rc=$?
@@ -313,9 +309,8 @@ jobs:
         run: cmake -DBUILD_TYPE="${{ matrix.configuration }}" -P cmake/ios_xcframework.cmake
 
   # -------------------------------------------------------------------------
-  # iOS simulator: builds ADO's XCTest bundle and runs it with xcodebuild on a
-  # booted iOS simulator. x86_64 avoids the arm64 simulator keychain entitlement
-  # issue seen with SecItemAdd.
+  # iOS simulator: builds the plain gtest app and runs it with simctl spawn on an
+  # x86_64 simulator to avoid unsigned XCTest keychain-access-group entitlements.
   # -------------------------------------------------------------------------
   ios-simulator:
     name: iOS simulator ${{ matrix.configuration }}
@@ -326,8 +321,8 @@ jobs:
       matrix:
         configuration: [Debug, Release]
     env:
-      BUILD_DIR: out/build/ios-simulator-x64
-      IOS_SCHEME: mpss_ios_test_host
+      BUNDLE_ID: com.microsoft.mpss.tests
+      BUILD_DIR: out/build/ios-sim
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -347,14 +342,14 @@ jobs:
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
 
-      - name: Configure XCTest project (iphonesimulator, x86_64)
+      - name: Configure gtest app (iphonesimulator, x86_64)
         shell: bash
         run: |
           set -euo pipefail
           cmake -S . -B "$BUILD_DIR" -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=16.3 \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-ios \
@@ -362,19 +357,115 @@ jobs:
             -DMPSS_BUILD_MPSS_CORE_STATIC=YES \
             -DMPSS_BUILD_MPSS_OPENSSL_STATIC=YES \
             -DMPSS_BUILD_TESTS=YES \
-            -DMPSS_BACKEND_YUBIKEY=NO
+            -DMPSS_BACKEND_YUBIKEY=NO \
+            -DCMAKE_MACOSX_BUNDLE=YES \
+            -DMACOSX_BUNDLE_GUI_IDENTIFIER="$BUNDLE_ID"
 
-      - name: List generated schemes
+      - name: Build mpss_tests app
         shell: bash
-        run: xcodebuild -list -project "$BUILD_DIR/mpss.xcodeproj"
+        run: cmake --build "$BUILD_DIR" --config "${{ matrix.configuration }}" --target mpss_tests
 
-      - name: Run XCTest bundle on simulator
+      - name: Locate app bundle
+        id: app
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild test \
-            -project "$BUILD_DIR/mpss.xcodeproj" \
-            -scheme "$IOS_SCHEME" \
-            -configuration "${{ matrix.configuration }}" \
-            -destination 'platform=iOS Simulator,name=iPhone 16,arch=x86_64' \
-            CODE_SIGNING_ALLOWED=NO
+          APP=$(find "$BUILD_DIR" -name 'mpss_tests.app' -type d | head -n 1 || true)
+          if [ -z "$APP" ]; then
+            echo "mpss_tests.app not found under $BUILD_DIR" >&2
+            find "$BUILD_DIR" -name 'mpss_tests*' || true
+            exit 1
+          fi
+          echo "Found app: $APP"
+          if ! /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" >/dev/null 2>&1 \
+               || [ -z "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null)" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist" \
+              || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$APP/Info.plist"
+          fi
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Boot iOS simulator
+        id: sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          RT=$(xcrun simctl list runtimes available -j | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin)['runtimes'] if x.get('isAvailable') and 'iOS' in x.get('name','')]; r.sort(key=lambda z: z.get('version','')); print(r[-1]['identifier'] if r else '')" || true)
+          if [ -z "$RT" ]; then echo "No available iOS simulator runtime" >&2; xcrun simctl list runtimes >&2; exit 1; fi
+          DT=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x.get('name','')]; p='com.apple.CoreSimulator.SimDeviceType.iPhone-16'; print(p if p in d else (d[-1] if d else ''))" || true)
+          if [ -z "$DT" ]; then echo "No iPhone device type available" >&2; exit 1; fi
+          echo "Runtime:     $RT"
+          echo "Device type: $DT"
+          UDID=$(xcrun simctl create mpss-ios-sim "$DT" "$RT")
+          echo "UDID: $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Run gtest app on simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="${{ steps.app.outputs.app }}"
+          xcrun simctl install "$UDID" "$APP"
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" app)
+          BIN="$CONTAINER/mpss_tests"
+
+          TO=""
+          for c in timeout gtimeout; do
+            if command -v "$c" >/dev/null 2>&1; then TO="$c 600"; break; fi
+          done
+
+          dump_sim_diagnostics() {
+            echo "::group::CoreSimulator log (tail)"
+            tail -n 80 "$HOME/Library/Logs/CoreSimulator/CoreSimulator.log" 2>/dev/null || true
+            echo "::endgroup::"
+          }
+
+          run_on_sim() {
+            local filter="$1" log="$2"
+            $TO xcrun simctl spawn "$UDID" "$BIN" --gtest_filter="$filter" 2>&1 | tee "$log" || true
+          }
+
+          check_log() {
+            local label="$1" log="$2"
+            if grep -q '\[  FAILED  \]' "$log"; then
+              echo "::error::[$label] gtest reported failing tests"; return 1
+            fi
+            if ! grep -q '\[  PASSED  \]' "$log"; then
+              echo "::error::[$label] no gtest PASSED summary (crash or timeout)"; return 1
+            fi
+            local passed
+            passed=$(grep -oE '\[  PASSED  \] [0-9]+ test' "$log" | grep -oE '[0-9]+' | head -n1 || echo 0)
+            if [ "${passed:-0}" -lt 1 ]; then
+              echo "::error::[$label] 0 tests passed -- Apple backend produced no usable keys (all skipped)"; return 1
+            fi
+            echo "[$label] OK ($passed passed)"
+          }
+
+          run_gtest() {
+            local label="$1" filter="$2"
+            local log="gtest-${label}.log"
+            echo "::group::gtest ($label)"
+            set +e
+            run_on_sim "$filter" "$log"
+            set -e
+            echo "::endgroup::"
+            if ! check_log "$label" "$log"; then
+              dump_sim_diagnostics
+              return 1
+            fi
+          }
+
+          run_gtest smoke '*CertificateChainSerialization*'
+          run_gtest full '*'
+
+      - name: Shut down simulator
+        if: always()
+        shell: bash
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl shutdown "$UDID" || true
+            xcrun simctl delete "$UDID" || true
+          fi
