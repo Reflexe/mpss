@@ -1,0 +1,70 @@
+name: CodeQL
+
+# Static analysis (CodeQL) for the C/C++ sources. Runs on PRs, pushes to main,
+# and weekly. NOT yet a required check -- promote it in the branch ruleset once
+# it has a green baseline.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (c-cpp)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      # Only strictly required if this repo becomes private, but matches the
+      # official CodeQL starter template and keeps the job robust to that change.
+      actions: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install pcsclite (YubiKey backend dependency)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: codeql-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ env.ImageVersion }}
+          restore-keys: |
+            codeql-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            codeql-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure (build vcpkg deps before CodeQL tracing)
+        shell: bash
+        run: cmake -S . --preset linux-with-yubikey-debug
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          languages: c-cpp
+
+      - name: Build (traced by CodeQL)
+        shell: bash
+        run: cmake --build out/build/linux-with-yubikey-debug
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          category: "/language:c-cpp"

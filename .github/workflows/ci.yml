@@ -1,0 +1,501 @@
+name: CI
+
+# Regression pipeline: builds mpss + mpss-openssl on every supported platform and
+# runs the test suite where the host can execute it (Windows, macOS). Linux, Android
+# and iOS are build-only because they either lack a runnable OS backend on hosted
+# runners (Linux needs a YubiKey) or require a device/emulator we do not gate on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Windows + macOS: configure, build, and RUN the full test suite.
+  # Tests self-skip (GTEST_SKIP) when no hardware backend is available, so a
+  # backend-less runner still exercises every non-hardware code path and, on
+  # Windows, the real CNG backend.
+  # -------------------------------------------------------------------------
+  desktop:
+    name: ${{ matrix.name }} ${{ matrix.configuration }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows,          os: windows-2022,  preset: win-vs2022-x64,        configuration: Debug,   bindir: "Debug/" }
+          - { name: Windows,          os: windows-2022,  preset: win-vs2022-x64,        configuration: Release, bindir: "Release/" }
+          - { name: Windows (shared), os: windows-2022,  preset: win-vs2022-x64-shared, configuration: Debug,   bindir: "Debug/" }
+          - { name: Windows (shared), os: windows-2022,  preset: win-vs2022-x64-shared, configuration: Release, bindir: "Release/" }
+          - { name: macOS,            os: macos-15,      preset: macos-arm64-debug,     configuration: Debug,   bindir: "" }
+          - { name: macOS,            os: macos-15,      preset: macos-arm64-release,   configuration: Release, bindir: "" }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.os == 'Windows' && '~/AppData/Local/vcpkg/archives' || '~/.cache/vcpkg/archives' }}
+          key: ${{ matrix.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.preset }}-${{ env.ImageVersion }}
+          restore-keys: |
+            ${{ matrix.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ${{ matrix.os }}-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . --preset "${{ matrix.preset }}"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build "out/build/${{ matrix.preset }}" --config "${{ matrix.configuration }}"
+          else
+            cmake --build "out/build/${{ matrix.preset }}"
+          fi
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="out/build/${{ matrix.preset }}/bin/${{ matrix.bindir }}mpss_tests"
+          [ "$RUNNER_OS" = "Windows" ] && BIN="${BIN}.exe"
+          if [ ! -f "$BIN" ]; then
+            echo "Test binary not found at $BIN" >&2
+            find "out/build/${{ matrix.preset }}/bin" -name 'mpss_tests*' -maxdepth 2 || true
+            exit 1
+          fi
+          "$BIN"
+
+  # -------------------------------------------------------------------------
+  # Linux (GCC): mpss has no native Linux backend, so we build with the YubiKey
+  # backend enabled. This is our GCC / libstdc++ portability guard. Build only:
+  # without a physical YubiKey the tests cannot run meaningfully.
+  # -------------------------------------------------------------------------
+  linux:
+    name: Linux ${{ matrix.configuration }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: linux-with-yubikey-debug,   configuration: Debug }
+          - { preset: linux-with-yubikey-release, configuration: Release }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install pcsclite (YubiKey dependency)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: linux-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.preset }}-${{ env.ImageVersion }}
+          restore-keys: |
+            linux-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            linux-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . --preset "${{ matrix.preset }}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build "out/build/${{ matrix.preset }}"
+
+  # -------------------------------------------------------------------------
+  # Android: run the gtest suite on an emulator against the real Keystore backend.
+  # The backend needs a JVM (bound in JNI_OnLoad), so it runs inside an
+  # instrumented app. Also cross-compiles the arm64-v8a libs as a packaging guard.
+  # -------------------------------------------------------------------------
+  android:
+    name: Android ${{ matrix.configuration }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # JDK 21: supported by Gradle 8.7 + AGP 8.5.2, and the shipped Android
+      # CMake compiles the mpss JAR with `--release 21` (a JDK 17 javac cannot).
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # KVM: required for the hardware-accelerated emulator on hosted runners.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: android-vcpkg-${{ hashFiles('vcpkg.json', 'tests/android/jni/vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          restore-keys: |
+            android-vcpkg-${{ hashFiles('vcpkg.json', 'tests/android/jni/vcpkg.json') }}-
+            android-vcpkg-
+
+      # API 34 platform for the mpss JAR compile (add_jar uses android-<version>.jar).
+      - name: Install Android platform 34
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          [ -n "$SDK_ROOT" ] || { echo "Android SDK not found (ANDROID_SDK_ROOT/ANDROID_HOME unset)" >&2; exit 1; }
+          # The mpss JAR build reads $ENV{ANDROID_HOME} (root CMakeLists.txt), so
+          # export it for later steps on runners that only set ANDROID_SDK_ROOT.
+          [ -n "${ANDROID_HOME:-}" ] || echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          # `yes` gets SIGPIPE once sdkmanager stops reading; keep it out of
+          # pipefail so the step reflects sdkmanager's exit, not the broken pipe.
+          set +o pipefail
+          yes | "$SDKMGR" "platforms;android-34" > /dev/null
+          set -o pipefail
+
+      - name: Resolve Android NDK
+        id: ndk
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+          if [ -z "$NDK_ROOT" ]; then
+            SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+            NDK_ROOT=$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)
+          fi
+          [ -d "$NDK_ROOT" ] || { echo "Android NDK not found" >&2; exit 1; }
+          # The build pins CMAKE_SYSTEM_VERSION=34; fail fast with a clear message
+          # if this NDK can't target API 34, rather than on an opaque toolchain error.
+          if [ -f "$NDK_ROOT/meta/platforms.json" ]; then
+            MAX_API=$(python3 -c "import json; print(json.load(open('$NDK_ROOT/meta/platforms.json'))['max'])")
+          else
+            MAX_API=$(ls -d "$NDK_ROOT/platforms/android-"* 2>/dev/null | grep -Eo '[0-9]+$' | sort -n | tail -1)
+          fi
+          if [ -z "$MAX_API" ] || [ "$MAX_API" -lt 34 ]; then
+            echo "NDK at $NDK_ROOT supports max API ${MAX_API:-unknown}, but this build targets API 34." >&2
+            exit 1
+          fi
+          echo "ndk=$NDK_ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      # Static x86_64 (API 34) build, installed so the shim can find_package it.
+      # MPSS_ALLOW_ANDROID_STATIC opts past the shared-only guard for the harness.
+      - name: Build and install static mpss (x86_64, API 34)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-x86_64 -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=ON \
+            -DMPSS_ALLOW_ANDROID_STATIC=ON \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=34 \
+            -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-android
+          cmake --build build-x86_64
+          cmake --install build-x86_64 --prefix "$PWD/install-x86_64"
+
+      # One shared object with the whole stack statically linked -> a single
+      # OpenSSL instance in the process.
+      - name: Build JNI test shim (x86_64, API 34)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tests/android/jni -B build-jni -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=34 \
+            -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-android \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -Dmpss_ROOT="$PWD/install-x86_64" \
+            -Dmpss_DIR="$PWD/install-x86_64/lib/cmake/mpss"
+          cmake --build build-jni
+
+      - name: Stage jniLibs (shim + libc++_shared)
+        shell: bash
+        run: |
+          set -euo pipefail
+          abidir=tests/android/src/main/jniLibs/x86_64
+          mkdir -p "$abidir"
+          cp build-jni/libmpss_tests_jni.so "$abidir/"
+          # Match the x86_64 Android target-triple sysroot dir specifically; the
+          # NDK host dir (linux-x86_64) contains "x86_64" in every ABI's path.
+          libcxx=$(find "${{ steps.ndk.outputs.ndk }}" -path '*/x86_64-linux-android/libc++_shared.so' | head -n1)
+          [ -n "$libcxx" ] || { echo "x86_64 libc++_shared.so not found" >&2; exit 1; }
+          cp "$libcxx" "$abidir/"
+          ls -l "$abidir"
+
+      - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+        with:
+          gradle-version: "8.7"
+
+      - name: Run instrumented tests on emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          working-directory: tests/android
+          # The action runs each script line in its own `sh -c`, so gradle + exit
+          # capture + logcat + exit stay on one line; working-directory runs it in
+          # the Gradle project (`cd` wouldn't persist across lines).
+          script: |
+            adb logcat -c || true
+            gradle connectedDebugAndroidTest --stacktrace --no-daemon; rc=$?; echo "===== logcat (MpssTests/TestRunner) ====="; adb logcat -d -s MpssTests:V TestRunner:I AndroidRuntime:E DEBUG:F | tail -n 500 || true; exit $rc
+
+      # Shipping guard: the arm64-v8a shared libraries must still cross-compile.
+      - name: Build shipped shared mpss (arm64-v8a, API 34)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-arm64 -GNinja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+            -DMPSS_BUILD_MPSS_CORE_SHARED=ON \
+            -DMPSS_BUILD_MPSS_OPENSSL_SHARED=ON \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=34 \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_NDK="${{ steps.ndk.outputs.ndk }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=arm64-android
+          cmake --build build-arm64
+
+  # -------------------------------------------------------------------------
+  # iOS: build the test suite as an .app for the iphonesimulator SDK and RUN the
+  # gtest e2e on a booted simulator. This exercises the REAL Apple backend end to
+  # end -- Secure Enclave key creation/signing AND the Keychain store both work
+  # on the hosted simulator. Replaces the former build-only iOS job (which only
+  # produced the XCFrameworks); the check names stay "iOS Debug" / "iOS Release"
+  # because those are required contexts in the branch ruleset.
+  #
+  # Built for x86_64 (x64-ios triplet, arm64-osx host triplet for vcpkg's build
+  # tools). This mirrors the known-good recipe from the attestation PR: the
+  # x86_64 simulator lets a plain `simctl spawn`ed test binary reach the Keychain
+  # without a `keychain-access-groups` entitlement, whereas an arm64-simulator
+  # build hits errSecMissingEntitlement (-34018) on SecItemAdd unless the app is
+  # signed with that (provisioning-gated) entitlement. Staying on x86_64 keeps
+  # the job simple and signing-free while still running the real backend.
+  # -------------------------------------------------------------------------
+  ios:
+    name: iOS ${{ matrix.configuration }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    env:
+      # Bundle id stamped into the app's Info.plist and used to look up its
+      # installed container on the simulator.
+      BUNDLE_ID: com.microsoft.mpss.tests
+      BUILD_DIR: out/build/ios-sim
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Resolve runner image version (cache key)
+        shell: bash
+        run: echo "ImageVersion=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: ios-sim-vcpkg-${{ hashFiles('vcpkg.json') }}-${{ matrix.configuration }}-${{ env.ImageVersion }}
+          restore-keys: |
+            ios-sim-vcpkg-${{ hashFiles('vcpkg.json') }}-
+            ios-sim-vcpkg-
+
+      - name: Set up vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure (iphonesimulator, x86_64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$BUILD_DIR" -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-ios \
+            -DVCPKG_HOST_TRIPLET=arm64-osx \
+            -DMPSS_BUILD_MPSS_CORE_STATIC=YES \
+            -DMPSS_BUILD_MPSS_OPENSSL_STATIC=YES \
+            -DMPSS_BUILD_TESTS=YES \
+            -DMPSS_BACKEND_YUBIKEY=NO \
+            -DCMAKE_MACOSX_BUNDLE=YES \
+            -DMACOSX_BUNDLE_GUI_IDENTIFIER="$BUNDLE_ID"
+
+      - name: Build mpss_tests (.app)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" --config "${{ matrix.configuration }}" --target mpss_tests
+
+      - name: Locate app bundle
+        id: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find "$BUILD_DIR" -name 'mpss_tests.app' -type d | head -n 1 || true)
+          if [ -z "$APP" ]; then
+            echo "mpss_tests.app not found under $BUILD_DIR" >&2
+            find "$BUILD_DIR" -name 'mpss_tests*' || true
+            exit 1
+          fi
+          echo "Found app: $APP"
+          # iOS install requires a non-empty CFBundleIdentifier; add one if the
+          # generated Info.plist is missing it (no signature to invalidate).
+          if ! /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" >/dev/null 2>&1 \
+               || [ -z "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null)" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist" \
+              || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$APP/Info.plist"
+          fi
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Boot iOS simulator
+        id: sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Newest available iOS runtime on the runner image.
+          RT=$(xcrun simctl list runtimes available -j | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin)['runtimes'] if x.get('isAvailable') and 'iOS' in x.get('name','')]; r.sort(key=lambda z: z.get('version','')); print(r[-1]['identifier'] if r else '')" || true)
+          if [ -z "$RT" ]; then echo "No available iOS simulator runtime" >&2; xcrun simctl list runtimes >&2; exit 1; fi
+          # Prefer a known-good iPhone device type, else any available iPhone.
+          DT=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x.get('name','')]; p='com.apple.CoreSimulator.SimDeviceType.iPhone-16'; print(p if p in d else (d[-1] if d else ''))" || true)
+          if [ -z "$DT" ]; then echo "No iPhone device type available" >&2; exit 1; fi
+          echo "Runtime:     $RT"
+          echo "Device type: $DT"
+          UDID=$(xcrun simctl create mpss-ios-sim "$DT" "$RT")
+          echo "UDID: $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Run e2e tests on simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="${{ steps.app.outputs.app }}"
+
+          xcrun simctl install "$UDID" "$APP"
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" app)
+          BIN="$CONTAINER/mpss_tests"
+
+          # Optional watchdog: GNU timeout if the runner provides it (not part of a
+          # stock macOS). Without it the job-level timeout applies.
+          TO=""
+          for c in timeout gtimeout; do
+            if command -v "$c" >/dev/null 2>&1; then TO="$c 600"; break; fi
+          done
+
+          dump_sim_diagnostics() {
+            echo "::group::CoreSimulator log (tail)"
+            tail -n 80 "$HOME/Library/Logs/CoreSimulator/CoreSimulator.log" 2>/dev/null || true
+            echo "::endgroup::"
+          }
+
+          # Run the gtest binary on the booted simulator via `simctl spawn`, which
+          # execs the console binary directly and forwards trailing arguments to
+          # its argv, so gtest reads --gtest_filter. No code signing or entitlement
+          # is needed on the x86_64 simulator for the Keychain/SE calls to succeed.
+          run_on_sim() {
+            local filter="$1" log="$2"
+            $TO xcrun simctl spawn "$UDID" "$BIN" --gtest_filter="$filter" 2>&1 | tee "$log" || true
+          }
+
+          # Fail closed: a run is good only if gtest printed a PASSED summary, no
+          # FAILED line, and at least one test actually passed. The last guard
+          # catches a silently broken backend (every key test self-skips, which
+          # would otherwise look green while exercising nothing).
+          check_log() {
+            local label="$1" log="$2"
+            if grep -q '\[  FAILED  \]' "$log"; then
+              echo "::error::[$label] gtest reported failing tests"; return 1
+            fi
+            if ! grep -q '\[  PASSED  \]' "$log"; then
+              echo "::error::[$label] no gtest PASSED summary (crash or timeout)"; return 1
+            fi
+            local passed
+            passed=$(grep -oE '\[  PASSED  \] [0-9]+ test' "$log" | grep -oE '[0-9]+' | head -n1 || echo 0)
+            if [ "${passed:-0}" -lt 1 ]; then
+              echo "::error::[$label] 0 tests passed -- Apple backend produced no usable keys (all skipped)"; return 1
+            fi
+            echo "[$label] OK ($passed passed)"
+          }
+
+          run_gtest() {
+            local label="$1" filter="$2"
+            local log="gtest-${label}.log"
+            echo "::group::gtest ($label)"
+            set +e
+            run_on_sim "$filter" "$log"
+            set -e
+            echo "::endgroup::"
+            if ! check_log "$label" "$log"; then
+              dump_sim_diagnostics
+              return 1
+            fi
+          }
+
+          # Smoke first: the real SE + Keychain cert-chain e2e. Then the full suite.
+          run_gtest smoke '*CertificateChainSerialization*'
+          run_gtest full '*'
+
+      - name: Shut down simulator
+        if: always()
+        shell: bash
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl shutdown "$UDID" || true
+            xcrun simctl delete "$UDID" || true
+          fi
