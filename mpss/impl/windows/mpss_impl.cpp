@@ -115,17 +115,17 @@ bool IsVirtualIsolationKey(NCRYPT_KEY_HANDLE key_handle)
     return ERROR_SUCCESS == status && 0 != virtual_isolation;
 }
 
-NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
+NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description, mpss::KeyProtection *protection)
 {
     *storage_description = nullptr;
-    *hardware_backed = false;
+    *protection = mpss::KeyProtection::Software;
 
     // Try the TPM provider first.
     NCRYPT_KEY_HANDLE key_handle = GetKeyFromProvider(name, /* fallback */ false);
     if (0 != key_handle)
     {
         *storage_description = provider_description;
-        *hardware_backed = true;
+        *protection = mpss::KeyProtection::Hardware;
         return key_handle;
     }
 
@@ -136,12 +136,12 @@ NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description
         if (IsVirtualIsolationKey(key_handle))
         {
             *storage_description = fallback_provider_description;
-            *hardware_backed = true;
+            *protection = mpss::KeyProtection::Mixed;
         }
         else
         {
             *storage_description = software_description;
-            *hardware_backed = false;
+            *protection = mpss::KeyProtection::Software;
         }
         return key_handle;
     }
@@ -316,8 +316,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     Algorithm algorithm{unsupported};
 
     const char *storage_description = nullptr;
-    bool hardware_backed = false;
-    NCRYPT_KEY_HANDLE key_handle = GetKey(name, &storage_description, &hardware_backed);
+    mpss::KeyProtection protection = mpss::KeyProtection::Software;
+    NCRYPT_KEY_HANDLE key_handle = GetKey(name, &storage_description, &protection);
     if (0 == key_handle)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
@@ -345,7 +345,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     }
 
     mpss::utils::log_trace("Key '{}' opened with {} storage.", name, storage_description);
-    return std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description);
+    return std::make_unique<WindowsKeyPair>(algorithm, key_handle, protection, storage_description);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
@@ -377,7 +377,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     if (0 != key_handle)
     {
         mpss::utils::log_trace("Key '{}' created with {} provider.", name, provider_description);
-        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
+        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, mpss::KeyProtection::Hardware,
                                                 provider_description);
     }
     std::string errors = std::string{provider_description} + ": " + mpss::utils::get_error();
@@ -388,7 +388,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     if (0 != key_handle)
     {
         mpss::utils::log_trace("Key '{}' created with {} provider.", name, fallback_provider_description);
-        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true,
+        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, mpss::KeyProtection::Mixed,
                                                 fallback_provider_description);
     }
     errors += "; " + std::string{fallback_provider_description} + ": " + mpss::utils::get_error();
@@ -399,7 +399,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     if (0 != key_handle)
     {
         mpss::utils::log_trace("Key '{}' created with {} provider.", name, software_description);
-        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ false,
+        return std::make_unique<WindowsKeyPair>(algorithm, key_handle, mpss::KeyProtection::Software,
                                                 software_description);
     }
     errors += "; " + std::string{software_description} + ": " + mpss::utils::get_error();

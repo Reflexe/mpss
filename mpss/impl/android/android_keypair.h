@@ -14,7 +14,9 @@ class AndroidKeyPair : public mpss::KeyPair
   public:
     AndroidKeyPair(mpss::Algorithm algorithm, std::string_view name, bool hardware_backed,
                    const char *storage_description)
-        : mpss::KeyPair{algorithm, hardware_backed, storage_description}, key_name_{name}
+        : mpss::KeyPair{algorithm, hardware_backed ? mpss::KeyProtection::Hardware : mpss::KeyProtection::Software,
+                        storage_description},
+          key_name_{name}
     {
     }
 

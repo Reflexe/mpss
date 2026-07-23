@@ -267,7 +267,7 @@ class MPSS_DECOR KeyPair
 
     // NOLINTEND(*-non-private-member-variables-in-classes)
 
-    KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description);
+    KeyPair(Algorithm algorithm, KeyProtection protection, const char *storage_description);
 };
 
 } // namespace mpss
