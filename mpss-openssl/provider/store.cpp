@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/provider/store.h"
+#include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <cstddef>
@@ -86,16 +87,14 @@ extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *
 
     // Key management (mpss_keymgmt_load) builds the actual key object, but it runs as a separate
     // provider operation and receives only an opaque byte "reference" -- it has no access to this
-    // loader context. The reference is therefore the sole channel for telling it which key to open, so
-    // we pack the target backend and key name into it as "<backend>\0<key_name>" (an empty backend
-    // means the default backend). A NUL separator is unambiguous because neither a backend name nor a
-    // key name can contain an embedded NUL. The blob only needs to outlive the synchronous object
-    // callback below, so a local is sufficient.
-    std::string reference;
-    reference.reserve(ctx->backend.size() + 1 + ctx->key_name.size());
-    reference.append(ctx->backend);
-    reference.push_back('\0');
-    reference.append(ctx->key_name);
+    // loader context. That reference is the sole channel for telling it which key to open, so pack the
+    // target backend and key name into it (see mpss_build_key_load_reference). The blob only needs to
+    // outlive the synchronous object callback below, so a local is sufficient.
+    byte_vector reference;
+    if (!mpss_build_key_load_reference(ctx->backend, ctx->key_name, reference))
+    {
+        return 0;
+    }
 
     // The key material never leaves the backend, so we surface a reference object rather than key
     // data. OpenSSL fetches the key management named by the data type (matched to the mpss provider
