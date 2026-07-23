@@ -10,7 +10,12 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
     # Conditionally add tests depending on what is being built.
     if(TARGET ${mpss_TARGET})
-        list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp")
+        list(APPEND mpss_TESTS_FILES
+            "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/attestation_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/mock_pki/mock_pki.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/mock_pki/test_ca.cpp"
+        )
     endif()
     if(TARGET ${mpss_openssl_TARGET})
         list(APPEND mpss_TESTS_FILES

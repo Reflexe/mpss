@@ -4,11 +4,13 @@
 #pragma once
 
 #include "mpss/algorithm.h"
+#include "mpss/attestation.h"
 #include "mpss/defines.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -151,29 +153,44 @@ class MPSS_DECOR KeyPair
     }
 
     /**
-     * @brief Creates a new key pair with the given name and algorithm.
+     * @brief Creates a new key pair, optionally requesting hardware attestation evidence.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
+     * must be non-empty, otherwise creation fails.
      * @return Key pair if the key pair was created successfully, a null pointer otherwise.
      * @note The name must be unique. If a key pair with the same name already exists, the
      * function will return a null pointer.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           std::optional<AttestationRequest> attestation = std::nullopt);
 
     /**
-     * @brief Creates a new key pair using a specific backend.
+     * @brief Creates a new key pair using a specific backend, optionally requesting attestation.
      * @param[in] name The name of the key pair. Must not exceed 64 characters.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
-     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none.
+     * @param[in] attestation Optional nonce-bound attestation request. If present, its challenge
+     * must be non-empty, otherwise creation fails.
      * @return Key pair if created successfully, nullptr otherwise.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           std::optional<AttestationRequest> attestation = std::nullopt);
+
+    /**
+     * @brief Reports what kind of attestation a backend can produce.
+     * @param[in] backend_name The backend to query (defaults to "os").
+     * @return The backend's @ref AttestationCapability, or AttestationCapability::none if the
+     * backend is unknown or cannot attest keys.
+     */
+    [[nodiscard]]
+    static AttestationCapability attestation_capability(std::string_view backend_name = "os");
 
     /**
      * @brief Opens the key pair with the given name.
@@ -240,6 +257,26 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     virtual std::size_t extract_key(std::span<std::byte> public_key) const = 0;
+
+    /**
+     * @brief Whether this key pair has real, attached attestation evidence.
+     * @return true only when @ref attestation returns evidence.
+     */
+    [[nodiscard]]
+    virtual bool supports_attestation() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The attestation evidence attached to this key pair, if any.
+     * @return The evidence, or std::nullopt when none is attached.
+     */
+    [[nodiscard]]
+    virtual std::optional<AttestationEvidence> attestation() const
+    {
+        return std::nullopt;
+    }
 
     /**
      * @brief A convenience method to return the required public (verification) key buffer size.

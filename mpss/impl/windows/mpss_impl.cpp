@@ -303,6 +303,12 @@ namespace mpss::impl::os
 {
 using enum Algorithm;
 
+AttestationCapability attestation_capability()
+{
+    // Windows attests a named key via NCryptCreateClaim (TPM/VBS); generation not implemented yet.
+    return AttestationCapability::key_attestation;
+}
+
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
     if (name.empty())

@@ -14,6 +14,13 @@ namespace mpss::impl::os
 
 using enum Algorithm;
 
+AttestationCapability attestation_capability()
+{
+    // Apple's only key-attestation path is ACME (device-attest-01). Reported statically here;
+    // the managed/unmanaged runtime check (none on unmanaged devices) is not implemented yet.
+    return AttestationCapability::key_attestation;
+}
+
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
     const std::string key_name{name};

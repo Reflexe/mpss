@@ -93,11 +93,13 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         # Restricted to backend-INDEPENDENT tests: mpss has no native Linux backend, so
         # it is built with the YubiKey backend, whose key tests FAIL (not skip) without a
-        # physical key. Today this runs MPSSDigest.* only; ReferenceCodec.* is the suite
-        # the incoming backend-free reference-PEM parser/encoder tests will use -- it
-        # matches nothing until that PR lands, at which point those get UBSan coverage
-        # here automatically.
-        run: build-asan/bin/mpss_tests "--gtest_filter=MPSSDigest.*:ReferenceCodec.*"
+        # physical key. This runs MPSSDigest.* plus the backend-free attestation suites
+        # (contract/capability API, the mpss-attest-verify skeleton, and the mock PKI's
+        # OpenSSL test-CA and nonce bookkeeping), which get real UBSan coverage here.
+        # ReferenceCodec.* is the suite the incoming backend-free reference-PEM
+        # parser/encoder tests will use -- it matches nothing until that PR lands, at
+        # which point those get UBSan coverage here automatically.
+        run: build-asan/bin/mpss_tests "--gtest_filter=MPSSDigest.*:ReferenceCodec.*:AttestationCapabilityTest.*:AttestationApiTest.*:AttestationVerifierTest.*:MockPkiTest.*"
 
   asan-windows:
     name: Windows ASan

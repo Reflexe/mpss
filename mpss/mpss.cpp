@@ -11,19 +11,67 @@
 namespace mpss
 {
 
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+namespace
 {
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
-                     get_algorithm_info(algorithm).type_str);
-    return impl::create_key(name, algorithm, policy);
+
+// Central fail-closed enforcement of AttestationRequirement::require: when attestation was
+// required but the backend attached none, destroy the key so a caller demanding attestation
+// never receives a non-attested one.
+std::unique_ptr<KeyPair> enforce_attestation_requirement(std::unique_ptr<KeyPair> key, std::string_view name,
+                                                         bool attestation_required)
+{
+    if (!attestation_required || nullptr == key || key->supports_attestation())
+    {
+        return key;
+    }
+
+    if (!key->delete_key())
+    {
+        utils::log_warning("Failed to delete key '{}' after an unmet attestation requirement.", name);
+    }
+    utils::log_and_set_error("Attestation was required for key '{}', but the backend produced no attestation evidence.",
+                             name);
+    return nullptr;
+}
+
+} // namespace
+
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                         std::optional<AttestationRequest> attestation)
+{
+    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' and attestation {}.", name,
+                     get_algorithm_info(algorithm).type_str, attestation.has_value() ? "requested" : "not requested");
+    if (attestation.has_value() && attestation->challenge.empty())
+    {
+        utils::log_and_set_error("Attestation was requested for key '{}' but the challenge is empty.", name);
+        return nullptr;
+    }
+    const bool attestation_required =
+        attestation.has_value() && AttestationRequirement::require == attestation->requirement;
+    std::unique_ptr<KeyPair> key = impl::create_key(name, algorithm, std::move(attestation), policy);
+    return enforce_attestation_requirement(std::move(key), name, attestation_required);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                         KeyPolicy policy)
+                                         KeyPolicy policy, std::optional<AttestationRequest> attestation)
 {
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
-                     get_algorithm_info(algorithm).type_str, backend_name);
-    return impl::create_key(backend_name, name, algorithm, policy);
+    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}' and attestation {}.",
+                     name, get_algorithm_info(algorithm).type_str, backend_name,
+                     attestation.has_value() ? "requested" : "not requested");
+    if (attestation.has_value() && attestation->challenge.empty())
+    {
+        utils::log_and_set_error("Attestation was requested for key '{}' but the challenge is empty.", name);
+        return nullptr;
+    }
+    const bool attestation_required =
+        attestation.has_value() && AttestationRequirement::require == attestation->requirement;
+    std::unique_ptr<KeyPair> key = impl::create_key(backend_name, name, algorithm, std::move(attestation), policy);
+    return enforce_attestation_requirement(std::move(key), name, attestation_required);
+}
+
+AttestationCapability KeyPair::attestation_capability(std::string_view backend_name)
+{
+    return impl::attestation_capability(backend_name);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
