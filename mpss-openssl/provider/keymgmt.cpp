@@ -2,14 +2,18 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/provider/keymgmt.h"
+#include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <span>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <utility>
+#include <mpss/utils/utilities.h>
 
 namespace mpss_openssl::provider
 {
@@ -122,10 +126,6 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
     {
         return 0;
     }
-
-    // Get the algorithm info.
-    const mpss::AlgorithmInfo info = pkey->key_pair->algorithm_info();
-    const std::string_view type_str = info.type_str;
 
     // Capacity: at most 2 params (group name + public key) plus OSSL_PARAM_END terminator.
     OSSL_PARAM params[3]{};
@@ -497,31 +497,27 @@ extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
 
 extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_sz)
 {
-    // The store loader delivers a reference of the form "<backend>\0<key_name>" (not key material);
-    // an empty backend means the default backend. Split on the NUL separator and reopen the existing
-    // key. The mpss_key constructor decides between opening and creating by whether it is given an
-    // algorithm name: with no algorithm it opens an existing key (KeyPair::Open), with one it creates
-    // a new key. We are opening, so we pass an empty (value-less) algorithm.
+    // The store loader and the reference-PEM decoder both deliver a "<backend>\0<key_name>" load
+    // reference (not key material); an empty backend means the default backend. Parse it and reopen
+    // the existing key. The mpss_key constructor decides between opening and creating by whether it is
+    // given an algorithm name: with no algorithm it opens an existing key (KeyPair::Open), with one it
+    // creates a new key. We are opening, so we pass an empty (value-less) algorithm.
     if (nullptr == reference || 0 == reference_sz)
     {
         return nullptr;
     }
-    const std::string_view ref_view(static_cast<const char *>(reference), reference_sz);
-    const std::size_t sep = ref_view.find('\0');
-    if (std::string_view::npos == sep)
-    {
-        return nullptr;
-    }
-    const std::string_view backend_view = ref_view.substr(0, sep);
-    const std::string key_name(ref_view.substr(sep + 1));
-    if (key_name.empty())
+    std::string backend_name;
+    std::string key_name;
+    if (!mpss_parse_key_load_reference(
+            std::span<const unsigned char>(static_cast<const unsigned char *>(reference), reference_sz),
+            backend_name, key_name))
     {
         return nullptr;
     }
 
     std::optional<std::string> no_algorithm = std::nullopt;
     const std::optional<std::string> backend =
-        backend_view.empty() ? std::nullopt : std::optional<std::string>(backend_view);
+        backend_name.empty() ? std::nullopt : std::optional<std::string>(std::move(backend_name));
     mpss_key *pkey = mpss_new<mpss_key>(key_name, no_algorithm, backend, mpss::KeyPolicy::none);
     if (nullptr == pkey)
     {
@@ -537,6 +533,7 @@ extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_
 }
 
 const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
+    {OSSL_FUNC_KEYMGMT_LOAD, reinterpret_cast<void (*)(void)>(mpss_keymgmt_load)},
     {OSSL_FUNC_KEYMGMT_EXPORT, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export)},
     {OSSL_FUNC_KEYMGMT_EXPORT_TYPES, reinterpret_cast<void (*)(void)>(mpss_keymgmt_export_types)},
     {OSSL_FUNC_KEYMGMT_GEN_SETTABLE_PARAMS, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_settable_params)},
@@ -546,7 +543,6 @@ const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
     {OSSL_FUNC_KEYMGMT_GEN_CLEANUP, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_cleanup)},
     {OSSL_FUNC_KEYMGMT_GEN_INIT, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen_init)},
     {OSSL_FUNC_KEYMGMT_FREE, reinterpret_cast<void (*)(void)>(mpss_keymgmt_free)},
-    {OSSL_FUNC_KEYMGMT_LOAD, reinterpret_cast<void (*)(void)>(mpss_keymgmt_load)},
     {OSSL_FUNC_KEYMGMT_GEN, reinterpret_cast<void (*)(void)>(mpss_keymgmt_gen)},
     {OSSL_FUNC_KEYMGMT_HAS, reinterpret_cast<void (*)(void)>(mpss_keymgmt_has)},
     {OSSL_FUNC_KEYMGMT_QUERY_OPERATION_NAME, reinterpret_cast<void (*)(void)>(mpss_keymgmt_query_operation_name)},

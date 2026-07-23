@@ -3,10 +3,12 @@
 
 #include "mpss-openssl/provider/encoder.h"
 #include "mpss-openssl/provider/keymgmt.h"
+#include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/provider/provider.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <openssl/bio.h>
+#include <openssl/pem.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
@@ -152,6 +154,79 @@ extern "C" int mpss_encoder_encode([[maybe_unused]] void *ctx, OSSL_CORE_BIO *co
     return result;
 }
 
+
+extern "C" int mpss_reference_pem_encoder_get_params(OSSL_PARAM params[])
+{
+    if (nullptr == params)
+    {
+        return 0;
+    }
+
+    OSSL_PARAM *p{nullptr};
+    if ((p = OSSL_PARAM_locate(params, "output")) && !OSSL_PARAM_set_utf8_string(p, "PEM"))
+    {
+        return 0;
+    }
+    if ((p = OSSL_PARAM_locate(params, "structure")) && !OSSL_PARAM_set_utf8_string(p, mpss_key_reference_structure))
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+extern "C" int mpss_reference_encoder_does_selection([[maybe_unused]] void *provctx, int selection)
+{
+    return (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) ? 1 : 0;
+}
+
+int write_reference_pem(BIO *out, const byte_vector &body)
+{
+    // The codec caps bound the body well under PEM_write_bio's long length.
+    return PEM_write_bio(out, mpss_key_reference_pem_label, "", reinterpret_cast<const unsigned char *>(body.data()),
+                         static_cast<long>(body.size()));
+}
+
+extern "C" int mpss_reference_pem_encoder_encode(void *ctx, OSSL_CORE_BIO *cout, const void *obj_raw,
+                                                 [[maybe_unused]] const OSSL_PARAM obj_abstract[], int selection,
+                                                 [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *cb,
+                                                 [[maybe_unused]] void *cbarg)
+{
+    mpss_encoder_ctx *ectx = static_cast<mpss_encoder_ctx *>(ctx);
+    const mpss_key *pkey = static_cast<const mpss_key *>(obj_raw);
+    if (nullptr == ectx || nullptr == pkey || !pkey->has_valid_key() || !pkey->name)
+    {
+        return 0;
+    }
+    if (!(selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
+    {
+        return 0;
+    }
+
+    byte_vector body;
+    if (!mpss_build_key_reference_body(pkey->name.value(), body))
+    {
+        return 0;
+    }
+
+    bio_ptr out(BIO_new_from_core_bio(ectx->libctx, cout));
+    if (nullptr == out)
+    {
+        return 0;
+    }
+
+    return write_reference_pem(out.get(), body);
+}
+
+const OSSL_DISPATCH mpss_ec_reference_pem_encoder_functions[] = {
+    {OSSL_FUNC_ENCODER_NEWCTX, reinterpret_cast<void (*)(void)>(mpss_encoder_newctx)},
+    {OSSL_FUNC_ENCODER_FREECTX, reinterpret_cast<void (*)(void)>(mpss_encoder_freectx)},
+    {OSSL_FUNC_ENCODER_GETTABLE_PARAMS, reinterpret_cast<void (*)(void)>(mpss_encoder_gettable_params)},
+    {OSSL_FUNC_ENCODER_GET_PARAMS, reinterpret_cast<void (*)(void)>(mpss_reference_pem_encoder_get_params)},
+    {OSSL_FUNC_ENCODER_DOES_SELECTION, reinterpret_cast<void (*)(void)>(mpss_reference_encoder_does_selection)},
+    {OSSL_FUNC_ENCODER_ENCODE, reinterpret_cast<void (*)(void)>(mpss_reference_pem_encoder_encode)},
+    OSSL_DISPATCH_END};
+
 const OSSL_DISPATCH mpss_ec_encoder_functions[] = {
     {OSSL_FUNC_ENCODER_NEWCTX, reinterpret_cast<void (*)(void)>(mpss_encoder_newctx)},
     {OSSL_FUNC_ENCODER_FREECTX, reinterpret_cast<void (*)(void)>(mpss_encoder_freectx)},
@@ -166,9 +241,11 @@ const OSSL_DISPATCH mpss_ec_encoder_functions[] = {
 namespace mpss_openssl::provider
 {
 
-const OSSL_ALGORITHM mpss_encoder_algorithms[] = {{ec_encoder_names,
-                                                   "provider=mpss,output=der,structure=SubjectPublicKeyInfo",
-                                                   mpss_ec_encoder_functions, "mpss EC SPKI DER encoder"},
-                                                  {nullptr, nullptr, nullptr, nullptr}};
+const OSSL_ALGORITHM mpss_encoder_algorithms[] = {
+    {ec_encoder_names, "provider=mpss,output=der,structure=SubjectPublicKeyInfo", mpss_ec_encoder_functions,
+     "mpss EC SPKI DER encoder"},
+    {ec_encoder_names, "provider=mpss,output=pem,structure=MpssKeyReference",
+     mpss_ec_reference_pem_encoder_functions, "mpss EC reference PEM encoder"},
+    {nullptr, nullptr, nullptr, nullptr}};
 
 }

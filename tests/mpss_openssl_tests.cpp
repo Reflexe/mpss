@@ -2,21 +2,39 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
+#include "mpss-openssl/provider/keymgmt.h"
 #include "mpss-openssl/provider/provider.h"
+#include "mpss-openssl/provider/reference.h"
+#include "mpss-openssl/utils/utils.h"
 #include "mpss/key_policy.h"
+#include "openssl_raii.h"
 #include <algorithm>
+#include <cstddef>
+#include <chrono>
+#include <atomic>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
+#include <openssl/asn1.h>
+#include <openssl/bio.h>
+#include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>
 #include <openssl/core.h>
-#include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/objects.h>
+#include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
 #include <openssl/store.h>
 #include <openssl/x509.h>
 #include <random>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #ifndef MPSS_OPENSSL_IS_SHARED
@@ -101,6 +119,265 @@ class MPSSDigest : public ::testing::Test
     }
 };
 
+constexpr const char *mpss_p256_algorithm = "ecdsa_secp256r1_sha256";
+
+using mpss_openssl::testing::BioPtr;
+using mpss_openssl::testing::EncoderCtxPtr;
+using mpss_openssl::testing::EvpPkeyCtxPtr;
+using mpss_openssl::testing::EvpPkeyPtr;
+using mpss_openssl::testing::X509ReqPtr;
+
+bool HasParam(const OSSL_PARAM *params, const char *name)
+{
+    return nullptr != params && nullptr != OSSL_PARAM_locate_const(params, name);
+}
+
+std::vector<unsigned char> ToUnsignedBytes(const std::vector<std::byte> &bytes)
+{
+    std::vector<unsigned char> out;
+    out.reserve(bytes.size());
+    for (std::byte byte : bytes)
+    {
+        out.push_back(std::to_integer<unsigned char>(byte));
+    }
+    return out;
+}
+
+class MPSSProvider : public ::testing::Test
+{
+  protected:
+    OSSL_LIB_CTX *mpss_libctx = nullptr;
+    OSSL_PROVIDER *mpss_prov = nullptr;
+    OSSL_PROVIDER *default_prov = nullptr;
+    std::vector<std::string> key_names;
+
+    void SetUp() override
+    {
+        mpss_libctx = OSSL_LIB_CTX_new();
+        ASSERT_NE(nullptr, mpss_libctx);
+
+        ASSERT_NE(0, OSSL_PROVIDER_add_builtin(mpss_libctx, "mpss", OSSL_provider_init));
+        mpss_prov = OSSL_PROVIDER_load(mpss_libctx, "mpss");
+        ASSERT_NE(nullptr, mpss_prov);
+        default_prov = OSSL_PROVIDER_load(mpss_libctx, "default");
+        ASSERT_NE(nullptr, default_prov);
+    }
+
+    void TearDown() override
+    {
+        for (const std::string &key_name : key_names)
+        {
+            mpss_delete_key(key_name.c_str());
+        }
+
+        if (nullptr != mpss_prov)
+        {
+            ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
+            mpss_prov = nullptr;
+        }
+        if (nullptr != default_prov)
+        {
+            ASSERT_NE(0, OSSL_PROVIDER_unload(default_prov));
+            default_prov = nullptr;
+        }
+        if (nullptr != mpss_libctx)
+        {
+            OSSL_LIB_CTX_free(mpss_libctx);
+            mpss_libctx = nullptr;
+        }
+    }
+
+    std::string MakeKeyName(std::string_view label)
+    {
+        static std::atomic<std::uint64_t> counter{0};
+        const auto ticks = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+
+        // Backends cap key names at 64 characters, so keep the generated name well under that:
+        // a short prefix, a truncated label, and a compact uniqueness suffix (a monotonic
+        // counter plus the low digits of the clock so names stay distinct across test runs).
+        std::string key_name = "mpss_ossl_" + std::string(label.substr(0, 16)) + "_" +
+                               std::to_string(ticks % 1000000000000ULL) + "_" + std::to_string(++counter);
+        mpss_delete_key(key_name.c_str());
+        key_names.push_back(key_name);
+        return key_name;
+    }
+
+    EvpPkeyPtr GenerateKey(const std::string &key_name)
+    {
+        EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss"));
+        if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
+        {
+            return nullptr;
+        }
+
+        OSSL_PARAM params[] = {
+            OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0),
+            OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(mpss_p256_algorithm), 0),
+            OSSL_PARAM_END};
+        if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
+        {
+            return nullptr;
+        }
+
+        EVP_PKEY *pkey = nullptr;
+        if (1 != EVP_PKEY_generate(ctx.get(), &pkey))
+        {
+            return nullptr;
+        }
+        return EvpPkeyPtr(pkey);
+    }
+
+    EvpPkeyPtr GenerateNamedKey(const std::string &key_name, const char *algorithm)
+    {
+        EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss"));
+        if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
+        {
+            return nullptr;
+        }
+
+        OSSL_PARAM params[3];
+        int count = 0;
+        params[count++] = OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0);
+        if (nullptr != algorithm)
+        {
+            params[count++] = OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(algorithm), 0);
+        }
+        params[count] = OSSL_PARAM_construct_end();
+        if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
+        {
+            return nullptr;
+        }
+
+        EVP_PKEY *pkey = nullptr;
+        if (1 != EVP_PKEY_generate(ctx.get(), &pkey))
+        {
+            return nullptr;
+        }
+        return EvpPkeyPtr(pkey);
+    }
+
+    std::string ReferencePemFromBody(const std::vector<std::byte> &body)
+    {
+        if (body.empty() || !std::in_range<int>(body.size()))
+        {
+            return {};
+        }
+
+        std::vector<unsigned char> encoded(4 * ((body.size() + 2) / 3) + 1);
+        const int encoded_size =
+            EVP_EncodeBlock(encoded.data(), reinterpret_cast<const unsigned char *>(body.data()),
+                            static_cast<int>(body.size()));
+        if (encoded_size <= 0)
+        {
+            return {};
+        }
+
+        std::string pem = "-----BEGIN ";
+        pem += mpss_openssl::provider::mpss_key_reference_pem_label;
+        pem += "-----\n";
+        const std::string base64(reinterpret_cast<const char *>(encoded.data()), static_cast<std::size_t>(encoded_size));
+        for (std::size_t offset = 0; offset < base64.size(); offset += 64)
+        {
+            pem.append(base64, offset, std::min<std::size_t>(64, base64.size() - offset));
+            pem.push_back('\n');
+        }
+        pem += "-----END ";
+        pem += mpss_openssl::provider::mpss_key_reference_pem_label;
+        pem += "-----\n";
+        return pem;
+    }
+
+    bool ReadReferencePemBody(const std::string &pem, std::vector<std::byte> &body)
+    {
+        BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+        if (nullptr == bio)
+        {
+            return false;
+        }
+
+        char *name = nullptr;
+        char *header = nullptr;
+        unsigned char *data = nullptr;
+        long size = 0;
+        const int ok = PEM_read_bio(bio.get(), &name, &header, &data, &size);
+        const mpss_openssl::utils::openssl_ptr<char> name_owner(name);
+        const mpss_openssl::utils::openssl_ptr<char> header_owner(header);
+        const mpss_openssl::utils::openssl_ptr<unsigned char> data_owner(data);
+        const bool is_reference = 1 == ok && nullptr != name &&
+                                  0 == std::strcmp(name, mpss_openssl::provider::mpss_key_reference_pem_label) &&
+                                  size >= 0;
+        if (is_reference)
+        {
+            body.assign(reinterpret_cast<const std::byte *>(data), reinterpret_cast<const std::byte *>(data + size));
+        }
+
+        return is_reference;
+    }
+
+    EvpPkeyPtr DecodeReferencePem(const std::string &pem)
+    {
+        BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+        if (nullptr == bio)
+        {
+            return nullptr;
+        }
+
+        EVP_PKEY *pkey = PEM_read_bio_PrivateKey_ex(bio.get(), nullptr, nullptr, nullptr, mpss_libctx, "provider=mpss");
+        return EvpPkeyPtr(pkey);
+    }
+
+    std::string EncodeReferencePem(EVP_PKEY *key, int selection = EVP_PKEY_PRIVATE_KEY)
+    {
+        EncoderCtxPtr encoder(
+            OSSL_ENCODER_CTX_new_for_pkey(key, selection, "PEM", "MpssKeyReference", "provider=mpss"));
+        if (nullptr == encoder || OSSL_ENCODER_CTX_get_num_encoders(encoder.get()) <= 0)
+        {
+            return {};
+        }
+
+        BioPtr bio(BIO_new(BIO_s_mem()));
+        if (nullptr == bio || 1 != OSSL_ENCODER_to_bio(encoder.get(), bio.get()))
+        {
+            return {};
+        }
+
+        char *data = nullptr;
+        const long size = BIO_get_mem_data(bio.get(), &data);
+        if (size <= 0 || nullptr == data)
+        {
+            return {};
+        }
+        return {data, static_cast<std::size_t>(size)};
+    }
+
+    std::vector<unsigned char> SignDigest(EVP_PKEY *key)
+    {
+        constexpr std::array<unsigned char, 32> digest{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                                       0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+                                                       0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                                                       0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f};
+
+        EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_pkey(mpss_libctx, key, "provider=mpss"));
+        if (nullptr == ctx || 1 != EVP_PKEY_sign_init(ctx.get()))
+        {
+            return {};
+        }
+
+        std::size_t sig_len = 0;
+        if (1 != EVP_PKEY_sign(ctx.get(), nullptr, &sig_len, digest.data(), digest.size()) || 0 == sig_len)
+        {
+            return {};
+        }
+
+        std::vector<unsigned char> signature(sig_len);
+        if (1 != EVP_PKEY_sign(ctx.get(), signature.data(), &sig_len, digest.data(), digest.size()))
+        {
+            return {};
+        }
+        signature.resize(sig_len);
+        return signature;
+    }
+};
 
 } // namespace
 
@@ -166,6 +443,155 @@ TEST(MPSS_OpenSSL, KeymgmtGenReopensExistingKeyByNameWithoutAlgorithm)
     OSSL_LIB_CTX_free(mpss_libctx);
 }
 
+// Scenario: OpenSSL decodes an MPSS reference PEM for a persisted key, and malformed references are supplied.
+// Expected behavior: the valid reference reopens the named key (usable for signing) and malformed or foreign
+// PEM inputs decode to no key.
+TEST_F(MPSSProvider, ReferencePemDecoderReopensKeyByNameAndRejectsMalformedInput)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("reference_decode");
+    EvpPkeyPtr key = GenerateKey(key_name);
+    if (nullptr == key)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+    key.reset();
+
+    // The reference names the persisted key; decoding it reopens the key by name for use.
+    std::vector<std::byte> body;
+    ASSERT_TRUE(mpss_openssl::provider::mpss_build_key_reference_body(key_name, body));
+    const std::string pem = ReferencePemFromBody(body);
+    ASSERT_FALSE(pem.empty());
+    EvpPkeyPtr decoded = DecodeReferencePem(pem);
+    ASSERT_NE(nullptr, decoded.get());
+    EXPECT_FALSE(SignDigest(decoded.get()).empty());
+
+    // A reference naming a key that does not exist decodes to no key.
+    std::vector<std::byte> unknown_body;
+    ASSERT_TRUE(mpss_openssl::provider::mpss_build_key_reference_body(MakeKeyName("never_decoded"), unknown_body));
+    const std::string unknown_pem = ReferencePemFromBody(unknown_body);
+    ASSERT_FALSE(unknown_pem.empty());
+    EXPECT_EQ(nullptr, DecodeReferencePem(unknown_pem).get());
+
+    // An oversized PEM body is declined by the decoder.
+    const std::vector<std::byte> oversized_body(
+        mpss_openssl::provider::mpss_key_reference_max_encoded_size + 1, std::byte{0x41});
+    const std::string oversized_pem = ReferencePemFromBody(oversized_body);
+    ASSERT_FALSE(oversized_pem.empty());
+    EXPECT_EQ(nullptr, DecodeReferencePem(oversized_pem).get());
+
+    // A foreign (non-MPSS) PEM must not decode to an MPSS key.
+    const std::string foreign_pem =
+        "-----BEGIN PRIVATE KEY-----\n"
+        "TUVTU0FHRQ==\n"
+        "-----END PRIVATE KEY-----\n";
+    EXPECT_EQ(nullptr, DecodeReferencePem(foreign_pem).get());
+}
+
+// Scenario: the reference binary codec round-trips a key name.
+// Expected behavior: parsing a freshly built body recovers the exact name.
+TEST(ReferenceCodec, BuildParseRoundTrip)
+{
+    using namespace mpss_openssl::provider;
+    const std::string name = "codec-roundtrip";
+
+    mpss_openssl::utils::byte_vector body;
+    ASSERT_TRUE(mpss_build_key_reference_body(name, body));
+
+    const std::vector<unsigned char> body_bytes = ToUnsignedBytes(body);
+    mpss_key_reference parsed;
+    ASSERT_TRUE(mpss_parse_key_reference_body(body_bytes, parsed));
+    EXPECT_EQ(name, parsed.key_name);
+}
+
+// Scenario: mpss_build_key_reference_body rejects arguments it cannot encode.
+// Expected behavior: an empty name, an over-cap name, and a name with an embedded NUL all fail.
+TEST(ReferenceCodec, BuildRejectsInvalidArguments)
+{
+    using namespace mpss_openssl::provider;
+
+    mpss_openssl::utils::byte_vector body;
+    EXPECT_FALSE(mpss_build_key_reference_body("", body));
+    EXPECT_FALSE(mpss_build_key_reference_body(std::string(mpss_key_reference_max_name_len + 1, 'a'), body));
+
+    const std::string embedded_nul("ab\0cd", 5);
+    EXPECT_FALSE(mpss_build_key_reference_body(embedded_nul, body));
+}
+
+// Scenario: mpss_parse_key_reference_body validates untrusted input before trusting it as a name.
+// Expected behavior: an empty body, an over-cap body, and a body with an embedded NUL are rejected.
+// This backend-independent path is what the Linux ASan+UBSan job exercises on the parser.
+TEST(ReferenceCodec, ParseRejectsMalformedBodies)
+{
+    using namespace mpss_openssl::provider;
+    mpss_key_reference out;
+
+    EXPECT_FALSE(mpss_parse_key_reference_body(std::span<const unsigned char>{}, out));
+
+    const std::vector<unsigned char> over_cap(mpss_key_reference_max_name_len + 1, 'a');
+    EXPECT_FALSE(mpss_parse_key_reference_body(over_cap, out));
+
+    const std::vector<unsigned char> embedded_nul = {'a', 'b', '\0', 'c', 'd'};
+    EXPECT_FALSE(mpss_parse_key_reference_body(embedded_nul, out));
+}
+
+// Scenario: a reference at the maximum permitted name size round-trips.
+// Expected behavior: build + parse succeeds and recovers the exact bytes (also the ASan reach).
+TEST(ReferenceCodec, MaxSizeBodyRoundTrip)
+{
+    using namespace mpss_openssl::provider;
+    const std::string name(mpss_key_reference_max_name_len, 'n');
+
+    mpss_openssl::utils::byte_vector body;
+    ASSERT_TRUE(mpss_build_key_reference_body(name, body));
+    EXPECT_EQ(name.size(), body.size());
+
+    mpss_key_reference parsed;
+    ASSERT_TRUE(mpss_parse_key_reference_body(ToUnsignedBytes(body), parsed));
+    EXPECT_EQ(name, parsed.key_name);
+}
+
+// Scenario: the MPSS encoder serializes a persisted provider key as a name-bearing reference PEM.
+// Expected behavior: the reference carries the key name and round-trips through the MPSS decoder.
+TEST_F(MPSSProvider, ReferencePemEncoderCarriesNameAndRoundTrips)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = MakeKeyName("reference_encode");
+    EvpPkeyPtr key = GenerateKey(key_name);
+    if (nullptr == key)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    const std::string pem = EncodeReferencePem(key.get());
+    ASSERT_FALSE(pem.empty());
+    EXPECT_NE(std::string::npos, pem.find(mpss_openssl::provider::mpss_key_reference_pem_label));
+    EXPECT_EQ(std::string::npos, pem.find("PRIVATE KEY"));
+
+    std::vector<std::byte> pem_body;
+    ASSERT_TRUE(ReadReferencePemBody(pem, pem_body));
+    mpss_openssl::provider::mpss_key_reference parsed_pem;
+    ASSERT_TRUE(mpss_openssl::provider::mpss_parse_key_reference_body(ToUnsignedBytes(pem_body), parsed_pem));
+    EXPECT_EQ(key_name, parsed_pem.key_name);
+
+    // Coverage: the reference PEM encoder advertises only the private-key selection, so encoding a
+    // public-key-only selection through the public OSSL_ENCODER API yields no reference PEM - the
+    // mechanism that keeps public-key material out of the reference path.
+    EXPECT_TRUE(EncodeReferencePem(key.get(), EVP_PKEY_PUBLIC_KEY).empty());
+
+    key.reset();
+    EvpPkeyPtr decoded = DecodeReferencePem(pem);
+    ASSERT_NE(nullptr, decoded.get());
+    EXPECT_FALSE(SignDigest(decoded.get()).empty());
+}
 
 TEST_F(MPSSDigest, SHA256)
 {
