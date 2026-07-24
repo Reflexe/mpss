@@ -238,14 +238,12 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
     };
 #if TARGET_OS_OSX
     SecAccessRef keyAccess = NULL;
-    NSString *keyDescription =
-        [NSString stringWithFormat:@"MPSS key: %@", [NSString stringWithUTF8String:keyName]];
 
     // SecAccess is the only macOS API that names legacy Keychain items in authorization dialogs.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     const OSStatus accessStatus =
-        SecAccessCreate((__bridge CFStringRef)keyDescription, NULL, &keyAccess);
+        SecAccessCreate((__bridge CFStringRef)keyLabel, NULL, &keyAccess);
 #pragma clang diagnostic pop
 
     if (accessStatus != errSecSuccess) {

@@ -1163,6 +1163,21 @@ TEST_F(YubiKeyPolicyEnv, EnvNeverGatedBehindOptIn)
     EXPECT_EQ(touch_never, yku::resolve_touch_policy(KeyPolicy::yubikey_touch_never));
 }
 
+TEST(YubiKeyPolicyEnvTest, AffirmativeEnvironmentValues)
+{
+    namespace yku = mpss::impl::yubikey::utils;
+
+    EXPECT_TRUE(yku::is_affirmative_environment_value("1"));
+    EXPECT_TRUE(yku::is_affirmative_environment_value("true"));
+    EXPECT_TRUE(yku::is_affirmative_environment_value("TRUE"));
+    EXPECT_TRUE(yku::is_affirmative_environment_value("yes"));
+    EXPECT_TRUE(yku::is_affirmative_environment_value("On"));
+    EXPECT_FALSE(yku::is_affirmative_environment_value(""));
+    EXPECT_FALSE(yku::is_affirmative_environment_value("0"));
+    EXPECT_FALSE(yku::is_affirmative_environment_value("false"));
+    EXPECT_FALSE(yku::is_affirmative_environment_value("no"));
+}
+
 // Env-driven management-key authentication. Requires a connected YubiKey: exercises the live
 // authenticate_mgm_key() path. A freshly connected session has no verified PIN, so the
 // PIN-protected branch always fails first and control reaches the env-key branch regardless of the
@@ -1172,13 +1187,17 @@ class YubiKeyMgmKeyEnv : public ::testing::Test
   protected:
     void SetUp() override
     {
+        const char *value = std::getenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+        saved_mgm_ = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
+        value = std::getenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+        saved_allow_default_ = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
+        unsetenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+
         serials_ = mpss::impl::yubikey::YubiKeyPIV::available_serials();
         if (serials_.empty())
         {
             GTEST_SKIP() << "Requires a connected YubiKey.";
         }
-        const char *value = std::getenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
-        saved_mgm_ = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
     }
 
     void TearDown() override
@@ -1191,10 +1210,20 @@ class YubiKeyMgmKeyEnv : public ::testing::Test
         {
             unsetenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
         }
+        if (saved_allow_default_.has_value())
+        {
+            setenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY", saved_allow_default_->c_str(),
+                   1); // NOLINT(concurrency-mt-unsafe)
+        }
+        else
+        {
+            unsetenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+        }
     }
 
     std::vector<std::uint32_t> serials_;
     std::optional<std::string> saved_mgm_;
+    std::optional<std::string> saved_allow_default_;
 };
 
 TEST_F(YubiKeyMgmKeyEnv, SuppliedKeyMustAuthenticateNoDefaultFallback)
@@ -1204,6 +1233,7 @@ TEST_F(YubiKeyMgmKeyEnv, SuppliedKeyMustAuthenticateNoDefaultFallback)
 
     // A valid-length management key that does not match the device must fail; MPSS must not fall
     // back to the factory-default key.
+    setenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY", "1", 1); // NOLINT(concurrency-mt-unsafe)
     const std::string wrong_key(48, 'a');
     setenv("MPSS_YUBIKEY_MGM_KEY", wrong_key.c_str(), 1); // NOLINT(concurrency-mt-unsafe)
     EXPECT_FALSE(piv.authenticate_mgm_key());
@@ -1212,6 +1242,32 @@ TEST_F(YubiKeyMgmKeyEnv, SuppliedKeyMustAuthenticateNoDefaultFallback)
     setenv("MPSS_YUBIKEY_MGM_KEY", "not-hex", 1); // NOLINT(concurrency-mt-unsafe)
     EXPECT_FALSE(piv.authenticate_mgm_key());
 }
+
+TEST_F(YubiKeyMgmKeyEnv, FactoryDefaultRequiresExplicitOptIn)
+{
+    mpss::impl::yubikey::YubiKeyPIV piv{serials_[0]};
+    ASSERT_TRUE(piv.is_connected());
+
+    unsetenv("MPSS_YUBIKEY_MGM_KEY"); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_FALSE(piv.authenticate_mgm_key());
+
+    setenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY", "0", 1); // NOLINT(concurrency-mt-unsafe)
+    EXPECT_FALSE(piv.authenticate_mgm_key());
+}
+
+TEST_F(YubiKeyMgmKeyEnv, FactoryDefaultWorksWithExplicitOptIn)
+{
+    mpss::impl::yubikey::YubiKeyPIV piv{serials_[0]};
+    ASSERT_TRUE(piv.is_connected());
+
+    unsetenv("MPSS_YUBIKEY_MGM_KEY");                     // NOLINT(concurrency-mt-unsafe)
+    setenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY", "1", 1); // NOLINT(concurrency-mt-unsafe)
+    if (!piv.authenticate_mgm_key())
+    {
+        GTEST_SKIP() << "Connected YubiKey does not use the factory-default management key.";
+    }
+}
+
 #endif
 
 // The sentinel name used to mark free/deleted slots is reserved and must not be accepted as a user key

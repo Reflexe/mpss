@@ -224,15 +224,25 @@ bool YubiKeyPIV::authenticate_mgm_key()
         return false;
     }
 
-    // Fall back to default YubiKey management key (3DES, 24 bytes).
+    const char *allow_default = std::getenv("MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY");
+    if (nullptr == allow_default || !utils::is_affirmative_environment_value(allow_default))
+    {
+        mpss::utils::log_and_set_error(
+            "Management key authentication failed. Refusing to try the publicly known factory-default management "
+            "key unless MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY is set to an affirmative value. Configure a "
+            "PIN-protected management key or set MPSS_YUBIKEY_MGM_KEY.");
+        return false;
+    }
+
+    // Try the default YubiKey management key (3DES, 24 bytes) only after explicit opt-in.
     const unsigned char default_mgm_key[24] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0x02, 0x03, 0x04,
                                                0x05, 0x06, 0x07, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
     rc = ykpiv_authenticate(state_, default_mgm_key);
     if (YKPIV_OK == rc)
     {
-        mpss::utils::log_warning(
-            "Authenticated with default management key. Consider setting MPSS_YUBIKEY_MGM_KEY or enabling "
-            "PIN-protected management key mode.");
+        mpss::utils::log_warning("Authenticated with the publicly known factory-default management key because "
+                                 "MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY is enabled. Configure MPSS_YUBIKEY_MGM_KEY or "
+                                 "PIN-protected management key mode for normal use.");
         return true;
     }
 

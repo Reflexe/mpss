@@ -2,6 +2,9 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
+#ifdef MPSS_BACKEND_YUBIKEY
+#include "mpss/impl/yubikey/yk_piv.h"
+#endif
 #include "mpss/key_policy.h"
 #include <algorithm>
 #include <cstdint>
@@ -780,9 +783,13 @@ TEST_F(MPSSStore, DeleteByName)
 #ifdef MPSS_BACKEND_YUBIKEY
 TEST_F(MPSSStore, ReopenByNameYubiKey)
 {
+    if (mpss::impl::yubikey::YubiKeyPIV::available_serials().empty())
+    {
+        GTEST_SKIP() << "YubiKey device not available";
+    }
     if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", "yubikey"))
     {
-        GTEST_SKIP() << "YubiKey backend/device not available";
+        GTEST_SKIP() << "YubiKey backend not available";
     }
 
     // touch=never so signing does not block on a physical touch during automated runs; pin=once uses

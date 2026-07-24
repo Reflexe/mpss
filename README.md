@@ -688,7 +688,16 @@ If you prefer to use a custom management key instead of the PIN-protected mode, 
 export MPSS_YUBIKEY_MGM_KEY=<32, 48, or 64-character hexadecimal string>
 ```
 
-**Note**: Without PIN-protected mode or a custom management key, MPSS will attempt to use the factory default management key. If `MPSS_YUBIKEY_MGM_KEY` **is** set but is malformed or does not authenticate, MPSS fails the operation rather than silently falling back to the factory default.
+**Note**: MPSS does not try the publicly known factory-default management key unless
+`MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY` is explicitly enabled. This opt-in is intended for initial
+setup and testing only:
+
+```bash
+export MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY=1
+```
+
+If `MPSS_YUBIKEY_MGM_KEY` is set but malformed or incorrect, MPSS fails the operation without trying
+the factory default, regardless of this opt-in.
 
 **Note**: MPSS does **not** support the legacy PIN-derived management key mode. If your YubiKey is configured with a PIN-derived management key, MPSS will fail with an error.
 
@@ -793,7 +802,8 @@ All operations (key creation, opening, and deletion) will fail with an error if 
 |----------|-------------|--------|---------|
 | `MPSS_DEFAULT_BACKEND` | Override the default backend on platforms with an OS-native backend (Windows, macOS). | `os`, `yubikey` | `os` |
 | `MPSS_YUBIKEY_PIN` | YubiKey PIV PIN for signing and PIN-protected management operations. If unset, MPSS prompts interactively. | Any valid PIN string | *(interactive prompt)* |
-| `MPSS_YUBIKEY_MGM_KEY` | Custom YubiKey PIV management key (hex-encoded). Only needed if **not** using PIN-protected mode. | 32, 48, or 64 hex characters | Factory default key |
+| `MPSS_YUBIKEY_MGM_KEY` | Custom YubiKey PIV management key (hex-encoded). Only needed if **not** using PIN-protected mode. | 32, 48, or 64 hex characters | *(unset)* |
+| `MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY` | Explicitly permit the publicly known factory-default management key for initial setup or testing. | `1`, `true`, `yes`, `on` (case-insensitive); anything else keeps the gate closed | *(unset = factory default refused)* |
 | `MPSS_YUBIKEY_SERIAL` | Select a YubiKey by serial number. Required when multiple devices are connected. | Serial number (e.g., `18268739`) | First available device |
 | `MPSS_YUBIKEY_PINPOLICY` | PIN policy baked into newly created keys. See [PIN Policy](#yubikey-backend-limitations-and-considerations) for details. | `default`, `never`, `once`, `always` | `once` |
 | `MPSS_YUBIKEY_TOUCHPOLICY` | Touch policy baked into newly created keys. See [Touch Policy](#yubikey-backend-limitations-and-considerations) for details. | `default`, `never`, `always`, `cached`, `auto` | `cached` |
@@ -809,7 +819,7 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **Algorithm Support**: Only P-256 and P-384 curves are supported. P-521 is not available.
 
-1. **PIN Requirement**: Key generation and deletion require the management key. MPSS first attempts these operations without verifying the PIN; this succeeds when the management key is available via `MPSS_YUBIKEY_MGM_KEY` or the factory default. If that fails (e.g., because the management key is PIN-protected), MPSS prompts for the PIN and retries. For signing, MPSS reads the key's PIN and touch policies from the YubiKey metadata. If the PIN policy is anything other than `never`, MPSS will prompt for the PIN (see [PIN Policy](#yubikey-backend-limitations-and-considerations) below for why `once` and `always` behave identically). When both PIN and touch are required, MPSS prompts for the PIN upfront to avoid blocking on touch without user notification. Set the `MPSS_YUBIKEY_PIN` environment variable for non-interactive use; for interactive use, let MPSS prompt on the terminal or install a custom `InteractionHandler` (see [Custom Interaction Handlers](#custom-interaction-handlers)).
+1. **PIN Requirement**: Key generation and deletion require the management key. MPSS first attempts these operations without verifying the PIN; this succeeds when the management key is available via `MPSS_YUBIKEY_MGM_KEY`, or when the device still uses the factory default and `MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY` is explicitly enabled. If that fails (e.g., because the management key is PIN-protected), MPSS prompts for the PIN and retries. For signing, MPSS reads the key's PIN and touch policies from the YubiKey metadata. If the PIN policy is anything other than `never`, MPSS will prompt for the PIN (see [PIN Policy](#yubikey-backend-limitations-and-considerations) below for why `once` and `always` behave identically). When both PIN and touch are required, MPSS prompts for the PIN upfront to avoid blocking on touch without user notification. Set the `MPSS_YUBIKEY_PIN` environment variable for non-interactive use; for interactive use, let MPSS prompt on the terminal or install a custom `InteractionHandler` (see [Custom Interaction Handlers](#custom-interaction-handlers)).
 
 1. **Physical Device**: The YubiKey must be plugged in for all operations except standalone verification (which uses software ECDSA).
 

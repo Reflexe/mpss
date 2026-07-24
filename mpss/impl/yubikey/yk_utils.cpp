@@ -34,12 +34,7 @@ std::string to_lower(std::string_view str)
 bool policy_downgrade_allowed()
 {
     const char *env_ptr = std::getenv("MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE");
-    if (nullptr == env_ptr)
-    {
-        return false;
-    }
-    const std::string value = to_lower(env_ptr);
-    return "1" == value || "true" == value || "yes" == value || "on" == value;
+    return nullptr != env_ptr && mpss::impl::yubikey::utils::is_affirmative_environment_value(env_ptr);
 }
 
 /** @brief Read YubiKey PIN policy from the MPSS_YUBIKEY_PINPOLICY environment variable. */
@@ -135,6 +130,12 @@ namespace mpss::impl::yubikey::utils
 {
 
 using enum mpss::Algorithm;
+
+bool is_affirmative_environment_value(std::string_view value)
+{
+    const std::string normalized = to_lower(value);
+    return "1" == normalized || "true" == normalized || "yes" == normalized || "on" == normalized;
+}
 
 std::optional<std::uint32_t> get_serial_from_env()
 {

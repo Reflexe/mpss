@@ -27,7 +27,7 @@ bool YubiKeyKeyPair::delete_key()
     }
 
     // Try deleting without PIN authentication first (succeeds when the management key is available without PIN,
-    // e.g., via MPSS_YUBIKEY_MGM_KEY or the factory default).
+    // e.g., via MPSS_YUBIKEY_MGM_KEY or the explicitly enabled factory default).
     bool deleted = piv.delete_key(slot_);
 
     if (!deleted)

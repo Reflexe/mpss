@@ -15,6 +15,15 @@ namespace mpss::impl::yubikey::utils
 {
 
 /**
+ * @brief Whether an environment variable value explicitly enables an opt-in.
+ *
+ * Matching is case-insensitive.
+ * @param value The environment variable value.
+ * @return true for 1, true, yes, or on; false otherwise.
+ */
+bool is_affirmative_environment_value(std::string_view value);
+
+/**
  * @brief Get the target YubiKey serial number from the environment variable MPSS_YUBIKEY_SERIAL.
  *
  * When set, MPSS iterates through available smart card readers and connects to the

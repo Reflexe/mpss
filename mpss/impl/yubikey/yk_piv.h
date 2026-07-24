@@ -27,7 +27,7 @@ namespace mpss::impl::yubikey
  * - Connecting/disconnecting from the YubiKey
  * - PIN authentication
  * - Key generation, signing, public key extraction, and deletion
- * - All operations use PIN-protected management key mode
+ * - Management-key authentication using PIN-protected, explicitly supplied, or explicitly enabled credentials
  */
 class YubiKeyPIV
 {
@@ -84,7 +84,7 @@ class YubiKeyPIV
 
     /**
      * @brief Authenticate with the management key.
-     * Uses the default management key if no custom key is set.
+     * Uses the factory-default management key only when explicitly enabled through the environment.
      * @return true if authentication succeeded, false otherwise.
      */
     bool authenticate_mgm_key();

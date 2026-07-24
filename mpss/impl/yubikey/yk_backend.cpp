@@ -149,7 +149,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     }
 
     // Try generating the key without PIN authentication first (succeeds when the management key is available
-    // without PIN, e.g., via MPSS_YUBIKEY_MGM_KEY or the factory default).
+    // without PIN, e.g., via MPSS_YUBIKEY_MGM_KEY or the explicitly enabled factory default).
     bool key_generated = piv.generate_key(slot, yk_algorithm, policy);
 
     if (!key_generated)
