@@ -12,8 +12,8 @@ namespace mpss::impl
 /**
  * @brief Interface for a backend implementation.
  *
- * Each backend (OS-native, YubiKey, etc.) must implement this interface
- * and register itself with the BackendRegistry.
+ * Each built-in backend (OS-native, YubiKey, etc.) implements this interface
+ * and is installed by the BackendRegistry during initialization.
  */
 class Backend
 {
@@ -107,9 +107,5 @@ std::vector<const char *> get_available_backends();
 /// @brief Get the name of the default backend.
 [[nodiscard]]
 const char *get_default_backend_name();
-
-/// @brief Register a backend with the internal registry.
-/// @param[in] backend The backend to register.
-void register_backend(std::shared_ptr<Backend> backend);
 
 } // namespace mpss::impl

@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 #include "mpss/impl/os_backend.h"
-#include "mpss/impl/backend_registry.h"
 
 namespace mpss::impl
 {
@@ -36,12 +35,6 @@ bool OSBackend::verify(std::span<const std::byte> hash, std::span<const std::byt
                        std::span<const std::byte> sig) const
 {
     return os::verify(hash, public_key, algorithm, sig);
-}
-
-void register_os_backend()
-{
-    auto backend = std::make_shared<OSBackend>();
-    register_backend(backend);
 }
 
 } // namespace mpss::impl

@@ -4,6 +4,9 @@
 #include "mpss/impl/backend_registry.h"
 #include "mpss/config.h"
 #include "mpss/impl/os_backend.h"
+#ifdef MPSS_BACKEND_YUBIKEY
+#include "mpss/impl/yubikey/yk_backend.h"
+#endif
 #include "mpss/utils/scope_guard.h"
 #include "mpss/utils/utilities.h"
 #include <algorithm>
@@ -83,16 +86,11 @@ bool is_valid_key_name(std::string_view name)
 }
 } // namespace
 
-#ifdef MPSS_BACKEND_YUBIKEY
-// Forward declaration for YubiKey backend registration.
-void register_yubikey_backend();
-#endif
-
 /**
  * @brief Registry for managing multiple backend implementations.
  *
- * The registry allows registration of multiple backends and selection
- * of the default backend based on environment variables or system defaults.
+ * The registry installs the compiled-in backends and selects the default
+ * backend based on environment variables or system defaults.
  * This class is an implementation detail and is not exposed in the public API.
  */
 class BackendRegistry
@@ -108,31 +106,9 @@ class BackendRegistry
         // process exit. This avoids the static destruction-order fiasco (a host static destroyed after
         // the registry would otherwise touch a destroyed object). The one-time allocation is reclaimed
         // by the OS at process exit.
-        static BackendRegistry &registry =
-            *new BackendRegistry(); // NOLINT(cppcoreguidelines-owning-memory) - intentional immortal singleton, never freed.
+        static BackendRegistry &registry = *new BackendRegistry(); // NOLINT(cppcoreguidelines-owning-memory) -
+                                                                   // intentional immortal singleton, never freed.
         return registry;
-    }
-
-    /**
-     * @brief Register a backend.
-     * @param[in] backend The backend to register.
-     */
-    void register_backend(std::shared_ptr<Backend> backend)
-    {
-        if (nullptr == backend)
-        {
-            utils::log_warning("Attempted to register null backend.");
-            return;
-        }
-
-        const std::string backend_name = backend->name();
-        if (backends_.contains(backend_name))
-        {
-            utils::log_warning("Backend '{}' already registered, ignoring.", backend_name);
-            return;
-        }
-        backends_[backend_name] = std::move(backend);
-        utils::log_trace("Registered backend '{}'.", backend_name);
     }
 
     /**
@@ -214,10 +190,10 @@ class BackendRegistry
 
         // Register available backends.
 #if defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__)
-        register_os_backend();
+        install_builtin(std::make_shared<OSBackend>());
 #endif
 #ifdef MPSS_BACKEND_YUBIKEY
-        register_yubikey_backend();
+        install_builtin(std::make_shared<yubikey::YubiKeyBackend>());
 #endif
 
         // Check MPSS_DEFAULT_BACKEND environment variable.
@@ -255,6 +231,18 @@ class BackendRegistry
   private:
     BackendRegistry() = default;
 
+    void install_builtin(std::shared_ptr<Backend> backend)
+    {
+        const std::string backend_name = backend->name();
+        const bool inserted = backends_.try_emplace(backend_name, std::move(backend)).second;
+        if (!inserted)
+        {
+            utils::log_and_set_error("Built-in backend '{}' was registered twice.", backend_name);
+            return;
+        }
+        utils::log_trace("Registered backend '{}'.", backend_name);
+    }
+
     std::unordered_map<std::string, std::shared_ptr<Backend>> backends_;
     std::shared_ptr<Backend> default_backend_;
     std::atomic<bool> init_attempted_{false};
@@ -280,12 +268,6 @@ class BackendRegistry
 #endif
     }
 };
-
-// Free function to register a backend with the internal registry.
-void register_backend(std::shared_ptr<Backend> backend)
-{
-    BackendRegistry::Instance().register_backend(std::move(backend));
-}
 
 bool is_algorithm_available(Algorithm algorithm)
 {

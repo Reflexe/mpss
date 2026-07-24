@@ -38,13 +38,4 @@ class OSBackend : public Backend
                 std::span<const std::byte> sig) const override;
 };
 
-/**
- * @brief Register the OS backend with the registry.
- *
- * This function should be called during initialization to make the
- * OS backend available. It is automatically called by the platform-specific
- * implementation.
- */
-void register_os_backend();
-
 } // namespace mpss::impl
