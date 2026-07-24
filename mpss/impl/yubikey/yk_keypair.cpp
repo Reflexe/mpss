@@ -16,7 +16,7 @@ YubiKeyKeyPair::YubiKeyKeyPair(std::string_view name, Algorithm algorithm, std::
 {
 }
 
-bool YubiKeyKeyPair::delete_key()
+bool YubiKeyKeyPair::do_delete_key()
 {
     mpss::utils::log_trace("Deleting YubiKey key '{}' in slot {}.", name_, utils::get_slot_name(slot_));
     YubiKeyPIV piv{serial_};
@@ -54,25 +54,10 @@ bool YubiKeyKeyPair::delete_key()
     return deleted;
 }
 
-std::size_t YubiKeyKeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
+std::size_t YubiKeyKeyPair::do_sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
 {
-    if (sig.empty())
-    {
-        // If the signature buffer is empty, we want to return the size of the signature.
-        return mpss::utils::get_max_signature_size(algorithm());
-    }
-
     mpss::utils::log_trace("Signing hash with YubiKey key '{}' in slot {}, hash size {}.", name_,
                            utils::get_slot_name(slot_), hash.size());
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return 0;
-    }
-    if (!mpss::utils::check_sufficient_signature_buffer_size(sig, algorithm()))
-    {
-        return 0;
-    }
 
     YubiKeyPIV piv{serial_};
     if (!piv.is_connected())
@@ -140,26 +125,15 @@ std::size_t YubiKeyKeyPair::sign_hash(std::span<const std::byte> hash, std::span
     return written;
 }
 
-bool YubiKeyKeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
+bool YubiKeyKeyPair::do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    if (hash.empty() || sig.empty())
-    {
-        mpss::utils::log_warning("Nothing to verify.");
-        return false;
-    }
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return false;
-    }
-
     // Extract public key and do software verification.
     const std::size_t expected_public_key_size = mpss::utils::get_public_key_size(algorithm());
     std::vector<std::byte> public_key(expected_public_key_size);
     const std::size_t pk_len = extract_key(public_key);
     if (0 == pk_len)
     {
-        mpss::utils::log_trace("Cannot verify with key '{}': public key extraction failed.", name_);
+        mpss::utils::log_and_set_error("Cannot verify with key '{}': public key extraction failed.", name_);
         return false;
     }
     public_key.resize(pk_len);
@@ -173,18 +147,8 @@ bool YubiKeyKeyPair::verify(std::span<const std::byte> hash, std::span<const std
     return verified;
 }
 
-std::size_t YubiKeyKeyPair::extract_key(std::span<std::byte> public_key) const
+std::size_t YubiKeyKeyPair::do_extract_key(std::span<std::byte> public_key) const
 {
-    if (public_key.empty())
-    {
-        return mpss::utils::get_public_key_size(algorithm());
-    }
-
-    if (!mpss::utils::check_sufficient_public_key_buffer_size(public_key, algorithm()))
-    {
-        return 0;
-    }
-
     // Connect and extract public key directly into the caller's buffer.
     mpss::utils::log_trace("Extracting public key from YubiKey slot {}.", utils::get_slot_name(slot_));
     YubiKeyPIV piv{serial_};

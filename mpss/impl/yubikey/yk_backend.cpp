@@ -13,10 +13,20 @@
 namespace
 {
 
-// Software ECDSA verification using OpenSSL.
-bool openssl_ecdsa_verify(const char *group_name, std::span<const std::byte> hash,
-                          std::span<const std::byte> public_key, std::span<const std::byte> sig)
+// Software ECDSA verification using OpenSSL. Distinguishes a clean signature mismatch from an
+// operational failure so callers can keep the last-error channel meaningful.
+enum class VerifyOutcome
 {
+    verified,
+    mismatch,
+    error
+};
+
+VerifyOutcome openssl_ecdsa_verify(const char *group_name, std::span<const std::byte> hash,
+                                   std::span<const std::byte> public_key, std::span<const std::byte> sig)
+{
+    using enum VerifyOutcome;
+
     // Build an EVP_PKEY from the raw uncompressed EC point (X9.63: 04||X||Y).
     OSSL_PARAM params[] = {
         OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, const_cast<char *>(group_name), 0),
@@ -28,14 +38,14 @@ bool openssl_ecdsa_verify(const char *group_name, std::span<const std::byte> has
     EVP_PKEY_CTX *build_ctx = EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr);
     if (nullptr == build_ctx)
     {
-        return false;
+        return error;
     }
 
     EVP_PKEY *pkey = nullptr;
     if (EVP_PKEY_fromdata_init(build_ctx) <= 0 || EVP_PKEY_fromdata(build_ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0)
     {
         EVP_PKEY_CTX_free(build_ctx);
-        return false;
+        return error;
     }
     EVP_PKEY_CTX_free(build_ctx);
     SCOPE_GUARD(EVP_PKEY_free(pkey));
@@ -44,18 +54,26 @@ bool openssl_ecdsa_verify(const char *group_name, std::span<const std::byte> has
     EVP_PKEY_CTX *verify_ctx = EVP_PKEY_CTX_new(pkey, nullptr);
     if (nullptr == verify_ctx)
     {
-        return false;
+        return error;
     }
     SCOPE_GUARD(EVP_PKEY_CTX_free(verify_ctx));
 
-    int result = -1;
-    if (EVP_PKEY_verify_init(verify_ctx) > 0)
+    if (EVP_PKEY_verify_init(verify_ctx) <= 0)
     {
-        result = EVP_PKEY_verify(verify_ctx, reinterpret_cast<const unsigned char *>(sig.data()), sig.size(),
-                                 reinterpret_cast<const unsigned char *>(hash.data()), hash.size());
+        return error;
     }
 
-    return 1 == result;
+    const int result = EVP_PKEY_verify(verify_ctx, reinterpret_cast<const unsigned char *>(sig.data()), sig.size(),
+                                       reinterpret_cast<const unsigned char *>(hash.data()), hash.size());
+    if (1 == result)
+    {
+        return verified;
+    }
+    if (0 == result)
+    {
+        return mismatch;
+    }
+    return error;
 }
 
 } // namespace
@@ -80,19 +98,19 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     const std::string key_name{name};
     if (key_name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
     if (is_reserved_key_name(name))
     {
-        mpss::utils::log_warning("Key name '{}' is reserved.", key_name);
+        mpss::utils::log_and_set_error("Key name '{}' is reserved.", key_name);
         return nullptr;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
@@ -100,7 +118,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     if (0 == yk_algorithm)
     {
         // Algorithm is not supported by YubiKey.
-        mpss::utils::log_warning("Algorithm not supported by YubiKey PIV.");
+        mpss::utils::log_and_set_error("Algorithm not supported by YubiKey PIV.");
         return nullptr;
     }
 
@@ -146,7 +164,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     // Check if key already exists on the device.
     if (piv.find_slot_by_name(name).has_value())
     {
-        mpss::utils::log_warning("Key '{}' already exists.", name);
+        mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
     }
 
@@ -182,6 +200,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     // Write the key name label to the slot's certificate object.
     if (!piv.write_slot_label(slot, name))
     {
+        mpss::utils::log_and_set_error("Failed to write the name label for key '{}'.", key_name);
         // Clean up: delete the generated key since we can't label it. Deleting a YubiKey PIV key overwrites
         // the key with a dummy key and writes a marker certificate indicating the slot is free. If cleanup
         // itself fails, the slot holds an unlabeled key that MPSS won't find by name, but the slot is
@@ -190,6 +209,16 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
         {
             mpss::utils::log_warning("Failed to clean up slot {} after labeling failure.", utils::get_slot_name(slot));
         }
+        return nullptr;
+    }
+
+    // The create sequence (find free slot -> generate -> label) is not a single PC/SC transaction,
+    // so a concurrent PIV writer could have taken this slot in between. Re-resolve the name and fail
+    // closed rather than hand back a key that may already have been overwritten.
+    const std::optional<YubiKeyPIV::SlotInfo> confirm = piv.find_slot_by_name(name);
+    if (!confirm || confirm->slot != slot || confirm->algorithm != algorithm)
+    {
+        mpss::utils::log_and_set_error("Concurrent modification detected while creating key '{}'; aborting.", key_name);
         return nullptr;
     }
 
@@ -204,13 +233,13 @@ std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
     const std::string key_name{name};
     if (key_name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
     if (is_reserved_key_name(name))
     {
-        mpss::utils::log_warning("Key name '{}' is reserved.", key_name);
+        mpss::utils::log_and_set_error("Key name '{}' is reserved.", key_name);
         return nullptr;
     }
 
@@ -256,13 +285,13 @@ bool YubiKeyBackend::verify(std::span<const std::byte> hash, std::span<const std
 {
     if (hash.empty() || public_key.empty() || sig.empty())
     {
-        mpss::utils::log_warning("Hash, public key, and signature cannot be empty.");
+        mpss::utils::log_and_set_error("Hash, public key, and signature cannot be empty.");
         return false;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return false;
     }
 
@@ -287,12 +316,17 @@ bool YubiKeyBackend::verify(std::span<const std::byte> hash, std::span<const std
         return false;
     }
 
-    if (!openssl_ecdsa_verify(group_name, hash, public_key, sig))
+    switch (openssl_ecdsa_verify(group_name, hash, public_key, sig))
     {
-        mpss::utils::log_and_set_error("Signature verification failed.");
+    case VerifyOutcome::verified:
+        return true;
+    case VerifyOutcome::mismatch:
+        // A plain signature mismatch is a clean negative, not an operational error.
+        return false;
+    default:
+        mpss::utils::log_and_set_error("Signature verification could not be completed.");
         return false;
     }
-    return true;
 }
 
 } // namespace mpss::impl::yubikey

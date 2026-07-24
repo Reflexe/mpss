@@ -420,6 +420,39 @@ TEST_F(MPSS, VerifyStandaloneSignature521)
     VerifyStandaloneSignature(ecdsa_secp521r1_sha512, "521", 64);
 }
 
+TEST_F(MPSS, DefaultBackendHonorsErrorContract)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = "mpss_error_contract_test_key";
+    DeleteKey(key_name);
+    std::unique_ptr<mpss::KeyPair> handle = CreateKey(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, handle);
+
+    const std::vector<std::byte> signed_hash(32, std::byte{'a'});
+    const std::vector<std::byte> other_hash(32, std::byte{'b'});
+    std::vector<std::byte> signature(handle->sign_hash_size());
+    const std::size_t signature_size = handle->sign_hash(signed_hash, signature);
+    ASSERT_NE(0, signature_size);
+    signature.resize(signature_size);
+
+    EXPECT_TRUE(mpss::get_error().empty());
+    ASSERT_TRUE(handle->verify(signed_hash, signature));
+    EXPECT_TRUE(mpss::get_error().empty());
+
+    EXPECT_FALSE(handle->verify({}, {}));
+    EXPECT_FALSE(mpss::get_error().empty());
+
+    EXPECT_FALSE(handle->verify(other_hash, signature));
+    EXPECT_TRUE(mpss::get_error().empty());
+
+    ASSERT_TRUE(handle->delete_key());
+    DeleteKey(key_name);
+}
+
 #if defined(__APPLE__) && !defined(MPSS_CORE_IS_SHARED)
 TEST(AppleErrorPropagation, MissingOpenHasNoErrorDetail)
 {

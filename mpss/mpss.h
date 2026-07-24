@@ -202,7 +202,7 @@ class MPSS_DECOR KeyPair
      * @return true if the key pair was deleted successfully, false otherwise.
      * @note After this function returns successfully, the key pair is no longer valid.
      */
-    virtual bool delete_key() = 0;
+    bool delete_key();
 
     /**
      * @brief Signs the given hash data with the key pair.
@@ -213,7 +213,7 @@ class MPSS_DECOR KeyPair
      * operation failed.
      */
     [[nodiscard]]
-    virtual std::size_t sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const = 0;
+    std::size_t sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const;
 
     /**
      * @brief A convenience method to return the maximum signature buffer size.
@@ -231,7 +231,7 @@ class MPSS_DECOR KeyPair
      * @return true if the signature was verified successfully, false otherwise.
      */
     [[nodiscard]]
-    virtual bool verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const = 0;
+    bool verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const;
 
     /**
      * @brief Retrieves the public (verification) key.
@@ -243,7 +243,7 @@ class MPSS_DECOR KeyPair
      * secret (signing) key.
      */
     [[nodiscard]]
-    virtual std::size_t extract_key(std::span<std::byte> public_key) const = 0;
+    std::size_t extract_key(std::span<std::byte> public_key) const;
 
     /**
      * @brief A convenience method to return the required public (verification) key buffer size.
@@ -272,6 +272,19 @@ class MPSS_DECOR KeyPair
     // NOLINTEND(*-non-private-member-variables-in-classes)
 
     KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description);
+
+    // Non-virtual interface: the public operations above clear the thread-local last-error on
+    // entry and validate inputs, then dispatch to these backend-specific implementations.
+    virtual bool do_delete_key() = 0;
+
+    [[nodiscard]]
+    virtual std::size_t do_sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const = 0;
+
+    [[nodiscard]]
+    virtual bool do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const = 0;
+
+    [[nodiscard]]
+    virtual std::size_t do_extract_key(std::span<std::byte> public_key) const = 0;
 };
 
 } // namespace mpss

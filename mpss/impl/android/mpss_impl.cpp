@@ -115,7 +115,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
     if (name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
@@ -278,13 +278,13 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 {
     if (name.empty())
     {
-        mpss::utils::log_warning("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
@@ -298,7 +298,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     std::unique_ptr<KeyPair> existingKey = open_key(name);
     if (nullptr != existingKey)
     {
-        mpss::utils::log_warning("Key '{}' already exists.", name);
+        mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
     }
 
@@ -365,7 +365,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         algoFieldId = env->GetStaticFieldID(algorithmClass, "secp521r1", "Lcom/microsoft/research/mpss/Algorithm;");
         break;
     default:
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
@@ -431,13 +431,13 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
 {
     if (hash.empty() || public_key.empty() || sig.empty())
     {
-        mpss::utils::log_warning("Hash, public key, and signature cannot be empty.");
+        mpss::utils::log_and_set_error("Hash, public key, and signature cannot be empty.");
         return false;
     }
 
     if (unsupported == algorithm)
     {
-        mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
         return false;
     }
 
@@ -452,8 +452,8 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
     const std::size_t expected_pk_size = mpss::utils::get_public_key_size(algorithm);
     if (public_key.size() != expected_pk_size)
     {
-        mpss::utils::log_warning("Public key length {} does not match algorithm '{}' (expected {}).", public_key.size(),
-                                 get_algorithm_info(algorithm).type_str, expected_pk_size);
+        mpss::utils::log_and_set_error("Public key length {} does not match algorithm '{}' (expected {}).",
+                                       public_key.size(), get_algorithm_info(algorithm).type_str, expected_pk_size);
         return false;
     }
 

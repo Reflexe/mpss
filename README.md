@@ -614,6 +614,30 @@ if (!key_pair) {
 }
 ```
 
+#### Last-error contract
+
+Every backend (Windows, Apple, Android, and YubiKey) honors the same last-error contract, so
+`mpss::get_error()` behaves identically regardless of which backend is active:
+
+1. **Cleared on entry.** Each public operation clears the last-error string before it does any work.
+   After a call returns, `mpss::get_error()` reflects *only* that call — never a stale message left
+   over from an earlier operation on the same thread.
+2. **Set on operational failure.** A descriptive message is set whenever an operation cannot be
+   carried out: empty or malformed input, an unsupported algorithm or key policy, attempting to
+   create a key whose name already exists, or a failure reported by the underlying OS, device, or
+   cryptographic layer. In these cases the call returns its failure value (`nullptr`, `false`, or
+   `0`) *and* leaves a non-empty error.
+3. **Empty on a clean outcome.** A clean result never sets an error, even when the return value is
+   negative. This includes success, a `verify` that returns `false` solely because the signature
+   does not match the data, and `KeyPair::Open` returning `nullptr` because the requested key does
+   not exist. In all of these `mpss::get_error()` is empty.
+4. **Thread-local and immediate.** The last error is stored per thread and is only meaningful
+   immediately after a failed call on the same thread. Distinguish the two negative cases by pairing
+   the return value with `get_error()`: a `false`/`nullptr` result *with* an empty error is the
+   clean outcome of rule 3, while a non-empty error is the operational failure of rule 2.
+
+The C interface (`mpss-openssl`) exposes the same contract through `mpss_get_error()`.
+
 ### Logging
 
 MPSS provides a simple logging API (see [mpss/log.h](mpss/log.h)) that can be adapted to work with almost any logging system.
@@ -844,7 +868,7 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **Performance**: Operations are slower than OS-native backends due to USB communication overhead. MPSS does not persist the connection to the YubiKey, but creates a new connection for each operation.
 
-1. **Concurrent Access**: Only one application can access the YubiKey PIV at a time. Concurrent connections from multiple applications will fail.
+1. **Concurrent Access**: MPSS assumes it is the sole PIV writer to the target device during key creation and deletion. It opens a fresh connection per operation and does not hold a PC/SC transaction across the multi-step create sequence (the libykpiv API exposes no such primitive). A concurrent PIV writer — another MPSS instance, or a third-party PIV tool — that mutates the same device during a `create_key` can therefore clobber a freshly generated key. MPSS detects this specific case: at the end of `create_key` it re-resolves the slot by name and fails the creation (rather than returning a key that may already have been overwritten) if the slot no longer belongs to the new key. Serializing access across separate processes is out of scope; run one PIV writer at a time against a given device.
 
 1. **PIN Policy**: Keys created by MPSS use PIN policy `once` by default (configurable via `MPSS_YUBIKEY_PINPOLICY`). With the connection-per-operation architecture, `once` and `always` behave identically, both requiring the PIN on every MPSS call, because each operation opens a fresh PIV session. The only policy that changes MPSS behavior is `never`, which allows signing operations to succeed without a PIN prompt. Because a `never` key is permanently unprotected, `MPSS_YUBIKEY_PINPOLICY=never` is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `once`); a policy set programmatically via `KeyPolicy` is not gated. Note that key creation and deletion operations need access to the management key, which, if PIN-protected, will require the PIN no matter what (`MPSS_YUBIKEY_PINPOLICY` has nothing to do with this).
 

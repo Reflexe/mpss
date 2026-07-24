@@ -13,6 +13,7 @@ namespace mpss
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
+    utils::set_error({});
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
                      get_algorithm_info(algorithm).type_str);
     return impl::create_key(name, algorithm, policy);
@@ -21,6 +22,7 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                          KeyPolicy policy)
 {
+    utils::set_error({});
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend_name);
     return impl::create_key(backend_name, name, algorithm, policy);
@@ -28,12 +30,14 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
 {
+    utils::set_error({});
     utils::log_trace("KeyPair::Open called for key '{}'.", name);
     return impl::open_key(name);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name)
 {
+    utils::set_error({});
     utils::log_trace("KeyPair::Open called for key '{}' on backend '{}'.", name, backend_name);
     return impl::open_key(backend_name, name);
 }
@@ -113,6 +117,7 @@ std::vector<Algorithm> get_available_algorithms()
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig)
 {
+    utils::set_error({});
     utils::log_trace("Standalone verify called with algorithm '{}', hash size {}, signature size {}.",
                      get_algorithm_info(algorithm).type_str, hash.size(), sig.size());
     return impl::verify(hash, public_key, algorithm, sig);
@@ -121,6 +126,7 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig, std::string_view backend_name)
 {
+    utils::set_error({});
     utils::log_trace("Standalone verify called with algorithm '{}' on backend '{}', hash size {}, signature size {}.",
                      get_algorithm_info(algorithm).type_str, backend_name, hash.size(), sig.size());
     return impl::verify(backend_name, hash, public_key, algorithm, sig);
@@ -149,6 +155,61 @@ std::size_t KeyPair::sign_hash_size() const
 std::size_t KeyPair::extract_key_size() const
 {
     return utils::get_public_key_size(algorithm());
+}
+
+bool KeyPair::delete_key()
+{
+    utils::set_error({});
+    return do_delete_key();
+}
+
+std::size_t KeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
+{
+    utils::set_error({});
+    if (sig.empty())
+    {
+        // An empty signature buffer is a request for the required signature size.
+        return utils::get_max_signature_size(algorithm());
+    }
+    if (!utils::check_exact_hash_size(hash, algorithm()))
+    {
+        return 0;
+    }
+    if (!utils::check_sufficient_signature_buffer_size(sig, algorithm()))
+    {
+        return 0;
+    }
+    return do_sign_hash(hash, sig);
+}
+
+bool KeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
+{
+    utils::set_error({});
+    if (hash.empty() || sig.empty())
+    {
+        utils::log_and_set_error("Nothing to verify.");
+        return false;
+    }
+    if (!utils::check_exact_hash_size(hash, algorithm()))
+    {
+        return false;
+    }
+    return do_verify(hash, sig);
+}
+
+std::size_t KeyPair::extract_key(std::span<std::byte> public_key) const
+{
+    utils::set_error({});
+    if (public_key.empty())
+    {
+        // An empty output buffer is a request for the required public key size.
+        return utils::get_public_key_size(algorithm());
+    }
+    if (!utils::check_sufficient_public_key_buffer_size(public_key, algorithm()))
+    {
+        return 0;
+    }
+    return do_extract_key(public_key);
 }
 
 KeyPair::KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description)

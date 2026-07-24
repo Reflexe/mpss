@@ -12,7 +12,7 @@
 namespace mpss::impl::os
 {
 
-bool WindowsKeyPair::delete_key()
+bool WindowsKeyPair::do_delete_key()
 {
     mpss::utils::log_trace("Deleting Windows key.");
     SECURITY_STATUS status = ::NCryptDeleteKey(key_handle_, /* dwFlags */ 0);
@@ -29,24 +29,9 @@ bool WindowsKeyPair::delete_key()
     return true;
 }
 
-std::size_t WindowsKeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
+std::size_t WindowsKeyPair::do_sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
 {
-    if (sig.empty())
-    {
-        // If the signature buffer is empty, we want to return the size of the signature.
-        return mpss::utils::get_max_signature_size(algorithm());
-    }
-
     mpss::utils::log_trace("Signing hash with Windows key, hash size {}.", hash.size());
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return 0;
-    }
-    if (!mpss::utils::check_sufficient_signature_buffer_size(sig, algorithm()))
-    {
-        return 0;
-    }
 
     const std::size_t hash_bytes = hash.size();
     const DWORD hash_bytes_dw = mpss::utils::narrow_or_error<DWORD>(hash_bytes);
@@ -144,19 +129,8 @@ std::size_t WindowsKeyPair::sign_hash(std::span<const std::byte> hash, std::span
     return result;
 }
 
-bool WindowsKeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
+bool WindowsKeyPair::do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    if (hash.empty() || sig.empty())
-    {
-        mpss::utils::log_warning("Nothing to verify.");
-        return false;
-    }
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return false;
-    }
-
     const std::size_t hash_bytes = hash.size();
     const DWORD hash_bytes_dw = mpss::utils::narrow_or_error<DWORD>(hash_bytes);
     if (0 == hash_bytes_dw)
@@ -195,17 +169,8 @@ bool WindowsKeyPair::verify(std::span<const std::byte> hash, std::span<const std
     return true;
 }
 
-std::size_t WindowsKeyPair::extract_key(std::span<std::byte> public_key) const
+std::size_t WindowsKeyPair::do_extract_key(std::span<std::byte> public_key) const
 {
-    if (public_key.empty())
-    {
-        return mpss::utils::get_public_key_size(algorithm());
-    }
-    else if (!mpss::utils::check_sufficient_public_key_buffer_size(public_key, algorithm()))
-    {
-        return 0;
-    }
-
     mpss::utils::log_trace("Extracting public key from Windows key.");
 
     crypto_params const *const crypto = utils::get_crypto_params(algorithm_);

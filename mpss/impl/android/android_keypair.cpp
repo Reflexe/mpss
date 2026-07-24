@@ -14,7 +14,7 @@ using jni_string = utils::JNIObj<jstring>;
 using jni_object = utils::JNIObj<jobject>;
 using jni_bytearray = utils::JNIObj<jbyteArray>;
 
-bool AndroidKeyPair::delete_key()
+bool AndroidKeyPair::do_delete_key()
 {
     mpss::utils::log_trace("Deleting Android key '{}'.", key_name_);
 
@@ -81,24 +81,9 @@ bool AndroidKeyPair::delete_key()
     return true;
 }
 
-std::size_t AndroidKeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
+std::size_t AndroidKeyPair::do_sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
 {
-    if (sig.empty())
-    {
-        // If the signature buffer is empty, we want to return the size of the signature.
-        return mpss::utils::get_max_signature_size(algorithm());
-    }
-
     mpss::utils::log_trace("Signing hash with Android key '{}', hash size {}.", key_name_, hash.size());
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return 0;
-    }
-    if (!mpss::utils::check_sufficient_signature_buffer_size(sig, algorithm()))
-    {
-        return 0;
-    }
 
     JNIEnvGuard guard;
     if (!guard.valid())
@@ -164,19 +149,8 @@ std::size_t AndroidKeyPair::sign_hash(std::span<const std::byte> hash, std::span
     return sig_size;
 }
 
-bool AndroidKeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
+bool AndroidKeyPair::do_verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    if (hash.empty() || sig.empty())
-    {
-        mpss::utils::log_warning("Nothing to verify.");
-        return false;
-    }
-
-    if (!mpss::utils::check_exact_hash_size(hash, algorithm()))
-    {
-        return false;
-    }
-
     JNIEnvGuard guard;
     if (!guard.valid())
     {
@@ -249,17 +223,8 @@ bool AndroidKeyPair::verify(std::span<const std::byte> hash, std::span<const std
     return verified.value();
 }
 
-std::size_t AndroidKeyPair::extract_key(std::span<std::byte> public_key) const
+std::size_t AndroidKeyPair::do_extract_key(std::span<std::byte> public_key) const
 {
-    if (public_key.empty())
-    {
-        return mpss::utils::get_public_key_size(algorithm());
-    }
-    else if (!mpss::utils::check_sufficient_public_key_buffer_size(public_key, algorithm()))
-    {
-        return 0;
-    }
-
     mpss::utils::log_trace("Extracting public key from Android key '{}'.", key_name_);
 
     JNIEnvGuard guard;
