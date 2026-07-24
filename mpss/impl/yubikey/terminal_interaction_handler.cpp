@@ -22,6 +22,30 @@ namespace
 {
 
 /**
+ * @brief Read a line from `is` into `out` without materializing the secret in any intermediate
+ *        non-cleansing buffer.
+ *
+ * Mirrors std::getline semantics for the '\n' delimiter: consumes up to and including the newline,
+ * discards the newline, and reports success if any characters were read before end-of-input. Cannot
+ * use std::getline directly because SecureString does not expose its basic_string base.
+ */
+bool getline_secure(std::istream &is, mpss::SecureString &out)
+{
+    char ch = '\0';
+    bool any = false;
+    while (is.get(ch))
+    {
+        if ('\n' == ch)
+        {
+            return true;
+        }
+        out.push_back(ch);
+        any = true;
+    }
+    return any;
+}
+
+/**
  * @brief Read a line from stdin with echo disabled, directly into a SecureString.
  * @return The line read, or std::nullopt if stdin is not a terminal or an error occurred.
  */
@@ -50,7 +74,7 @@ std::optional<mpss::SecureString> read_secure_line()
     }
 
     mpss::SecureString line;
-    if (!std::getline(std::cin, line))
+    if (!getline_secure(std::cin, line))
     {
         SetConsoleMode(h_stdin, saved_mode);
         return std::nullopt;
@@ -81,7 +105,7 @@ std::optional<mpss::SecureString> read_secure_line()
     }
 
     mpss::SecureString line;
-    if (!std::getline(std::cin, line))
+    if (!getline_secure(std::cin, line))
     {
         tcsetattr(STDIN_FILENO, TCSANOW, &old_attrs);
         return std::nullopt;

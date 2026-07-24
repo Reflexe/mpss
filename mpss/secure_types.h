@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <openssl/crypto.h>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace mpss
@@ -56,20 +57,32 @@ using SecureByteVector = std::vector<std::byte, CleansingAllocator<std::byte>>;
 /**
  * @brief A string type that securely wipes its memory on deallocation.
  *
- * Inherits from std::basic_string with CleansingAllocator, which wipes heap-allocated
- * buffers via OPENSSL_cleanse on deallocation. Additionally, the destructor and move/copy
- * operations wipe the string's buffer to cover the Small String Optimization (SSO) case,
- * where short strings are stored inline and never pass through the allocator. This is
- * critical for PIN-length strings (6-8 characters), which are always SSO on major
- * implementations.
+ * Backed by std::basic_string with CleansingAllocator, which wipes heap-allocated buffers via
+ * OPENSSL_cleanse on deallocation. Additionally, the destructor and move/copy operations wipe the
+ * string's buffer to cover the Small String Optimization (SSO) case, where short strings are stored
+ * inline and never pass through the allocator. This is critical for PIN-length strings (6-8
+ * characters), which are always SSO on major implementations.
+ *
+ * Inheritance is private: only a minimal, audited surface is re-exported. Operations that would
+ * return a detached std::basic_string (substr, operator+) or slice to the base type are deliberately
+ * not exposed, so an accidental attempt to copy secret bytes into a non-cleansing string is a
+ * compile error rather than a silent leak.
  */
-class SecureString : public std::basic_string<char, std::char_traits<char>, CleansingAllocator<char>>
+class SecureString : private std::basic_string<char, std::char_traits<char>, CleansingAllocator<char>>
 {
     using Base = std::basic_string<char, std::char_traits<char>, CleansingAllocator<char>>;
 
   public:
     using Base::Base;
-    using Base::operator=;
+
+    // Vetted, non-secret-copying surface. Each of these either observes the buffer in place or
+    // mutates it in place; none produce a detached basic_string holding secret bytes.
+    using Base::c_str;
+    using Base::data;
+    using Base::empty;
+    using Base::push_back;
+    using Base::size;
+    using Base::operator std::basic_string_view<char, std::char_traits<char>>;
 
     SecureString() = default;
 
@@ -106,6 +119,11 @@ class SecureString : public std::basic_string<char, std::char_traits<char>, Clea
         return *this;
     }
 
+    friend bool operator==(const SecureString &lhs, const SecureString &rhs) noexcept
+    {
+        return 0 == static_cast<const Base &>(lhs).compare(static_cast<const Base &>(rhs));
+    }
+
   private:
     /**
      * @brief Cleanse the string's buffer using OPENSSL_cleanse.
@@ -121,6 +139,12 @@ class SecureString : public std::basic_string<char, std::char_traits<char>, Clea
         }
     }
 };
+
+// Lock in the leak-prevention invariant: a SecureString must never implicitly slice to its
+// non-SSO-cleansing base string. Reverting to public inheritance would break this assertion.
+static_assert(
+    !std::is_convertible_v<SecureString, std::basic_string<char, std::char_traits<char>, CleansingAllocator<char>>>,
+    "SecureString must not be implicitly convertible to its base string type.");
 
 } // namespace mpss
 
