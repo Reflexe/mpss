@@ -10,7 +10,7 @@
 extern "C"
 {
     bool MPSS_SE_SecureEnclaveIsSupported();
-    bool MPSS_SE_CreateKey(const char *keyName);
+    bool MPSS_SE_CreateKey(const char *keyName, bool requireUserPresence);
     std::int32_t MPSS_SE_OpenExistingKey(const char *keyName);
     bool MPSS_SE_RemoveExistingKey(const char *keyName);
     void MPSS_SE_CloseKey(const char *keyName);

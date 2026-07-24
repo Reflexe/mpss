@@ -24,6 +24,8 @@
 #define MPSS_KEY_POLICY_YUBIKEY_TOUCH_ALWAYS (2U << 4U)
 #define MPSS_KEY_POLICY_YUBIKEY_TOUCH_CACHED (3U << 4U)
 #endif
+
+#define MPSS_KEY_POLICY_APPLE_SECURE_ENCLAVE_USER_PRESENCE (1ULL << 8U)
 // NOLINTEND(*-macro-to-enum)
 
 #ifdef __cplusplus

@@ -13,7 +13,7 @@ namespace os
 // Forward declarations for platform-specific implementations.
 // These are implemented in each platform's mpss_impl.cpp.
 [[nodiscard]]
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm);
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
@@ -22,9 +22,9 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
 
 } // namespace os
 
-std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy /*policy*/) const
+std::unique_ptr<KeyPair> OSBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const
 {
-    return os::create_key(name, algorithm);
+    return os::create_key(name, algorithm, policy);
 }
 
 std::unique_ptr<KeyPair> OSBackend::open_key(std::string_view name) const

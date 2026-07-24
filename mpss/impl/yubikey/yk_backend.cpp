@@ -104,6 +104,16 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
         return nullptr;
     }
 
+    constexpr std::uint64_t supported_policy = static_cast<std::uint64_t>(yubikey_pin_mask | yubikey_touch_mask);
+    const std::uint64_t raw_policy = static_cast<std::uint64_t>(policy);
+    const std::uint64_t pin_policy = raw_policy & static_cast<std::uint64_t>(yubikey_pin_mask);
+    const std::uint64_t touch_policy = (raw_policy & static_cast<std::uint64_t>(yubikey_touch_mask)) >> 4U;
+    if (0 != (raw_policy & ~supported_policy) || 3U < pin_policy || 3U < touch_policy)
+    {
+        mpss::utils::log_and_set_error("YubiKey backend does not support the requested key policy.");
+        return nullptr;
+    }
+
     // Determine which YubiKey to target.
     const std::optional<std::uint32_t> target_serial = utils::get_serial_from_env();
     const std::vector<std::uint32_t> serials =

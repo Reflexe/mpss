@@ -269,15 +269,21 @@ private func getKeyName(_ keyName: String) -> String {
 /// Create a random P256 private key in the Secure Enclave.
 /// - Parameters:
 ///     - keyName: Name that identifies the private key.
+///     - requireUserPresence: Whether signing requires system user authentication.
 /// - Returns: Random private key, or nil if it could not be created.
-private func createKeyPriv(_ keyName: String) -> SecureEnclave.P256.Signing.PrivateKey? {
+private func createKeyPriv(
+    _ keyName: String, requireUserPresence: Bool
+) -> SecureEnclave.P256.Signing.PrivateKey? {
     do {
+        let accessFlags: SecAccessControlCreateFlags =
+            requireUserPresence ? [.privateKeyUsage, .userPresence] : []
+
         // Configure Keychain access requirements.
         guard
             let access = SecAccessControlCreateWithFlags(
                 nil,
                 kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                [],
+                accessFlags,
                 nil
             )
         else {
@@ -380,21 +386,23 @@ func closeKey(_ keyName: UnsafePointer<CChar>) {
 /// Create a random P256 private key in the Secure Enclave.
 /// - Parameters:
 ///     - keyName: Name that identifies the created key.
+///     - requireUserPresence: Whether signing requires system user authentication.
 /// - Returns: True if key was created successfully, False otherwise.
 @_cdecl("MPSS_SE_CreateKey")
-func createKey(_ keyName: UnsafePointer<CChar>) -> Bool {
+func createKey(_ keyName: UnsafePointer<CChar>, _ requireUserPresence: Bool) -> Bool {
     clearError()
     let keyNameString = String(cString: keyName)
-    return createKey(keyNameString)
+    return createKey(keyNameString, requireUserPresence: requireUserPresence)
 }
 
 /// Create a random P256 private key in the Secure Enclave.
 /// - Parameters:
 ///     - keyName: Name that identifies the created key.
+///     - requireUserPresence: Whether signing requires system user authentication.
 /// - Returns: True if key was created successfully, False otherwise.
-private func createKey(_ keyName: String) -> Bool {
+private func createKey(_ keyName: String, requireUserPresence: Bool) -> Bool {
     let fullKeyName = getKeyName(keyName)
-    let privateKey = createKeyPriv(fullKeyName)
+    let privateKey = createKeyPriv(fullKeyName, requireUserPresence: requireUserPresence)
     return (privateKey != nil)
 }
 

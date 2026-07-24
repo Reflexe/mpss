@@ -477,6 +477,12 @@ TEST(KeyPolicyDefines, NoneMatchesCppEnum)
     static_assert(MPSS_KEY_POLICY_NONE == static_cast<std::uint64_t>(mpss::KeyPolicy::none));
 }
 
+TEST(KeyPolicyDefines, AppleSecureEnclaveUserPresenceMatchesCppEnum)
+{
+    static_assert(MPSS_KEY_POLICY_APPLE_SECURE_ENCLAVE_USER_PRESENCE ==
+                  static_cast<std::uint64_t>(mpss::KeyPolicy::apple_secure_enclave_user_presence));
+}
+
 #ifdef MPSS_BACKEND_YUBIKEY
 
 TEST(KeyPolicyDefines, YubikeyPinDefinesMatchCppEnum)

@@ -114,7 +114,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.key);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
     mpss::utils::set_error({});
     const std::string key_name{name};
@@ -130,6 +130,23 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
+    constexpr auto supported_policy = static_cast<std::uint64_t>(KeyPolicy::apple_secure_enclave_user_presence);
+    const auto raw_policy = static_cast<std::uint64_t>(policy);
+    if (0 != (raw_policy & ~supported_policy))
+    {
+        mpss::utils::log_and_set_error("Apple backend does not support the requested key policy.");
+        return nullptr;
+    }
+
+    const bool require_user_presence = KeyPolicy::none != (policy & KeyPolicy::apple_secure_enclave_user_presence);
+    const bool secure_enclave_supported = MPSS_SE_SecureEnclaveIsSupported();
+    if (require_user_presence && (!secure_enclave_supported || ecdsa_secp256r1_sha256 != algorithm))
+    {
+        mpss::utils::log_and_set_error(
+            "Apple Secure Enclave user presence requires ecdsa_secp256r1_sha256 and an available Secure Enclave.");
+        return nullptr;
+    }
+
     OpenKeyResult existing_key = try_open_key(key_name);
     if (OpenKeyStatus::operational_error == existing_key.status)
     {
@@ -141,11 +158,11 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
         return nullptr;
     }
 
-    if (MPSS_SE_SecureEnclaveIsSupported() && ecdsa_secp256r1_sha256 == algorithm)
+    if (secure_enclave_supported && ecdsa_secp256r1_sha256 == algorithm)
     {
         // Secure Enclave only supports ECDSA P256.
         mpss::utils::log_trace("Creating key '{}' in Secure Enclave.", key_name);
-        if (MPSS_SE_CreateKey(key_name.c_str()))
+        if (MPSS_SE_CreateKey(key_name.c_str(), require_user_presence))
         {
             mpss::utils::log_trace("Key '{}' created in Secure Enclave.", key_name);
             return std::make_unique<AppleSEKeyPair>(name, algorithm);

@@ -14,12 +14,14 @@ namespace mpss
  *
  * KeyPolicy is a bitmask of packed multi-bit fields. Each field encodes a single policy aspect
  * (e.g., YubiKey PIN policy, YubiKey touch policy). Within each field, zero means "unset" - the
- * backend falls back to environment variables or its hardcoded default.
+ * backend falls back to environment variables or its hardcoded default. A backend rejects any
+ * non-zero policy field it cannot enforce.
  *
  * Bit layout:
  * - Bits 0-3:  YubiKey PIN policy (4-bit field).
  * - Bits 4-7:  YubiKey touch policy (4-bit field).
- * - Bits 8-63: Reserved for other backends.
+ * - Bit 8:      Apple Secure Enclave user presence.
+ * - Bits 9-63:  Reserved for other backends.
  */
 enum class MPSS_DECOR KeyPolicy : std::uint64_t
 {
@@ -47,6 +49,9 @@ enum class MPSS_DECOR KeyPolicy : std::uint64_t
     yubikey_touch_cached = 3U << 4U,
     // Values 4-15 reserved (auto, future policies).
 #endif // MPSS_BACKEND_YUBIKEY
+
+    /** @brief Require system user authentication when a Secure Enclave key signs. */
+    apple_secure_enclave_user_presence = 1ULL << 8U,
 };
 
 #ifdef MPSS_BACKEND_YUBIKEY

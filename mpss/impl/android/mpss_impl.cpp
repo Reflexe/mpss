@@ -274,7 +274,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
     if (name.empty())
     {
@@ -285,6 +285,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     if (unsupported == algorithm)
     {
         mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        return nullptr;
+    }
+
+    if (KeyPolicy::none != policy)
+    {
+        mpss::utils::log_and_set_error("Android backend does not support the requested key policy.");
         return nullptr;
     }
 

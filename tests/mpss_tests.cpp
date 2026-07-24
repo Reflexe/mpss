@@ -469,9 +469,54 @@ TEST(AppleErrorPropagation, WrapperErrorsAreConsumedOnce)
     const std::string unicode_error = mpss::impl::os::utils::take_secure_enclave_error();
     EXPECT_NE(std::string::npos, unicode_error.find(unicode_key_name));
 }
+
+TEST_F(MPSS, DISABLED_SecureEnclaveUserPresenceInteractiveSigning)
+{
+    if (!MPSS_SE_SecureEnclaveIsSupported())
+    {
+        GTEST_SKIP() << "Secure Enclave not available";
+    }
+
+    const std::string key_name = "mpss_apple_user_presence_signing_test";
+    DeleteKey(key_name);
+    std::unique_ptr<mpss::KeyPair> handle =
+        mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "os", KeyPolicy::apple_secure_enclave_user_presence);
+    ASSERT_NE(nullptr, handle);
+    handle.reset();
+
+    handle = mpss::KeyPair::Open(key_name, "os");
+    ASSERT_NE(nullptr, handle);
+    const std::vector<std::byte> hash(32, std::byte{'a'});
+    std::vector<std::byte> signature(handle->sign_hash_size());
+    const std::size_t signature_size = handle->sign_hash(hash, signature);
+    EXPECT_NE(0, signature_size);
+    if (0 != signature_size)
+    {
+        signature.resize(signature_size);
+        EXPECT_TRUE(handle->verify(hash, signature));
+    }
+    EXPECT_TRUE(handle->delete_key());
+}
 #endif
 
 #ifdef __APPLE__
+TEST_F(MPSS, SecureEnclaveUserPresenceFailsWithoutSupportedKey)
+{
+    const std::string key_name = "mpss_apple_user_presence_unsupported_test";
+    DeleteKey(key_name);
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os",
+                                             KeyPolicy::apple_secure_enclave_user_presence));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("requires ecdsa_secp256r1_sha256"));
+}
+
+TEST_F(MPSS, AppleBackendRejectsUnsupportedKeyPolicy)
+{
+    const std::string key_name = "mpss_apple_unsupported_policy_test";
+    DeleteKey(key_name);
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "os", static_cast<KeyPolicy>(1ULL)));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
+}
+
 TEST_F(MPSS, InvalidSignatureClearsOperationalError)
 {
     if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
@@ -525,6 +570,17 @@ TEST_F(MPSS, VerificationErrorSurvivesKeyDestruction)
     handle.reset();
     EXPECT_EQ(verification_error, mpss::get_error());
     DeleteKey(key_name);
+}
+#endif
+
+#if defined(__ANDROID__) || defined(_WIN32)
+TEST_F(MPSS, OSBackendRejectsUnsupportedKeyPolicy)
+{
+    const std::string key_name = "mpss_os_unsupported_policy_test";
+    DeleteKey(key_name);
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "os",
+                                             KeyPolicy::apple_secure_enclave_user_presence));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
 }
 #endif
 
@@ -843,6 +899,22 @@ TEST(KeyPolicyTest, CombineAndExtractAllFields)
 }
 
 #endif // MPSS_BACKEND_YUBIKEY
+
+#ifdef MPSS_BACKEND_YUBIKEY
+TEST_F(MPSS, YubiKeyBackendRejectsUnsupportedKeyPolicy)
+{
+    const std::string key_name = "mpss_yubikey_unsupported_policy_test";
+    DeleteKey(key_name);
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "yubikey",
+                                             KeyPolicy::apple_secure_enclave_user_presence));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "yubikey", static_cast<KeyPolicy>(4U)));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
+    EXPECT_EQ(nullptr,
+              mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "yubikey", static_cast<KeyPolicy>(4U << 4U)));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
+}
+#endif
 
 TEST(KeyPolicyTest, CreateKeyWithPolicyNone)
 {

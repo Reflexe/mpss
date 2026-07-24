@@ -292,7 +292,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::make_unique<WindowsKeyPair>(algorithm, key_handle, /* hardware_backed */ true, storage_description);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
     const std::string key_name{name};
     if (key_name.empty())
@@ -304,6 +304,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm)
     if (unsupported == algorithm)
     {
         mpss::utils::log_warning("Unsupported algorithm '{}'.", get_algorithm_info(algorithm).type_str);
+        return nullptr;
+    }
+
+    if (KeyPolicy::none != policy)
+    {
+        mpss::utils::log_and_set_error("Windows backend does not support the requested key policy.");
         return nullptr;
     }
 

@@ -752,6 +752,21 @@ auto key = mpss::KeyPair::Create("my-key", mpss::Algorithm::ecdsa_secp256r1_sha2
 auto key2 = mpss::KeyPair::Create("my-key2", mpss::Algorithm::ecdsa_secp256r1_sha256);
 ```
 
+On Apple platforms, Secure Enclave keys can require system user authentication when used for signing:
+
+```cpp
+auto key = mpss::KeyPair::Create(
+    "user-present-key", mpss::Algorithm::ecdsa_secp256r1_sha256,
+    "os",
+    mpss::KeyPolicy::apple_secure_enclave_user_presence);
+```
+
+This policy is enforced by the Secure Enclave access control attached when the key is created. The operating system
+chooses an available authentication mechanism, such as Touch ID, Face ID, or the device passcode. Creation fails
+rather than silently using a software key if the requested algorithm or an available Secure Enclave cannot satisfy
+the policy. Backends reject policy flags they cannot enforce. Existing keys are unaffected, and `KeyPolicy::none`
+preserves non-interactive signing.
+
 ### Custom Interaction Handlers
 
 Applications that need custom PIN entry (e.g., a GUI dialog) or touch notifications can install a custom interaction handler:
@@ -906,7 +921,8 @@ OSSL_PARAM params[] = {
     OSSL_PARAM_construct_utf8_string("mpss_algorithm", algorithm, 0),
     // Optionally specify a backend (e.g., "os" or "yubikey"). If omitted, the default backend is used.
     // OSSL_PARAM_construct_utf8_string("mpss_backend", backend_name, 0),
-    // Optionally specify a key policy (e.g., YubiKey PIN/touch policy). If omitted, env vars / backend defaults apply.
+    // Optionally specify a backend-specific key policy. If omitted, backend defaults apply.
+    // uint64_t policy = MPSS_KEY_POLICY_APPLE_SECURE_ENCLAVE_USER_PRESENCE;
     // uint64_t policy = MPSS_KEY_POLICY_YUBIKEY_PIN_ONCE | MPSS_KEY_POLICY_YUBIKEY_TOUCH_CACHED;
     // OSSL_PARAM_construct_uint64("mpss_key_policy", &policy),
     OSSL_PARAM_END};
@@ -1012,7 +1028,7 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_key_name` | UTF-8 string | Yes | A persistent name under which the key is stored in the secure environment. Must be unique and must not exceed 64 characters. |
 | `mpss_algorithm` | UTF-8 string | Yes | The signature algorithm suite, e.g., `"ecdsa_secp256r1_sha256"`. (Only used for key generation; opening an existing key is done through `OSSL_STORE`, see above.) |
 | `mpss_backend` | UTF-8 string | No | The backend to use (e.g., `"os"` or `"yubikey"`). If omitted, the default backend is used. Use `mpss_get_available_backends()` to list available backends. |
-| `mpss_key_policy` | uint64 | No | Backend-specific key policy flags (e.g., YubiKey PIN/touch policy). Use the `MPSS_KEY_POLICY_*` constants from `mpss-openssl/api.h`. If omitted, defaults to `MPSS_KEY_POLICY_NONE` (env vars / backend defaults apply). |
+| `mpss_key_policy` | uint64 | No | Backend-specific key policy flags (e.g., Apple Secure Enclave user presence or YubiKey PIN/touch policy). Use the `MPSS_KEY_POLICY_*` constants from `mpss-openssl/api.h`. If omitted, defaults to `MPSS_KEY_POLICY_NONE` (backend defaults apply). |
 
 **Gettable parameters** (queried via `EVP_PKEY_get_params` on an existing key):
 
