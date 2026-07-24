@@ -712,6 +712,11 @@ If you prefer to use a custom management key instead of the PIN-protected mode, 
 export MPSS_YUBIKEY_MGM_KEY=<32, 48, or 64-character hexadecimal string>
 ```
 
+Environment variables are not secure storage for secrets. Their values may be visible to other
+processes running as the same user, inherited by child processes, or included in crash reports and
+CI logs. For production use, prefer the PIN-protected management-key mode described above, which
+avoids placing the management key in the process environment.
+
 **Note**: MPSS does not try the publicly known factory-default management key unless
 `MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY` is explicitly enabled. This opt-in is intended for initial
 setup and testing only:
@@ -727,15 +732,20 @@ the factory default, regardless of this opt-in.
 
 ### Runtime Configuration
 
-You can provide the PIN to MPSS via an environment variable, as follows:
+For unattended use, MPSS can read the PIN from an environment variable:
 
 ```bash
 export MPSS_YUBIKEY_PIN=123456  # Replace with your actual PIN.
 ```
 
-If `MPSS_YUBIKEY_PIN` is not set, MPSS will prompt for the PIN interactively on the terminal (with echo disabled).
-Applications can also provide custom PIN input handlers, as we explain in [Custom Interaction Handlers](#custom-interaction-handlers).
-Non-interactive environments (e.g., CI/CD pipelines with piped stdin) must use the environment variable.
+This has the same exposure risks described above for the management key. MPSS copies the PIN into
+memory-cleansing storage, but it cannot remove the original value from the process environment.
+
+If `MPSS_YUBIKEY_PIN` is not set, MPSS prompts for the PIN on the terminal with echo disabled.
+Applications can also install a [custom PIN input handler](#custom-interaction-handlers), including
+in non-interactive environments. A custom handler can obtain the PIN from an
+application-controlled source such as an OS secret store; when one is installed, MPSS ignores
+`MPSS_YUBIKEY_PIN`.
 
 If MPSS is compiled with YubiKey support, macOS and Windows will still default to using the OS-native backend.
 The library API allows choosing the backend at runtime, but the default can also be changed to the YubiKey PIV backend via an environment variable, as follows:
