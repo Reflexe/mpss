@@ -167,9 +167,14 @@ private func storeDataInKeychain(data: Data, account: String, service: String) -
         kSecValueData as String: data,
     ]
 
-    // In case the item already exists, delete it before adding the new one.
-    // The result is intentionally discarded; the subsequent SecItemAdd is authoritative.
-    _ = removeDataFromKeyChain(account: account, service: service)
+    // In case the item already exists, delete it before adding the new one. A genuine delete
+    // failure (anything other than success or "not found") means the stale item is still present;
+    // proceeding would let SecItemAdd mask it as errSecDuplicateItem, so abort and surface it.
+    let deleteStatus = removeDataFromKeyChain(account: account, service: service)
+    if deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound {
+        logDebug("Aborting Keychain store; could not clear existing item: \(deleteStatus)")
+        return deleteStatus
+    }
 
     // Add new data to the Keychain.
     let status = SecItemAdd(query as CFDictionary, nil)
@@ -231,8 +236,8 @@ private func retrieveDataFromKeychain(account: String, service: String) -> Keych
 /// - Parameters:
 ///     - account: The account name under which the data can be found.
 ///     - service: The service name under which the data can be found.
-/// - Returns: True if the item was deleted or did not exist, false on error.
-private func removeDataFromKeyChain(account: String, service: String) -> Bool {
+/// - Returns: errSecSuccess if deleted, errSecItemNotFound if absent, otherwise the failing status.
+private func removeDataFromKeyChain(account: String, service: String) -> OSStatus {
     let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrAccount as String: account,
@@ -243,17 +248,16 @@ private func removeDataFromKeyChain(account: String, service: String) -> Bool {
 
     if status == errSecSuccess {
         logTrace("Deleted item from Keychain.")
-        return true
     } else if status == errSecItemNotFound {
         // Item not found, nothing to delete.
         logTrace("Item not found in Keychain, nothing to delete.")
-        return true
     } else {
         // Some other error occurred.
         logDebug("Error deleting item from Keychain: \(status)")
         setError("Error deleting item from Keychain: \(status)")
-        return false
     }
+
+    return status
 }
 
 /// Get a full key name from a user key name.
@@ -371,7 +375,8 @@ func removeExistingKey(_ keyName: UnsafePointer<CChar>) -> Bool {
 private func removeExistingKey(_ keyName: String) -> Bool {
     let fullKeyName = getKeyName(keyName)
     removeKeyFromDict(fullKeyName)
-    return removeDataFromKeyChain(account: KeyChainAccountName, service: fullKeyName)
+    let status = removeDataFromKeyChain(account: KeyChainAccountName, service: fullKeyName)
+    return status == errSecSuccess || status == errSecItemNotFound
 }
 
 /// Close existing key.

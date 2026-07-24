@@ -136,6 +136,9 @@ static int32_t OpenExistingKeyInternal(NSString *keyLabel, int *bitSize) {
 
   mpss_log_debug("Did not find key in local dictionary, querying from OS.");
 
+  // The Keychain does not enforce uniqueness on the application tag for key items (their identity
+  // also includes the public-key hash), so items sharing a name can coexist. Match all of them so
+  // an ambiguous name can be detected and refused rather than resolving to an arbitrary item.
   NSDictionary *query = @{
     (id)kSecClass : (__bridge id)kSecClassKey,
     (id)kSecAttrKeyType : SupportedKeychainKeyType(),
@@ -143,28 +146,56 @@ static int32_t OpenExistingKeyInternal(NSString *keyLabel, int *bitSize) {
         [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
     (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
     (id)kSecReturnRef : @YES,
-    (id)kSecMatchLimit : (__bridge id)kSecMatchLimitOne
+    (id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll
   };
 
+  CFTypeRef matches = NULL;
   OSStatus status =
-      SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&keyRef);
-
-  if (status == errSecSuccess) {
-    mpss_log_debug("Retrieved key from OS.");
-    StoreKey(keyLabel, keyRef);
-    *bitSize = GetKeySize(keyRef);
-    CFRelease(keyRef);
-    return MPSS_APPLE_RESULT_SUCCESS;
-  }
+      SecItemCopyMatching((__bridge CFDictionaryRef)query, &matches);
 
   if (status == errSecItemNotFound) {
     return MPSS_APPLE_RESULT_EXPECTED_NEGATIVE;
   }
 
-  NSString *error = [NSString
-      stringWithFormat:@"Failed to retrieve key with status: %d", (int)status];
-  SetThreadLocalError(error);
-  return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  if (status != errSecSuccess) {
+    NSString *error = [NSString
+        stringWithFormat:@"Failed to retrieve key with status: %d", (int)status];
+    SetThreadLocalError(error);
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  CFArrayRef items = (CFArrayRef)matches;
+  CFIndex count = (items != NULL) ? CFArrayGetCount(items) : 0;
+
+  if (count == 0) {
+    if (items != NULL) {
+      CFRelease(items);
+    }
+    return MPSS_APPLE_RESULT_EXPECTED_NEGATIVE;
+  }
+
+  if (count > 1) {
+    CFRelease(items);
+    NSString *error = [NSString
+        stringWithFormat:@"Refusing to open key: %ld items share this name.",
+                         (long)count];
+    SetThreadLocalError(error);
+    mpss_log_warning(
+        "Multiple keys share the same name; refusing to open an ambiguous key.");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  // The array holds a strong reference to its elements, so retain before releasing the array to
+  // keep the key alive across the handoff.
+  keyRef = (SecKeyRef)CFArrayGetValueAtIndex(items, 0);
+  CFRetain(keyRef);
+  CFRelease(items);
+
+  mpss_log_debug("Retrieved key from OS.");
+  StoreKey(keyLabel, keyRef);
+  *bitSize = GetKeySize(keyRef);
+  CFRelease(keyRef);
+  return MPSS_APPLE_RESULT_SUCCESS;
 }
 
 ////////////////////////////////////////////////////////
