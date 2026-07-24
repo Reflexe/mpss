@@ -5,20 +5,29 @@
 
 namespace
 {
-thread_local std::string last_error;
+// Immortal per-thread error string: heap-allocated once per thread and never destroyed, so it stays
+// valid even when MPSS is called from a host's static/global destructor during process exit. A plain
+// thread_local std::string is destroyed strongly-before static-duration objects ([basic.start.term]),
+// so a host static destructor that reaches set_error() would write into a freed string.
+std::string &last_error() noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - intentional immortal per-thread storage, never freed.
+    thread_local std::string *error = new std::string();
+    return *error;
 }
+} // namespace
 
 namespace mpss::utils
 {
 
 std::string get_error()
 {
-    return last_error;
+    return last_error();
 }
 
 void set_error(std::string error) noexcept
 {
-    last_error = std::move(error);
+    last_error() = std::move(error);
 }
 
 std::size_t get_max_signature_size(Algorithm algorithm)
