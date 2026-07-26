@@ -6,6 +6,7 @@
 #include "mpss/impl/yubikey/yk_piv.h"
 #endif
 #include "mpss/key_policy.h"
+#include "mpss/utils/scope_guard.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -13,9 +14,11 @@
 #include <memory>
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
 #include <openssl/store.h>
@@ -784,6 +787,45 @@ TEST_F(MPSSStore, DeleteByName)
     ASSERT_EQ(1, store_delete_key(key_name, nullptr));
     ASSERT_EQ(nullptr, store_open_key(key_name, nullptr));
     ASSERT_EQ(0, store_delete_key(key_name, nullptr));
+}
+
+// Scenario: the EC group name of an mpss-backed key is queried through keymgmt get_params.
+// Expected behavior: the group name is advertised as gettable and reports the key's actual curve.
+TEST_F(MPSSStore, AdvertisesGroupNameParam)
+{
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const char *key_name = "test_key_group_name_param";
+    mpss_delete_key(key_name);
+    // The key is persisted in the backend, so remove it even if an assertion below returns early.
+    SCOPE_GUARD(mpss_delete_key(key_name));
+
+    EVP_PKEY *pkey = nullptr;
+    {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss");
+        ASSERT_NE(nullptr, ctx);
+        SCOPE_GUARD(EVP_PKEY_CTX_free(ctx));
+
+        ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+        OSSL_PARAM gen_params[] = {
+            OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name), 0),
+            OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>("ecdsa_secp256r1_sha256"), 0),
+            OSSL_PARAM_construct_end()};
+        ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, gen_params));
+        ASSERT_EQ(1, EVP_PKEY_generate(ctx, &pkey));
+    }
+    SCOPE_GUARD(EVP_PKEY_free(pkey));
+
+    EXPECT_NE(nullptr, OSSL_PARAM_locate_const(EVP_PKEY_gettable_params(pkey), OSSL_PKEY_PARAM_GROUP_NAME));
+
+    char group_name[80] = {};
+    std::size_t group_name_len = 0;
+    ASSERT_EQ(1, EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_GROUP_NAME, group_name, sizeof(group_name),
+                                                &group_name_len));
+    EXPECT_STREQ(SN_X9_62_prime256v1, group_name);
 }
 
 #ifdef MPSS_BACKEND_YUBIKEY
