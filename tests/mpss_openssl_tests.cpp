@@ -6,6 +6,7 @@
 #include "mpss/impl/yubikey/yk_piv.h"
 #endif
 #include "mpss/key_policy.h"
+#include "mpss/utils/scope_guard.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -13,9 +14,11 @@
 #include <memory>
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
 #include <openssl/store.h>
@@ -784,6 +787,49 @@ TEST_F(MPSSStore, DeleteByName)
     ASSERT_EQ(1, store_delete_key(key_name, nullptr));
     ASSERT_EQ(nullptr, store_open_key(key_name, nullptr));
     ASSERT_EQ(0, store_delete_key(key_name, nullptr));
+}
+
+// Scenario: an mpss-backed key is exported for a selection that includes private-key material.
+// Expected behavior: the export is refused; a public-key selection still exports normally.
+TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
+{
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const char *key_name = "test_key_export_refuses_private";
+    mpss_delete_key(key_name);
+    // The key is persisted in the backend, so remove it even if an assertion below returns early.
+    SCOPE_GUARD(mpss_delete_key(key_name));
+
+    EVP_PKEY *pkey = nullptr;
+    {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss");
+        ASSERT_NE(nullptr, ctx);
+        SCOPE_GUARD(EVP_PKEY_CTX_free(ctx));
+
+        ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+        OSSL_PARAM gen_params[] = {
+            OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name), 0),
+            OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>("ecdsa_secp256r1_sha256"), 0),
+            OSSL_PARAM_construct_end()};
+        ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, gen_params));
+        ASSERT_EQ(1, EVP_PKEY_generate(ctx, &pkey));
+    }
+    SCOPE_GUARD(EVP_PKEY_free(pkey));
+
+    OSSL_PARAM *public_params = nullptr;
+    EXPECT_EQ(1, EVP_PKEY_todata(pkey, EVP_PKEY_PUBLIC_KEY, &public_params));
+    EXPECT_NE(nullptr, OSSL_PARAM_locate_const(public_params, OSSL_PKEY_PARAM_PUB_KEY));
+    OSSL_PARAM_free(public_params);
+
+    for (const int selection : {EVP_PKEY_KEYPAIR, EVP_PKEY_PRIVATE_KEY})
+    {
+        OSSL_PARAM *params = nullptr;
+        EXPECT_EQ(0, EVP_PKEY_todata(pkey, selection, &params)) << "selection " << selection << " was exported";
+        OSSL_PARAM_free(params);
+    }
 }
 
 #ifdef MPSS_BACKEND_YUBIKEY
