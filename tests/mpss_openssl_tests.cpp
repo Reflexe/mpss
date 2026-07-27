@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
+#include "mpss-openssl/provider/reference.h"
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
 #endif
@@ -24,6 +25,7 @@
 #include <openssl/store.h>
 #include <openssl/x509.h>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace
@@ -127,10 +129,59 @@ class MPSSDigest : public ::testing::Test
     }
 };
 
+std::vector<unsigned char> ToUnsignedBytes(const std::vector<std::byte> &bytes)
+{
+    std::vector<unsigned char> out;
+    out.reserve(bytes.size());
+    for (std::byte byte : bytes)
+    {
+        out.push_back(std::to_integer<unsigned char>(byte));
+    }
+    return out;
+}
+
 } // namespace
 
 namespace mpss_openssl::tests
 {
+
+// Scenario: the "<backend>\0<key_name>" load reference handed to keymgmt is built and parsed,
+// including untrusted blobs.
+// Expected behavior: backend and name round-trip, an empty backend is preserved, and blobs with no
+// separator, an empty name, or an out-of-range name length are rejected.
+TEST(ReferenceCodec, LoadReferenceRoundTripAndValidation)
+{
+    using namespace mpss_openssl::provider;
+
+    mpss_openssl::utils::byte_vector reference;
+    ASSERT_TRUE(mpss_build_key_load_reference("os", "load-roundtrip", reference));
+
+    std::string backend;
+    std::string key_name;
+    ASSERT_TRUE(mpss_parse_key_load_reference(ToUnsignedBytes(reference), backend, key_name));
+    EXPECT_EQ("os", backend);
+    EXPECT_EQ("load-roundtrip", key_name);
+
+    // An empty backend selects the default backend, so it must survive the round trip.
+    ASSERT_TRUE(mpss_build_key_load_reference("", "default-backend-key", reference));
+    ASSERT_TRUE(mpss_parse_key_load_reference(ToUnsignedBytes(reference), backend, key_name));
+    EXPECT_TRUE(backend.empty());
+    EXPECT_EQ("default-backend-key", key_name);
+
+    EXPECT_FALSE(mpss_build_key_load_reference("os", "", reference));
+    EXPECT_FALSE(mpss_build_key_load_reference("os", std::string(mpss_key_reference_max_name_len + 1, 'a'), reference));
+    EXPECT_FALSE(mpss_build_key_load_reference(std::string("o\0s", 3), "name", reference));
+
+    const std::vector<unsigned char> no_separator = {'o', 's', 'k'};
+    EXPECT_FALSE(mpss_parse_key_load_reference(no_separator, backend, key_name));
+
+    const std::vector<unsigned char> empty_name = {'o', 's', '\0'};
+    EXPECT_FALSE(mpss_parse_key_load_reference(empty_name, backend, key_name));
+
+    std::vector<unsigned char> over_cap = {'o', 's', '\0'};
+    over_cap.insert(over_cap.end(), mpss_key_reference_max_name_len + 1, 'a');
+    EXPECT_FALSE(mpss_parse_key_load_reference(over_cap, backend, key_name));
+}
 
 TEST_F(MPSSDigest, SHA256)
 {

@@ -12,6 +12,7 @@ list(APPEND mpss_openssl_SOURCE_FILES
     "${CMAKE_CURRENT_LIST_DIR}/encoder.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/keymgmt.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/provider.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/reference.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/signature.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/store.cpp"
 )
