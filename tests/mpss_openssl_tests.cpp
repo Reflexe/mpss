@@ -790,7 +790,7 @@ TEST_F(MPSSStore, DeleteByName)
 }
 
 // Scenario: the EC group name of an mpss-backed key is queried through keymgmt get_params.
-// Expected behavior: the group name is advertised as gettable and reports the key's actual curve.
+// Expected behavior: the group name is advertised as gettable and reports the key's actual group.
 TEST_F(MPSSStore, AdvertisesGroupNameParam)
 {
     if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
