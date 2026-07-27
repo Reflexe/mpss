@@ -789,6 +789,56 @@ TEST_F(MPSSStore, DeleteByName)
     ASSERT_EQ(0, store_delete_key(key_name, nullptr));
 }
 
+TEST_F(MPSSStore, ExportTypesMatchSupportedSelections)
+{
+    int no_cache = 0;
+    const auto unquery_operation = [provider = mpss_prov](const OSSL_ALGORITHM *algorithms) {
+        OSSL_PROVIDER_unquery_operation(provider, OSSL_OP_KEYMGMT, algorithms);
+    };
+    const std::unique_ptr<const OSSL_ALGORITHM, decltype(unquery_operation)> keymgmt_algorithms{
+        OSSL_PROVIDER_query_operation(mpss_prov, OSSL_OP_KEYMGMT, &no_cache), unquery_operation};
+    ASSERT_NE(nullptr, keymgmt_algorithms);
+
+    const OSSL_ALGORITHM *ec_algorithm = nullptr;
+    for (const OSSL_ALGORITHM *algorithm = keymgmt_algorithms.get(); nullptr != algorithm->algorithm_names; ++algorithm)
+    {
+        if (has_algorithm_name(algorithm->algorithm_names, "EC"))
+        {
+            ec_algorithm = algorithm;
+            break;
+        }
+    }
+    ASSERT_NE(nullptr, ec_algorithm);
+
+    OSSL_FUNC_keymgmt_export_types_fn *export_types = nullptr;
+    for (const OSSL_DISPATCH *function = ec_algorithm->implementation; 0 != function->function_id; ++function)
+    {
+        if (OSSL_FUNC_KEYMGMT_EXPORT_TYPES == function->function_id)
+        {
+            export_types = OSSL_FUNC_keymgmt_export_types(function);
+            break;
+        }
+    }
+    ASSERT_NE(nullptr, export_types);
+
+    const auto expect_types = [export_types](int selection, bool has_group, bool has_public_key) {
+        SCOPED_TRACE(selection);
+        const OSSL_PARAM *types = export_types(selection);
+        ASSERT_NE(nullptr, types);
+        EXPECT_EQ(has_group, nullptr != OSSL_PARAM_locate_const(types, OSSL_PKEY_PARAM_GROUP_NAME));
+        EXPECT_EQ(has_public_key, nullptr != OSSL_PARAM_locate_const(types, OSSL_PKEY_PARAM_PUB_KEY));
+    };
+
+    expect_types(OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS, true, false);
+    expect_types(OSSL_KEYMGMT_SELECT_PUBLIC_KEY, false, true);
+    expect_types(OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS | OSSL_KEYMGMT_SELECT_PUBLIC_KEY, true, true);
+    expect_types(OSSL_KEYMGMT_SELECT_OTHER_PARAMETERS, false, false);
+    expect_types(OSSL_KEYMGMT_SELECT_ALL_PARAMETERS, true, false);
+    expect_types(OSSL_KEYMGMT_SELECT_PRIVATE_KEY, false, false);
+    expect_types(OSSL_KEYMGMT_SELECT_KEYPAIR, false, false);
+    expect_types(OSSL_KEYMGMT_SELECT_ALL, false, false);
+}
+
 // Scenario: an mpss-backed key is exported for a selection that includes private-key material.
 // Expected behavior: the export is refused; a public-key selection still exports normally.
 TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
@@ -823,6 +873,16 @@ TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
     EXPECT_EQ(1, EVP_PKEY_todata(pkey, EVP_PKEY_PUBLIC_KEY, &public_params));
     EXPECT_NE(nullptr, OSSL_PARAM_locate_const(public_params, OSSL_PKEY_PARAM_PUB_KEY));
     OSSL_PARAM_free(public_params);
+
+    OSSL_PARAM *domain_params = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_todata(pkey, OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS, &domain_params));
+    EXPECT_NE(nullptr, OSSL_PARAM_locate_const(domain_params, OSSL_PKEY_PARAM_GROUP_NAME));
+    OSSL_PARAM_free(domain_params);
+
+    OSSL_PARAM *other_params = nullptr;
+    ASSERT_EQ(1, EVP_PKEY_todata(pkey, OSSL_KEYMGMT_SELECT_OTHER_PARAMETERS, &other_params));
+    EXPECT_EQ(nullptr, OSSL_PARAM_locate_const(other_params, OSSL_PKEY_PARAM_GROUP_NAME));
+    OSSL_PARAM_free(other_params);
 
     for (const int selection : {EVP_PKEY_KEYPAIR, EVP_PKEY_PRIVATE_KEY})
     {
