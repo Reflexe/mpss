@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/provider/provider.h"
+#include "mpss-openssl/provider/decoder.h"
 #include "mpss-openssl/provider/digest.h"
 #include "mpss-openssl/provider/encoder.h"
 #include "mpss-openssl/provider/keymgmt.h"
@@ -39,6 +40,8 @@ extern "C" const OSSL_ALGORITHM *mpss_provider_query_operation([[maybe_unused]] 
         return mpss_keymgmt_algorithms;
     case OSSL_OP_ENCODER:
         return mpss_encoder_algorithms;
+    case OSSL_OP_DECODER:
+        return mpss_decoder_algorithms;
     case OSSL_OP_SIGNATURE:
         return mpss_signature_algorithms;
     case OSSL_OP_DIGEST:
