@@ -21,13 +21,14 @@ class YubiKeyBackend : public Backend
     const char *name() const override;
 
     [[nodiscard]]
-    bool is_algorithm_available(Algorithm algorithm) const override;
+    bool is_algorithm_available(Algorithm algorithm, SecurityType min_security) const override;
 
     [[nodiscard]]
-    std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const override;
+    std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                        SecurityType min_security) const override;
 
     [[nodiscard]]
-    std::unique_ptr<KeyPair> open_key(std::string_view name) const override;
+    std::unique_ptr<KeyPair> open_key(std::string_view name, SecurityType min_security) const override;
 
     [[nodiscard]]
     bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

@@ -15,7 +15,7 @@ namespace mpss::impl::os
 {
 
 AppleKeychainKeyPair::AppleKeychainKeyPair(std::string_view name, Algorithm algorithm)
-    : AppleKeyPairBase{name, algorithm, /* hardware_backed */ false, storage_description}
+    : AppleKeyPairBase{name, algorithm, SecurityType::software, storage_description}
 {
 }
 

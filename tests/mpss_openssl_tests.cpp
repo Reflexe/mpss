@@ -267,15 +267,16 @@ TEST(MPSS_OpenSSL, GetKeyDescriptors)
 
     // Query gettable parameters
     OSSL_PARAM get_params[4];
-    int is_hw = -1;
+    int security_type = -1;
     char storage_desc[256] = {0};
-    get_params[0] = OSSL_PARAM_construct_int("is_hardware_backed", &is_hw);
+    get_params[0] = OSSL_PARAM_construct_int("security_type", &security_type);
     get_params[1] = OSSL_PARAM_construct_utf8_string("storage_description", storage_desc, sizeof(storage_desc));
     get_params[2] = OSSL_PARAM_END;
 
     ASSERT_EQ(1, EVP_PKEY_get_params(pkey, get_params));
-    // is_hardware_backed should be 0 or 1
-    ASSERT_TRUE(0 == is_hw || 1 == is_hw);
+    // security_type must be one of the four defined mpss_security_type_t values.
+    ASSERT_GE(security_type, MPSS_SECURITY_TYPE_SOFTWARE);
+    ASSERT_LE(security_type, MPSS_SECURITY_TYPE_SECURE_ELEMENT);
     // storage_description should not be empty
     ASSERT_GT(strlen(storage_desc), 0);
 

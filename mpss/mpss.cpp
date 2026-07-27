@@ -5,71 +5,125 @@
 #include "mpss/impl/backend_registry.h"
 #include "mpss/utils/utilities.h"
 #include <array>
+#include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <tuple>
 
 namespace mpss
 {
 
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+namespace
+{
+
+// Guards the public entry points against a tier value that is not one of the four defined
+// ordinals. Such a value can only arrive through a cast, and letting it through would index the
+// availability cache out of bounds and compare greater than every valid floor.
+[[nodiscard]]
+bool check_valid_min_security(SecurityType min_security)
+{
+    if (!is_valid_security_type(static_cast<std::uint8_t>(min_security)))
+    {
+        utils::log_and_set_error("Invalid minimum security value {}.",
+                                 static_cast<unsigned>(static_cast<std::uint8_t>(min_security)));
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                         SecurityType min_security)
 {
     utils::set_error({});
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
-                     get_algorithm_info(algorithm).type_str);
-    return impl::create_key(name, algorithm, policy);
+    if (!check_valid_min_security(min_security))
+    {
+        return nullptr;
+    }
+    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}', minimum security '{}'.", name,
+                     get_algorithm_info(algorithm).type_str, to_string(min_security));
+    return impl::create_key(name, algorithm, policy, min_security);
 }
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                         KeyPolicy policy)
+                                         KeyPolicy policy, SecurityType min_security)
 {
     utils::set_error({});
-    utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
-                     get_algorithm_info(algorithm).type_str, backend_name);
-    return impl::create_key(backend_name, name, algorithm, policy);
+    if (!check_valid_min_security(min_security))
+    {
+        return nullptr;
+    }
+    utils::log_trace(
+        "KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}', minimum security '{}'.", name,
+        get_algorithm_info(algorithm).type_str, backend_name, to_string(min_security));
+    return impl::create_key(backend_name, name, algorithm, policy, min_security);
 }
 
-std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, SecurityType min_security)
 {
     utils::set_error({});
-    utils::log_trace("KeyPair::Open called for key '{}'.", name);
-    return impl::open_key(name);
+    if (!check_valid_min_security(min_security))
+    {
+        return nullptr;
+    }
+    utils::log_trace("KeyPair::Open called for key '{}' with minimum security '{}'.", name, to_string(min_security));
+    return impl::open_key(name, min_security);
 }
 
-std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name)
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name,
+                                       SecurityType min_security)
 {
     utils::set_error({});
-    utils::log_trace("KeyPair::Open called for key '{}' on backend '{}'.", name, backend_name);
-    return impl::open_key(backend_name, name);
+    if (!check_valid_min_security(min_security))
+    {
+        return nullptr;
+    }
+    utils::log_trace("KeyPair::Open called for key '{}' on backend '{}' with minimum security '{}'.", name,
+                     backend_name, to_string(min_security));
+    return impl::open_key(backend_name, name, min_security);
 }
 
-bool is_algorithm_available(Algorithm algorithm)
+bool is_algorithm_available(Algorithm algorithm, SecurityType min_security)
 {
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
         return false;
     }
+    if (!check_valid_min_security(min_security))
+    {
+        return false;
+    }
 
-    // Cache results per algorithm to avoid repeated expensive probes.
+    // Cache results per (algorithm, minimum security) to avoid repeated expensive probes. Each
+    // floor is a separate question -- a backend can support an algorithm at one floor and not at a
+    // stronger one -- and each entry is filled in lazily, so a floor that is never requested is
+    // never probed.
     static std::mutex cache_mutex;
-    static std::array<std::optional<bool>, algorithm_info.size()> cache{};
+    static std::array<std::array<std::optional<bool>, max_security_type_value + 1U>, algorithm_info.size()> cache{};
 
-    const int idx = static_cast<int>(algorithm);
+    const std::size_t idx = static_cast<std::size_t>(algorithm);
+    const std::size_t floor_idx = static_cast<std::size_t>(min_security);
     {
         std::scoped_lock lock{cache_mutex};
-        if (cache[idx])
+        if (cache[idx][floor_idx])
         {
             // NOLINTBEGIN(bugprone-unchecked-optional-access) - guarded by the if above.
-            utils::log_trace("Algorithm availability for '{}' returned from cache: {}.", info.type_str,
-                             *cache[idx] ? "available" : "unavailable");
-            return *cache[idx];
+            utils::log_trace("Algorithm availability for '{}' at minimum security '{}' returned from cache: {}.",
+                             info.type_str, to_string(min_security),
+                             *cache[idx][floor_idx] ? "available" : "unavailable");
+            return *cache[idx][floor_idx];
             // NOLINTEND(bugprone-unchecked-optional-access)
         }
     }
 
     // Delegate to the default backend.
-    utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
-    const bool available = impl::is_algorithm_available(algorithm);
+    utils::log_trace("Probing algorithm availability for '{}' at minimum security '{}'.", info.type_str,
+                     to_string(min_security));
+    const bool available = impl::is_algorithm_available(algorithm, min_security);
 
     // Cache positive results only. A positive is stable — the platform genuinely supports the algorithm.
     // A negative is the only direction that can be wrong and stick: a one-time probe can fail while the
@@ -80,21 +134,56 @@ bool is_algorithm_available(Algorithm algorithm)
     if (available)
     {
         std::scoped_lock lock{cache_mutex};
-        cache[idx] = true;
+        cache[idx][floor_idx] = true;
     }
-    utils::log_trace("Algorithm '{}' is {}.", info.type_str, available ? "available" : "unavailable");
+    utils::log_trace("Algorithm '{}' at minimum security '{}' is {}.", info.type_str, to_string(min_security),
+                     available ? "available" : "unavailable");
     return available;
 }
 
-bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
+bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name, SecurityType min_security)
 {
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
         return false;
     }
-    utils::log_trace("Checking algorithm availability for '{}' on backend '{}'.", info.type_str, backend_name);
-    return impl::is_algorithm_available(backend_name, algorithm);
+    if (!check_valid_min_security(min_security))
+    {
+        return false;
+    }
+
+    // Cached the same way as the default-backend overload, but keyed by backend as well. Probing
+    // creates and deletes a real key, which on a token or a TPM is slow and user-visible, so a
+    // repeated question is answered from the cache.
+    static std::mutex cache_mutex;
+    static std::map<std::tuple<std::string, Algorithm, SecurityType>, bool, std::less<>> cache;
+    auto cache_key = std::make_tuple(std::string{backend_name}, algorithm, min_security);
+    {
+        const std::scoped_lock lock{cache_mutex};
+        const auto it = cache.find(cache_key);
+        if (cache.end() != it)
+        {
+            utils::log_trace("Algorithm availability for '{}' on backend '{}' at minimum security '{}' returned "
+                             "from cache: {}.",
+                             info.type_str, backend_name, to_string(min_security),
+                             it->second ? "available" : "unavailable");
+            return it->second;
+        }
+    }
+
+    utils::log_trace("Checking algorithm availability for '{}' on backend '{}' at minimum security '{}'.",
+                     info.type_str, backend_name, to_string(min_security));
+    const bool available = impl::is_algorithm_available(backend_name, algorithm, min_security);
+
+    // Positive results only, for the same reason as the default-backend overload: a negative can be
+    // a transient condition (a locked device, an unplugged token) that must not become permanent.
+    if (available)
+    {
+        const std::scoped_lock lock{cache_mutex};
+        cache.emplace(std::move(cache_key), true);
+    }
+    return available;
 }
 
 std::vector<Algorithm> get_available_algorithms()
@@ -212,8 +301,8 @@ std::size_t KeyPair::extract_key(std::span<std::byte> public_key) const
     return do_extract_key(public_key);
 }
 
-KeyPair::KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description)
-    : algorithm_{algorithm}, info_{get_algorithm_info(algorithm)}, key_info_{hardware_backed, storage_description}
+KeyPair::KeyPair(Algorithm algorithm, SecurityType security_type, const char *storage_description)
+    : algorithm_{algorithm}, info_{get_algorithm_info(algorithm)}, key_info_{security_type, storage_description}
 {
     if (0 == info_.key_bits)
     {

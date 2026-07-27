@@ -15,15 +15,15 @@ namespace mpss::impl::os
 bool WindowsKeyPair::do_delete_key()
 {
     mpss::utils::log_trace("Deleting Windows key.");
-    SECURITY_STATUS status = ::NCryptDeleteKey(key_handle_, /* dwFlags */ 0);
+    SECURITY_STATUS status = ::NCryptDeleteKey(key_handle_.get(), /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
         mpss::utils::log_and_set_error("NCryptDeleteKey failed with error code {}.", mpss::utils::to_hex(status));
         return false;
     }
 
-    // Release the key handle.
-    win_release();
+    // NCryptDeleteKey freed the handle itself, so relinquish ownership rather than closing it again.
+    static_cast<void>(key_handle_.release());
 
     mpss::utils::log_trace("Windows key deleted successfully.");
     return true;
@@ -50,7 +50,7 @@ std::size_t WindowsKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
     // Get the size of the raw signature.
     DWORD sig_size_dw = 0;
     SECURITY_STATUS status = ::NCryptSignHash(
-        key_handle_,
+        key_handle_.get(),
         /* pPaddingInfo */ nullptr, reinterpret_cast<PBYTE>(const_cast<std::byte *>(hash.data())), hash_bytes_dw,
         /* pbSignature */ nullptr,
         /* cbSignature */ 0, &sig_size_dw,
@@ -64,7 +64,7 @@ std::size_t WindowsKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
 
     // Get the actual signature.
     std::unique_ptr<BYTE[]> signature_buffer = std::make_unique<BYTE[]>(sig_size_dw);
-    status = ::NCryptSignHash(key_handle_,
+    status = ::NCryptSignHash(key_handle_.get(),
                               /* pPaddingInfo */ nullptr, reinterpret_cast<PBYTE>(const_cast<std::byte *>(hash.data())),
                               hash_bytes_dw, signature_buffer.get(), sig_size_dw, &sig_size_dw,
                               /* dwFlags */ 0);
@@ -156,7 +156,7 @@ bool WindowsKeyPair::do_verify(std::span<const std::byte> hash, std::span<const 
     }
 
     SECURITY_STATUS status = ::NCryptVerifySignature(
-        key_handle_,
+        key_handle_.get(),
         /* pPaddingInfo */ nullptr, reinterpret_cast<PBYTE>(const_cast<std::byte *>(hash.data())), hash_bytes_dw,
         reinterpret_cast<PBYTE>(raw_sig_span.data()), raw_sig_size,
         /* dwFlags */ 0);
@@ -177,7 +177,7 @@ std::size_t WindowsKeyPair::do_extract_key(std::span<std::byte> public_key) cons
 
     // Get the public key size.
     DWORD pk_blob_size = 0;
-    SECURITY_STATUS status = ::NCryptExportKey(key_handle_,
+    SECURITY_STATUS status = ::NCryptExportKey(key_handle_.get(),
                                                /* hExportKey */ 0, crypto->public_key_blob_name(),
                                                /* pParameterList */ nullptr,
                                                /* pbOutput */ nullptr,
@@ -205,7 +205,7 @@ std::size_t WindowsKeyPair::do_extract_key(std::span<std::byte> public_key) cons
 
     // Actually get the key.
     auto pk_blob = std::make_unique<BYTE[]>(pk_blob_size);
-    status = ::NCryptExportKey(key_handle_,
+    status = ::NCryptExportKey(key_handle_.get(),
                                /* hExportKey */ 0, crypto->public_key_blob_name(),
                                /* pParameterList */ nullptr, pk_blob.get(), pk_blob_size, &pk_blob_size,
                                /* dwFlags */ 0);
@@ -246,22 +246,7 @@ std::size_t WindowsKeyPair::do_extract_key(std::span<std::byte> public_key) cons
 
 void WindowsKeyPair::release_key() noexcept
 {
-    win_release();
-}
-
-void WindowsKeyPair::win_release() noexcept
-{
-    if (0 != key_handle_)
-    {
-        ::NCryptFreeObject(key_handle_);
-    }
-
-    clear_handle();
-}
-
-void WindowsKeyPair::clear_handle() noexcept
-{
-    key_handle_ = 0;
+    key_handle_.reset();
 }
 
 } // namespace mpss::impl::os

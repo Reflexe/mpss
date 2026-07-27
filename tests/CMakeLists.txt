@@ -10,7 +10,10 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(mpss_TESTS_LINK_LIBRARIES GTest::gtest)
 
     if(TARGET ${mpss_TARGET})
-        list(APPEND mpss_TESTS_FILES "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp")
+        list(APPEND mpss_TESTS_FILES
+            "${CMAKE_CURRENT_LIST_DIR}/mpss_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/mpss_security_type_tests.cpp"
+        )
     endif()
     if(TARGET ${mpss_openssl_TARGET})
         list(APPEND mpss_TESTS_FILES
@@ -66,7 +69,7 @@ set(mpss_TESTS_SOURCES test_entry.cpp test_runner.cpp)
 
 # Conditionally add tests depending on what the installed mpss provides.
 if(MPSS_CORE_FOUND)
-    list(APPEND mpss_TESTS_SOURCES mpss_tests.cpp)
+    list(APPEND mpss_TESTS_SOURCES mpss_tests.cpp mpss_security_type_tests.cpp)
 endif()
 if(MPSS_OPENSSL_FOUND)
     list(APPEND mpss_TESTS_SOURCES

@@ -95,7 +95,10 @@ OpenKeyResult try_open_key(const std::string &key_name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+// Floor pruning (choosing Secure Enclave vs Keychain from min_security) is not implemented here
+// yet, so the floor is enforced only by the registry postcondition: a key that comes out below the
+// requested floor is deleted and the create fails.
+std::unique_ptr<KeyPair> open_key(std::string_view name, [[maybe_unused]] SecurityType min_security)
 {
     mpss::utils::set_error({});
     const std::string key_name{name};
@@ -114,7 +117,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.key);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    [[maybe_unused]] SecurityType min_security)
 {
     mpss::utils::set_error({});
     const std::string key_name{name};

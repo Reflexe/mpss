@@ -10,6 +10,7 @@ option(MPSS_BUILD_MPSS_OPENSSL_STATIC "Build the OpenSSL provider static library
 option(MPSS_BUILD_MPSS_OPENSSL_SHARED "Build the mpss OpenSSL provider shared library." NO)
 option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
+option(MPSS_BACKEND_NOOP "Build with the in-memory noop backend used by the test suite." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
@@ -86,7 +87,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android"
     endif()
 endif()
 
-project(mpss VERSION 1.2.3 LANGUAGES C CXX)
+project(mpss VERSION 2.0.0 LANGUAGES C CXX)
 
 if(MPSS_BACKEND_YUBIKEY)
     # The vcpkg port is named "yubico-piv-tool" but exports the CMake config

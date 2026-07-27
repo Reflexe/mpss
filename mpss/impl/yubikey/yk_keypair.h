@@ -10,6 +10,10 @@
 namespace mpss::impl::yubikey
 {
 
+/// Every PIV key lives on the token, which is a tamper-resistant secure element. This claims no
+/// particular certification, factory attestation chain, or on-device-generation proof.
+inline constexpr SecurityType yubikey_security_type = SecurityType::secure_element;
+
 /**
  * @brief KeyPair implementation for YubiKey PIV backend.
  */

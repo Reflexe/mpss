@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "mpss/impl/windows/ncrypt_handle.h"
 #include "mpss/mpss.h"
 #include <Windows.h>
 #include <ncrypt.h>
@@ -13,16 +14,13 @@ namespace mpss::impl::os
 class WindowsKeyPair : public mpss::KeyPair
 {
   public:
-    WindowsKeyPair(mpss::Algorithm algorithm, NCRYPT_KEY_HANDLE handle, bool hardware_backed,
+    WindowsKeyPair(mpss::Algorithm algorithm, NCRYPT_KEY_HANDLE handle, mpss::SecurityType security_type,
                    const char *storage_description)
-        : mpss::KeyPair(algorithm, hardware_backed, storage_description), key_handle_(handle)
+        : mpss::KeyPair(algorithm, security_type, storage_description), key_handle_{handle}
     {
     }
 
-    ~WindowsKeyPair() override
-    {
-        win_release();
-    }
+    ~WindowsKeyPair() override = default;
 
     bool do_delete_key() override;
 
@@ -38,11 +36,7 @@ class WindowsKeyPair : public mpss::KeyPair
     void release_key() noexcept override;
 
   private:
-    NCRYPT_KEY_HANDLE key_handle_ = 0;
-
-    void win_release() noexcept;
-
-    void clear_handle() noexcept;
+    NcryptHandle key_handle_;
 };
 
 } // namespace mpss::impl::os

@@ -32,18 +32,24 @@ class Backend
      * @param[in] name The name of the key pair.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] policy Backend-specific key policy.
+     * @param[in] min_security The minimum security guarantee the key must provide. A backend must
+     * not attempt a mechanism that cannot reach this floor, and must delete a key it created that
+     * turns out not to reach it.
      * @return Key pair if successful, nullptr otherwise.
      */
     [[nodiscard]]
-    virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const = 0;
+    virtual std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                                SecurityType min_security) const = 0;
 
     /**
      * @brief Open an existing key pair.
      * @param[in] name The name of the key pair.
+     * @param[in] min_security The minimum security guarantee the key must provide. A key below the
+     * floor is released, never deleted.
      * @return Key pair if successful, nullptr otherwise.
      */
     [[nodiscard]]
-    virtual std::unique_ptr<KeyPair> open_key(std::string_view name) const = 0;
+    virtual std::unique_ptr<KeyPair> open_key(std::string_view name, SecurityType min_security) const = 0;
 
     /**
      * @brief Verify a signature (standalone, without a key pair object).
@@ -65,36 +71,38 @@ class Backend
      * cheaper check (e.g., a static lookup table).
      *
      * @param algorithm The algorithm to check.
+     * @param min_security The minimum security guarantee the probe key must provide.
      * @return true if the algorithm is supported, false otherwise.
      */
     [[nodiscard]]
-    virtual bool is_algorithm_available(Algorithm algorithm) const;
+    virtual bool is_algorithm_available(Algorithm algorithm, SecurityType min_security) const;
 };
 
 // Explicit-backend functions. The default-backend overloads below delegate to these.
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
-                                    KeyPolicy policy);
+                                    KeyPolicy policy, SecurityType min_security);
 
 [[nodiscard]]
-std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name);
+std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name, SecurityType min_security);
 
 [[nodiscard]]
 bool verify(std::string_view backend_name, std::span<const std::byte> hash, std::span<const std::byte> public_key,
             Algorithm algorithm, std::span<const std::byte> sig);
 
 [[nodiscard]]
-bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm);
+bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, SecurityType min_security);
 
 // Default-backend overloads that resolve the default backend and delegate to the above.
 [[nodiscard]]
-bool is_algorithm_available(Algorithm algorithm);
+bool is_algorithm_available(Algorithm algorithm, SecurityType min_security);
 
 [[nodiscard]]
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    SecurityType min_security);
 
 [[nodiscard]]
-std::unique_ptr<KeyPair> open_key(std::string_view name);
+std::unique_ptr<KeyPair> open_key(std::string_view name, SecurityType min_security);
 
 [[nodiscard]]
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

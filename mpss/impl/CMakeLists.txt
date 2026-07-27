@@ -45,9 +45,18 @@ if(MPSS_BACKEND_YUBIKEY)
     add_subdirectory(yubikey)
 endif()
 
+# Add the in-memory noop backend (if enabled). It is a test aid: it is never the platform default
+# and is reachable only by explicit backend name.
+if(MPSS_BACKEND_NOOP)
+    message(STATUS "Building with the in-memory noop test backend.")
+    add_subdirectory(noop)
+endif()
+
 # Check that we have at least one backend.
-if(NOT MPSS_HAS_OS_BACKEND AND NOT MPSS_BACKEND_YUBIKEY)
-    message(FATAL_ERROR "No backend available. Enable MPSS_BACKEND_YUBIKEY or use a platform with an OS backend.")
+if(NOT MPSS_HAS_OS_BACKEND AND NOT MPSS_BACKEND_YUBIKEY AND NOT MPSS_BACKEND_NOOP)
+    message(FATAL_ERROR
+        "No backend available. Enable MPSS_BACKEND_YUBIKEY or MPSS_BACKEND_NOOP, or use a platform "
+        "with an OS backend.")
 endif()
 
 # Update variables in parent scope.

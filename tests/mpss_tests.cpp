@@ -74,8 +74,9 @@ class MPSS : public ::testing::Test
         }
         else
         {
-            mpss::GetLogger()->info("Key {} created in {}. Hardware backed: {}", name,
-                                    handle->key_info().storage_description, handle->key_info().is_hardware_backed);
+            mpss::GetLogger()->info("Key {} created in {}. Security type: {}", name,
+                                    handle->key_info().storage_description,
+                                    mpss::to_string(handle->key_info().security_type));
         }
         return handle;
     }
@@ -667,6 +668,11 @@ TEST(BackendTest, CreateKeyWithExplicitBackend)
     ASSERT_NE(nullptr, default_backend);
     ASSERT_GT(std::strlen(default_backend), std::size_t{0});
 
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256, default_backend))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
     const std::string key_name = "test_explicit_key";
     MPSS::DeleteKey(key_name);
 
@@ -684,6 +690,11 @@ TEST(BackendTest, OpenKeyWithExplicitBackend)
     const char *const default_backend = mpss::get_default_backend_name();
     ASSERT_NE(nullptr, default_backend);
     ASSERT_GT(std::strlen(default_backend), std::size_t{0});
+
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256, default_backend))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
 
     const std::string key_name = "test_explicit_open_key";
     MPSS::DeleteKey(key_name);

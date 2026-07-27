@@ -4,6 +4,7 @@
 #pragma once
 
 #include "mpss/defines.h"
+#include "mpss/security_type.h"
 
 #ifdef __cplusplus
 namespace mpss
@@ -15,15 +16,15 @@ namespace mpss
 // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members,*-non-private-member-variables-in-classes)
 struct MPSS_DECOR KeyInfo
 {
-    KeyInfo(bool hardware_backed, const char *storage_description)
-        : is_hardware_backed{hardware_backed}, storage_description{storage_description}
+    KeyInfo(SecurityType security_type, const char *storage_description)
+        : security_type{security_type}, storage_description{storage_description}
     {
     }
 
     /**
-     * @brief Indicates if the key is backed by hardware
+     * @brief The minimum security guarantee backing the key's private material.
      */
-    const bool is_hardware_backed;
+    const SecurityType security_type;
 
     /**
      * @brief Description of the storage where the key is stored.

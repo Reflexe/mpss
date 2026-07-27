@@ -657,6 +657,90 @@ To restore logging, call `mpss::ResetDefaultLogger()` to reinstall the default l
 
 The global logger and MPSS's internal backend registry are intentionally **never destroyed** at process exit. This keeps MPSS safe to call from a host object's static or global destructor (avoiding the static destruction-order problem), but it has one consequence for custom loggers: a custom logger's `flush`/`close` handlers are **not** invoked automatically at process exit. If your logger buffers output or holds a resource such as a file handle, call `mpss::GetLogger()->close()` (or `mpss_log_close()` from C) during your controlled shutdown to guarantee a final flush. The default `std::cout`/`std::cerr` logger requires no action. For the same reason, avoid performing MPSS-dependent work in your own static/global destructors where ordering relative to the C runtime's stream flushing is undefined.
 
+### Security Types and the Minimum-Security Floor
+
+Every key reports a `mpss::SecurityType`: an ordered, cross-platform **floor guarantee** describing
+the weakest protection the key is guaranteed to have.
+
+| Tier | Ordinal | Meaning |
+|---|---:|---|
+| `software` | 0 | The ordinary OS/software storage boundary. No post-compromise healing guarantee against a same-user attacker. |
+| `mixed` | 1 | Hardware-assisted isolation sharing the main silicon (Windows VBS/VSM, Android TEE). Heals against an unprivileged same-user attacker, not a privileged platform compromise. |
+| `hardware` | 2 | Dedicated hardware resisting privileged software compromise. No claim of certified resistance to determined physical attack. |
+| `secure_element` | 3 | A tamper-resistant secure element, resisting privileged local and direct physical attack. |
+
+Reporting a value asserts every guarantee at that ordinal **and below**. A backend reports the
+strongest tier it can establish from trustworthy evidence and rounds *down* whenever the evidence
+cannot support a stronger claim; a usable key with indeterminate evidence is reported as `software`.
+An operational failure while reading that evidence fails the operation rather than inventing a tier.
+`storage_description` remains the human-readable mechanism detail and may be more specific than the
+guaranteed tier.
+
+The order encodes post-compromise healing only. It does **not** encode exportability, user
+authentication, PIN/touch policy, certification, provenance, or remote attestation. A tier is a
+local report, not cryptographic proof: a stronger tier does not imply the key is attestable, and a
+weaker one does not imply it is not.
+
+| Backend mechanism | `SecurityType` | `storage_description` |
+|---|---|---|
+| Windows Platform KSP (TPM) | `hardware` | `"TPM Protection"` |
+| Apple Keychain | `software` | `"Keychain"` |
+| Apple Secure Enclave | `secure_element` | `"Secure Enclave"` |
+| Android software keystore | `software` | `"Software"` |
+| Android TEE | `mixed` | `"Trusted Environment"` |
+| Android unknown-secure | `mixed` | `"Unknown Secure"` |
+| Android StrongBox | `secure_element` | `"StrongBox"` |
+| YubiKey PIV | `secure_element` | `"YubiKey PIV"` |
+
+Windows never reports `secure_element`: CNG exposes no reliable way to distinguish a discrete TPM
+from a firmware, integrated, or virtual one, so the claim stops at `hardware`. Android never
+reports `hardware`.
+
+#### Requesting a floor
+
+`Create` and `Open` take a final `min_security` argument, and `is_algorithm_available` takes one
+too. It defaults to `SecurityType::software`, which — being ordinal zero — every valid key
+satisfies, so the default imposes **no floor** and preserves existing behavior.
+
+```cpp
+// No floor: whatever the platform provides.
+auto any_key = mpss::KeyPair::Create("my-key", algorithm);
+
+// Require at least a TPM-grade guarantee.
+auto tpm_key = mpss::KeyPair::Create("my-key", algorithm, mpss::KeyPolicy::none,
+                                     mpss::SecurityType::hardware);
+
+// Compare a reported tier against a requirement.
+if (mpss::meets_minimum(tpm_key->key_info().security_type, mpss::SecurityType::mixed))
+{
+    // ...
+}
+```
+
+A key created below the requested floor is **deleted** and creation fails; if that deletion also
+fails, the error says manual cleanup may be required and the rejected key is still never returned.
+A key *opened* below the floor is released and the open fails, but the stored key is left intact —
+opening never deletes. Availability results are cached per `(backend, algorithm, min_security)`;
+only positive results are cached, so a transient failure never becomes a permanent "unavailable".
+
+#### Migrating from 1.x
+
+`KeyInfo::is_hardware_backed` is removed. Use `KeyInfo::security_type` with `mpss::meets_minimum`,
+and note that the old `true` covered several distinct tiers:
+
+```cpp
+// 1.x
+if (key->key_info().is_hardware_backed) { /* ... */ }
+
+// 2.0 — closest equivalent, and now explicit about which guarantee you mean.
+if (mpss::meets_minimum(key->key_info().security_type, mpss::SecurityType::mixed)) { /* ... */ }
+```
+
+The OpenSSL provider's `"is_hardware_backed"` parameter is likewise replaced by `"security_type"`,
+reported as the same ordinal (see *Provider-Specific Parameters*). Callers that need Windows TPM
+specifically should request `hardware`; callers that need the strongest portable tier should request
+`secure_element` and accept that Windows fails that request.
+
 ### Platform-Dependent Behavior
 There is a single known difference in how MPSS behaves on different platforms.
 This happens when opening several instances of the same key.
@@ -1071,7 +1155,7 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_key_name` | UTF-8 string | The key's persistent name. |
 | `mpss_algorithm` | UTF-8 string | The key's algorithm suite (canonical form). |
 | `mpss_backend` | UTF-8 string | The backend that created or opened the key. |
-| `is_hardware_backed` | int | `1` if the key is stored in hardware (e.g., Secure Enclave, YubiKey), `0` otherwise. |
+| `security_type` | int | The key's minimum security guarantee, as an `mpss_security_type_t` ordinal: `0` software, `1` mixed, `2` hardware, `3` secure element. |
 | `storage_description` | UTF-8 string | Human-readable description of the storage location (e.g., `"Keychain"`, `"YubiKey PIV"`). |
 
 The standard OpenSSL parameters `OSSL_PKEY_PARAM_BITS`, `OSSL_PKEY_PARAM_SECURITY_BITS`, `OSSL_PKEY_PARAM_MANDATORY_DIGEST`, and `OSSL_PKEY_PARAM_DEFAULT_DIGEST` are also supported.

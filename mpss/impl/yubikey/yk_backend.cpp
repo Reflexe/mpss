@@ -88,17 +88,27 @@ const char *YubiKeyBackend::name() const
     return "yubikey";
 }
 
-bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm) const
+bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm, SecurityType min_security) const
 {
-    return 0 != utils::mpss_to_yk_algorithm(algorithm);
+    // PIV keys live on the token itself, so every key this backend produces satisfies every floor.
+    return meets_minimum(yubikey_security_type, min_security) && 0 != utils::mpss_to_yk_algorithm(algorithm);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const
+std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                                    SecurityType min_security) const
 {
     const std::string key_name{name};
     if (key_name.empty())
     {
         mpss::utils::log_and_set_error("Key name cannot be empty.");
+        return nullptr;
+    }
+
+    if (!meets_minimum(yubikey_security_type, min_security))
+    {
+        mpss::utils::log_and_set_error(
+            "The YubiKey backend cannot guarantee security '{}'; the strongest it provides is '{}'.",
+            to_string(min_security), to_string(yubikey_security_type));
         return nullptr;
     }
 
@@ -228,12 +238,20 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     return std::make_unique<YubiKeyKeyPair>(name, algorithm, slot, serial);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
+std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name, SecurityType min_security) const
 {
     const std::string key_name{name};
     if (key_name.empty())
     {
         mpss::utils::log_and_set_error("Key name cannot be empty.");
+        return nullptr;
+    }
+
+    if (!meets_minimum(yubikey_security_type, min_security))
+    {
+        mpss::utils::log_and_set_error(
+            "The YubiKey backend cannot guarantee security '{}'; the strongest it provides is '{}'.",
+            to_string(min_security), to_string(yubikey_security_type));
         return nullptr;
     }
 

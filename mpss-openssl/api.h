@@ -28,6 +28,18 @@
 #define MPSS_KEY_POLICY_APPLE_SECURE_ENCLAVE_USER_PRESENCE (1ULL << 8U)
 // NOLINTEND(*-macro-to-enum)
 
+// NOLINTBEGIN(modernize-use-using,cppcoreguidelines-use-enum-class)
+// C-compatible mirror of the C++ mpss::SecurityType enum, reported by the "security_type" key
+// parameter. The values are cross-checked against the C++ enum with static_assert in api.cpp.
+typedef enum
+{
+    MPSS_SECURITY_TYPE_SOFTWARE = 0,
+    MPSS_SECURITY_TYPE_MIXED = 1,
+    MPSS_SECURITY_TYPE_HARDWARE = 2,
+    MPSS_SECURITY_TYPE_SECURE_ELEMENT = 3
+} mpss_security_type_t;
+// NOLINTEND(modernize-use-using,cppcoreguidelines-use-enum-class)
+
 #ifdef __cplusplus
 extern "C"
 {

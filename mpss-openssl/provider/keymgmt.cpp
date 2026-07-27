@@ -271,7 +271,7 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gettable_params([[maybe_unused]] void 
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
-                                     OSSL_PARAM_int("is_hardware_backed", nullptr),
+                                     OSSL_PARAM_int("security_type", nullptr),
                                      OSSL_PARAM_utf8_string("storage_description", nullptr, 0),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_BITS, nullptr),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_SECURITY_BITS, nullptr),
@@ -301,6 +301,9 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
     const std::string key_name = key->name.value_or("");
     const std::string mpss_algorithm = key->mpss_algorithm.value_or("");
     const char *mpss_backend = key->has_valid_key() ? key->key_pair->backend_name() : "";
+    const int security_type =
+        key->has_valid_key() ? static_cast<int>(key->key_pair->key_info().security_type) : 0;
+    const char *storage_description = key->has_valid_key() ? key->key_pair->key_info().storage_description : "";
     std::int32_t bits = 0;
     std::int32_t security_bits = 0;
     const std::string mandatory_digest{key->hash_name.value_or("")};
@@ -332,13 +335,13 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
     {
         return 0;
     }
-    if ((p = OSSL_PARAM_locate(params, "is_hardware_backed")) &&
-        !OSSL_PARAM_set_int(p, key->key_pair->key_info().is_hardware_backed ? 1 : 0))
+    // The tier is reported as the SecurityType ordinal, matching mpss_security_type_t in the C API.
+    if ((p = OSSL_PARAM_locate(params, "security_type")) && !OSSL_PARAM_set_int(p, security_type))
     {
         return 0;
     }
     if ((p = OSSL_PARAM_locate(params, "storage_description")) &&
-        !OSSL_PARAM_set_utf8_string(p, key->key_pair->key_info().storage_description))
+        !OSSL_PARAM_set_utf8_string(p, storage_description))
     {
         return 0;
     }

@@ -5,9 +5,24 @@
 #include "mpss-openssl/utils/names.h"
 #include <memory>
 #include <mpss/mpss.h>
+#include <mpss/security_type.h>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
+
+// The C mirror in api.h and the C++ enum must agree exactly: the "security_type" key parameter is
+// reported as a raw ordinal, so a divergence would silently mislabel a key's guarantee.
+static_assert(static_cast<std::underlying_type_t<mpss::SecurityType>>(mpss::SecurityType::software) ==
+              MPSS_SECURITY_TYPE_SOFTWARE);
+static_assert(static_cast<std::underlying_type_t<mpss::SecurityType>>(mpss::SecurityType::mixed) ==
+              MPSS_SECURITY_TYPE_MIXED);
+static_assert(static_cast<std::underlying_type_t<mpss::SecurityType>>(mpss::SecurityType::hardware) ==
+              MPSS_SECURITY_TYPE_HARDWARE);
+static_assert(static_cast<std::underlying_type_t<mpss::SecurityType>>(mpss::SecurityType::secure_element) ==
+              MPSS_SECURITY_TYPE_SECURE_ELEMENT);
+static_assert(mpss::max_security_type_value == MPSS_SECURITY_TYPE_SECURE_ELEMENT,
+              "A new SecurityType value must also be mirrored in mpss_security_type_t.");
 
 bool mpss_delete_key(const char *key_name)
 {

@@ -8,6 +8,7 @@
 #include "mpss/impl/os_backend.h"
 #include "mpss/utils/utilities.h"
 #include <optional>
+#include <string>
 
 using jni_string = mpss::impl::os::utils::JNIObj<jstring>;
 using jni_object = mpss::impl::os::utils::JNIObj<jobject>;
@@ -22,9 +23,9 @@ constexpr const char *trusted_storage = "Trusted Environment";
 constexpr const char *strongbox_storage = "StrongBox";
 constexpr const char *unknown_secure_storage = "Unknown Secure";
 
-void GetKeyProperties(std::string_view name, bool &hardware_backed, const char **storage_description)
+void GetKeyProperties(std::string_view name, mpss::SecurityType &security_type, const char **storage_description)
 {
-    hardware_backed = false;
+    security_type = mpss::SecurityType::software;
     *storage_description = nullptr;
 
     mpss::impl::os::JNIEnvGuard guard;
@@ -79,23 +80,23 @@ void GetKeyProperties(std::string_view name, bool &hardware_backed, const char *
     switch (result)
     {
     case 0:
-        hardware_backed = false;
+        security_type = mpss::SecurityType::software;
         *storage_description = unknown_storage;
         return;
     case 1:
-        hardware_backed = false;
+        security_type = mpss::SecurityType::software;
         *storage_description = software_storage;
         return;
     case 2:
-        hardware_backed = true;
+        security_type = mpss::SecurityType::mixed;
         *storage_description = unknown_secure_storage;
         return;
     case 3:
-        hardware_backed = true;
+        security_type = mpss::SecurityType::mixed;
         *storage_description = trusted_storage;
         return;
     case 4:
-        hardware_backed = true;
+        security_type = mpss::SecurityType::secure_element;
         *storage_description = strongbox_storage;
         return;
     default:
@@ -111,7 +112,7 @@ namespace mpss::impl::os
 
 using enum Algorithm;
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, [[maybe_unused]] SecurityType min_security)
 {
     if (name.empty())
     {
@@ -259,22 +260,27 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
         return nullptr;
     }
 
-    bool hardware_backed = false;
+    mpss::SecurityType security_type = mpss::SecurityType::software;
     const char *storage_description = nullptr;
-    GetKeyProperties(name, hardware_backed, &storage_description);
+    GetKeyProperties(name, security_type, &storage_description);
 
     if (nullptr == storage_description)
     {
-        // Error happened getting key properties. This is reported by GetKeyProperties, so we just return here.
+        // The key was loaded on the Java side but cannot be classified, so it is never returned.
+        // Dropping this pair releases that in-memory reference. The stored key is deliberately left
+        // alone: an open must never delete. GetKeyProperties has already reported the error.
+        const AndroidKeyPair unclassified{algorithm, name, mpss::SecurityType::software, software_storage};
+        static_cast<void>(unclassified);
         return nullptr;
     }
 
     // Finally, we can return the key.
     mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, security_type, storage_description);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    [[maybe_unused]] SecurityType min_security)
 {
     if (name.empty())
     {
@@ -295,7 +301,9 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     // Check if the key already exists
-    std::unique_ptr<KeyPair> existingKey = open_key(name);
+    // The collision check uses no floor of its own: a name collision is a collision regardless of
+    // what guarantee the caller asked the new key to provide.
+    std::unique_ptr<KeyPair> existingKey = open_key(name, SecurityType::software);
     if (nullptr != existingKey)
     {
         mpss::utils::log_and_set_error("Key '{}' already exists.", name);
@@ -412,18 +420,35 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    bool hardware_backed = false;
+    mpss::SecurityType security_type = mpss::SecurityType::software;
     const char *storage_description = nullptr;
-    GetKeyProperties(name, hardware_backed, &storage_description);
+    GetKeyProperties(name, security_type, &storage_description);
 
     if (nullptr == storage_description)
     {
-        // Error happened getting key properties. This is reported by GetKeyProperties, so we just return here.
+        // The key now exists on the device but cannot be classified, so it can never be returned.
+        // No KeyPair reaches the registry either, so this is the only place that can remove it.
+        // The tier below is never reported; the object exists solely to delete the key.
+        // delete_key() clears the last error, so the diagnostic is composed first and set after.
+        const std::string classification_error = mpss::utils::get_error();
+        AndroidKeyPair orphan{algorithm, name, mpss::SecurityType::software, software_storage};
+        if (orphan.delete_key())
+        {
+            mpss::utils::log_and_set_error("Key '{}' was created but could not be classified ({}). It was deleted.",
+                                           name, classification_error);
+        }
+        else
+        {
+            mpss::utils::log_and_set_error(
+                "Key '{}' was created but could not be classified ({}), and deleting it also failed. Manual cleanup "
+                "may be required.",
+                name, classification_error);
+        }
         return nullptr;
     }
 
     mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, security_type, storage_description);
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

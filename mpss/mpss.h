@@ -7,6 +7,7 @@
 #include "mpss/defines.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
+#include "mpss/security_type.h"
 #include <cstddef>
 #include <memory>
 #include <span>
@@ -34,22 +35,28 @@ MPSS_DECOR std::string get_error();
  * @brief Determines whether the given signature algorithm is available in the default backend.
  *
  * This performs a runtime probe (key creation, signing, verification, deletion) to check that
- * the algorithm works end-to-end. Results are cached after the first call per algorithm.
+ * the algorithm works end-to-end at the requested floor. Results are cached lazily per
+ * (algorithm, min_security) pair, so a floor is only ever probed if it is actually asked for.
  *
  * @param algorithm The signature algorithm to check.
+ * @param min_security The minimum security guarantee the probe key must provide. Defaults to
+ * SecurityType::software, which imposes no floor.
  * @return true if the algorithm is available, false otherwise.
  */
 [[nodiscard]]
-MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, SecurityType min_security = SecurityType::software);
 
 /**
  * @brief Determines whether the given signature algorithm is available in a specific backend.
  * @param algorithm The signature algorithm to check.
  * @param backend_name The backend to check (e.g., "os", "yubikey").
+ * @param min_security The minimum security guarantee the probe key must provide. Defaults to
+ * SecurityType::software, which imposes no floor.
  * @return true if the algorithm is available, false otherwise.
  */
 [[nodiscard]]
-MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name);
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name,
+                                       SecurityType min_security = SecurityType::software);
 
 /**
  * @brief Returns all signature algorithms available in the default backend.
@@ -156,13 +163,19 @@ class MPSS_DECOR KeyPair
      * control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] min_security The minimum security guarantee the key must provide. Defaults to
+     * SecurityType::software, which every valid key satisfies and therefore imposes no floor.
      * @return Key pair if the key pair was created successfully, a null pointer otherwise.
      * @note The name must be unique. If a key pair with the same name already exists, the
      * function will return a null pointer.
+     * @note If the created key cannot be guaranteed to meet @p min_security it is deleted and this
+     * function fails. If that deletion also fails, the error reports that manual cleanup may be
+     * required; the rejected key is never returned.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           SecurityType min_security = SecurityType::software);
 
     /**
      * @brief Creates a new key pair using a specific backend.
@@ -171,31 +184,41 @@ class MPSS_DECOR KeyPair
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] min_security The minimum security guarantee the key must provide. Defaults to
+     * SecurityType::software, which imposes no floor.
      * @return Key pair if created successfully, nullptr otherwise.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           SecurityType min_security = SecurityType::software);
 
     /**
      * @brief Opens the key pair with the given name.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
      * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
+     * @param[in] min_security The minimum security guarantee the opened key must provide. Defaults
+     * to SecurityType::software, which imposes no floor.
      * @return Key pair instance if the key pair was opened successfully, a null pointer
      * otherwise.
+     * @note A key that does not meet @p min_security is released and this function fails, but the
+     * persistent key is left intact. Opening never deletes.
      */
     [[nodiscard]]
-    static std::unique_ptr<KeyPair> Open(std::string_view name);
+    static std::unique_ptr<KeyPair> Open(std::string_view name, SecurityType min_security = SecurityType::software);
 
     /**
      * @brief Opens the key pair with the given name using a specific backend.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
      * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] min_security The minimum security guarantee the opened key must provide. Defaults
+     * to SecurityType::software, which imposes no floor.
      * @return Key pair if opened successfully, nullptr otherwise.
      */
     [[nodiscard]]
-    static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name);
+    static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name,
+                                         SecurityType min_security = SecurityType::software);
 
     /**
      * @brief Deletes the key pair with the given name from the safe storage.
@@ -271,7 +294,7 @@ class MPSS_DECOR KeyPair
 
     // NOLINTEND(*-non-private-member-variables-in-classes)
 
-    KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description);
+    KeyPair(Algorithm algorithm, SecurityType security_type, const char *storage_description);
 
     // Non-virtual interface: the public operations above clear the thread-local last-error on
     // entry and validate inputs, then dispatch to these backend-specific implementations.

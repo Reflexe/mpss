@@ -7,6 +7,9 @@
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_backend.h"
 #endif
+#ifdef MPSS_BACKEND_NOOP
+#include "mpss/impl/noop/noop_backend.h"
+#endif
 #include "mpss/utils/scope_guard.h"
 #include "mpss/utils/utilities.h"
 #include <algorithm>
@@ -195,6 +198,11 @@ class BackendRegistry
 #ifdef MPSS_BACKEND_YUBIKEY
         install_builtin(std::make_shared<yubikey::YubiKeyBackend>());
 #endif
+#ifdef MPSS_BACKEND_NOOP
+        // Registered but never chosen as the platform default: reaching it takes an explicit
+        // backend name or MPSS_DEFAULT_BACKEND.
+        install_builtin(std::make_shared<noop::NoopBackend>());
+#endif
 
         // Check MPSS_DEFAULT_BACKEND environment variable.
         const char *env_backend = std::getenv("MPSS_DEFAULT_BACKEND"); // NOLINT(concurrency-mt-unsafe)
@@ -269,17 +277,17 @@ class BackendRegistry
     }
 };
 
-bool is_algorithm_available(Algorithm algorithm)
+bool is_algorithm_available(Algorithm algorithm, SecurityType min_security)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
     {
         return false;
     }
-    return backend->is_algorithm_available(algorithm);
+    return backend->is_algorithm_available(algorithm, min_security);
 }
 
-bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
+bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, SecurityType min_security)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_backend(backend_name);
     if (nullptr == backend)
@@ -287,12 +295,12 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
         utils::log_warning("Backend '{}' not found.", backend_name);
         return false;
     }
-    return backend->is_algorithm_available(algorithm);
+    return backend->is_algorithm_available(algorithm, min_security);
 }
 
 // Explicit-backend functions - the real implementations.
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
-                                    KeyPolicy policy)
+                                    KeyPolicy policy, SecurityType min_security)
 {
     if (!is_valid_key_name(name))
     {
@@ -308,18 +316,57 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
         return nullptr;
     }
 
-    utils::log_trace("Creating key '{}' with algorithm '{}' using backend '{}'.", name,
-                     get_algorithm_info(algorithm).type_str, backend->name());
-    auto key = backend->create_key(name, algorithm, policy);
-    if (nullptr != key)
+    utils::log_trace("Creating key '{}' with algorithm '{}' using backend '{}', minimum security '{}'.", name,
+                     get_algorithm_info(algorithm).type_str, backend->name(), to_string(min_security));
+    auto key = backend->create_key(name, algorithm, policy, min_security);
+    if (nullptr == key)
     {
-        utils::log_trace("Key '{}' created on backend '{}'.", name, backend->name());
-        BackendNameSetter::set(*key, backend->name());
+        return nullptr;
     }
+
+    // Backends prune the mechanisms they attempt, but the postcondition is enforced here as well so
+    // that it holds for every backend, including ones that do not implement pruning themselves. A
+    // tier outside the defined range is treated as a failure rather than compared: an out-of-range
+    // value would otherwise compare greater than every floor and be accepted.
+    const SecurityType guaranteed = key->key_info().security_type;
+    const bool valid_tier = is_valid_security_type(static_cast<std::uint8_t>(guaranteed));
+    if (!valid_tier || !meets_minimum(guaranteed, min_security))
+    {
+        // A rejected key must never reach the caller, and must not be left behind. delete_key()
+        // clears the last error, so the diagnostic is set after the attempt.
+        const bool deleted = key->delete_key();
+        if (!valid_tier)
+        {
+            utils::log_and_set_error(
+                "Key '{}' created on backend '{}' reported an invalid security value {}. The key was {}.", name,
+                backend->name(), static_cast<unsigned>(static_cast<std::uint8_t>(guaranteed)),
+                deleted ? "deleted" : "NOT deleted; manual cleanup may be required");
+            return nullptr;
+        }
+        if (deleted)
+        {
+            utils::log_and_set_error(
+                "Key '{}' created on backend '{}' guarantees security '{}', below the required '{}'. The key was "
+                "deleted.",
+                name, backend->name(), to_string(guaranteed), to_string(min_security));
+        }
+        else
+        {
+            utils::log_and_set_error(
+                "Key '{}' created on backend '{}' guarantees security '{}', below the required '{}', and could not be "
+                "deleted. Manual cleanup may be required.",
+                name, backend->name(), to_string(guaranteed), to_string(min_security));
+        }
+        return nullptr;
+    }
+
+    utils::log_trace("Key '{}' created on backend '{}' with security '{}'.", name, backend->name(),
+                     to_string(guaranteed));
+    BackendNameSetter::set(*key, backend->name());
     return key;
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name, SecurityType min_security)
 {
     if (!is_valid_key_name(name))
     {
@@ -335,13 +382,35 @@ std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_vie
         return nullptr;
     }
 
-    utils::log_trace("Opening key '{}' using backend '{}'.", name, backend->name());
-    auto key = backend->open_key(name);
-    if (nullptr != key)
+    utils::log_trace("Opening key '{}' using backend '{}', minimum security '{}'.", name, backend->name(),
+                     to_string(min_security));
+    auto key = backend->open_key(name, min_security);
+    if (nullptr == key)
     {
-        utils::log_trace("Key '{}' opened on backend '{}'.", name, backend->name());
-        BackendNameSetter::set(*key, backend->name());
+        return nullptr;
     }
+
+    const SecurityType guaranteed = key->key_info().security_type;
+    if (!is_valid_security_type(static_cast<std::uint8_t>(guaranteed)))
+    {
+        utils::log_and_set_error("Key '{}' on backend '{}' reported an invalid security value {}.", name,
+                                 backend->name(),
+                                 static_cast<unsigned>(static_cast<std::uint8_t>(guaranteed)));
+        return nullptr;
+    }
+    if (!meets_minimum(guaranteed, min_security))
+    {
+        utils::log_and_set_error(
+            "Key '{}' on backend '{}' guarantees security '{}', below the required '{}'. The key was left intact.",
+            name, backend->name(), to_string(guaranteed), to_string(min_security));
+        // Returning here destroys the key pair, which releases the handle. An existing key is never
+        // deleted just because the caller asked for a stronger guarantee than it can provide.
+        return nullptr;
+    }
+
+    utils::log_trace("Key '{}' opened on backend '{}' with security '{}'.", name, backend->name(),
+                     to_string(guaranteed));
+    BackendNameSetter::set(*key, backend->name());
     return key;
 }
 
@@ -360,7 +429,8 @@ bool verify(std::string_view backend_name, std::span<const std::byte> hash, std:
 }
 
 // Default-backend functions - delegate to the explicit-backend overloads.
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    SecurityType min_security)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
@@ -368,10 +438,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         utils::log_and_set_error("No default backend available for creating key '{}'.", name);
         return nullptr;
     }
-    return create_key(backend->name(), name, algorithm, policy);
+    return create_key(backend->name(), name, algorithm, policy, min_security);
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, SecurityType min_security)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
@@ -379,7 +449,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
         utils::log_and_set_error("No default backend available for opening key '{}'.", name);
         return nullptr;
     }
-    return open_key(backend->name(), name);
+    return open_key(backend->name(), name, min_security);
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
@@ -411,7 +481,7 @@ const char *get_default_backend_name()
     return "";
 }
 
-bool Backend::is_algorithm_available(Algorithm algorithm) const
+bool Backend::is_algorithm_available(Algorithm algorithm, SecurityType min_security) const
 {
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
@@ -419,9 +489,9 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
         return false;
     }
 
-    // Sample a random name for a key and try creating it.
+    // Sample a random name for a key and try creating it at the requested floor.
     const std::string random_key = "MPSS_TEST_KEY_" + random_string(16) + "_CAN_DELETE";
-    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none);
+    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none, min_security);
 
     // Could we even create a key?
     if (nullptr == key)
@@ -436,6 +506,16 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
             utils::log_and_set_error("Created key '{}' could not be deleted.", random_key);
         }
     });
+
+    // The probe calls the backend directly, so it repeats the floor postcondition the registry
+    // applies to create_key. The scope guard above deletes the probe key either way.
+    const SecurityType guaranteed = key->key_info().security_type;
+    if (!meets_minimum(guaranteed, min_security))
+    {
+        utils::log_trace("Probe key '{}' guarantees security '{}', below the required '{}'.", random_key,
+                         to_string(guaranteed), to_string(min_security));
+        return false;
+    }
 
     // Create some data and sign.
     const std::vector<std::byte> hash(info.hash_bits / 8, static_cast<std::byte>('a'));
