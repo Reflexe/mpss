@@ -61,7 +61,7 @@ jobs:
         # The noop backend is a test-only, in-memory backend. It is never the platform default,
         # so enabling it does not change which backend the other tests exercise; it exists so the
         # backend-independent security-floor behavior is covered.
-        run: cmake -S . --preset "${{ matrix.preset }}" -DMPSS_BACKEND_NOOP=ON
+        run: cmake -S . --preset "${{ matrix.preset }}" -DMPSS_BACKEND_NOOP=ON -DMPSS_BUILD_WIN32_MOCK_TESTS=ON
 
       - name: Build
         shell: bash
@@ -85,6 +85,22 @@ jobs:
             exit 1
           fi
           "$BIN"
+
+      - name: Test (Win32 NCrypt mocks)
+        # The runner has no TPM, so every key-creating Windows test in mpss_tests skips. These
+        # mocks are the only Windows backend coverage that actually executes here, so a missing
+        # binary is a failure rather than something to skip past. They are built only for the
+        # static preset, since IAT patching cannot reach a shared mpss.dll.
+        if: runner.os == 'Windows' && !contains(matrix.preset, 'shared')
+        shell: bash
+        run: |
+          set -euo pipefail
+          MOCK_BIN="out/build/${{ matrix.preset }}/bin/${{ matrix.bindir }}mpss_win32_mock_tests.exe"
+          if [ ! -f "$MOCK_BIN" ]; then
+            echo "Win32 mock test binary not found at $MOCK_BIN" >&2
+            exit 1
+          fi
+          "$MOCK_BIN"
 
   # -------------------------------------------------------------------------
   # Linux (GCC): mpss has no native Linux backend, so we build with the YubiKey

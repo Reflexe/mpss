@@ -13,6 +13,10 @@ option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_BACKEND_NOOP "Build with the in-memory noop backend used by the test suite." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
+# Win32 NCrypt mock tests (Windows + static backend only). CI runners have no TPM, so these
+# mocks are the only Windows backend coverage that actually executes there.
+option(MPSS_BUILD_WIN32_MOCK_TESTS "Build the gmock-win32 NCrypt mock test executable." NO)
+
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
 # default to building shared libraries. Explicit -D options take precedence.
 if(BUILD_SHARED_LIBS)
