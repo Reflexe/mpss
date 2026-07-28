@@ -22,8 +22,8 @@ bool WindowsKeyPair::do_delete_key()
         return false;
     }
 
-    // Release the key handle.
-    win_release();
+    // NCryptDeleteKey frees the handle on success.
+    clear_handle();
 
     mpss::utils::log_trace("Windows key deleted successfully.");
     return true;
