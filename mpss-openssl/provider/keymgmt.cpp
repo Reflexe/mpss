@@ -496,11 +496,8 @@ extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
 
 extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_sz)
 {
-    // The store loader delivers a "<backend>\0<key_name>" load reference (not key material); an empty
-    // backend means the default backend. Parse it and reopen the existing key. The mpss_key
-    // constructor decides between opening and creating by whether it is given an algorithm name: with
-    // no algorithm it opens an existing key (KeyPair::Open), with one it creates a new key. We are
-    // opening, so we pass an empty (value-less) algorithm.
+    // The store loader delivers a load reference (not key material). We parse it for a backend name
+    // (empty means default) and the key name, and reopen the existing key.
     if (nullptr == reference || 0 == reference_sz)
     {
         return nullptr;
@@ -516,7 +513,7 @@ extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_
 
     std::optional<std::string> no_algorithm = std::nullopt;
     const std::optional<std::string> backend =
-        backend_name.empty() ? std::nullopt : std::optional<std::string>(std::move(backend_name));
+        backend_name.empty() ? std::nullopt : std::make_optional(std::move(backend_name));
     mpss_key *pkey = mpss_new<mpss_key>(key_name, no_algorithm, backend, mpss::KeyPolicy::none);
     if (nullptr == pkey)
     {

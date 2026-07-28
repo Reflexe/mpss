@@ -6,12 +6,11 @@
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <cstddef>
-#include <memory>
-#include <mpss/mpss.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/core_object.h>
 #include <openssl/params.h>
+#include <openssl/store.h>
 #include <string>
 #include <string_view>
 
@@ -19,12 +18,13 @@ namespace mpss_openssl::provider
 {
 
 // Loader context for a single "mpss:<key_name>" store URI. The named key is surfaced as exactly one
-// object; loaded tracks whether that object has already been delivered. backend is the optional
+// object; `loaded` tracks whether that object has already been delivered. `backend` is the optional
 // target backend set via the mpss_backend ctx param (empty means the default backend).
 struct mpss_store_ctx
 {
     std::string key_name;
     std::string backend;
+    int expected_type = 0;
     bool loaded = false;
 };
 
@@ -85,6 +85,14 @@ extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *
     }
     ctx->loaded = true;
 
+    // The only object this loader can deliver is a key. If the caller asked for something else,
+    // report success without delivering anything: returning failure here would flag a hard error
+    // for what is only a type mismatch.
+    if (0 != ctx->expected_type && OSSL_STORE_INFO_PKEY != ctx->expected_type)
+    {
+        return 1;
+    }
+
     // Key management (mpss_keymgmt_load) builds the actual key object, but it runs as a separate
     // provider operation and receives only an opaque byte "reference" -- it has no access to this
     // loader context. That reference is the sole channel for telling it which key to open, so pack the
@@ -104,11 +112,9 @@ extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *
 
     OSSL_PARAM params[4];
     params[0] = OSSL_PARAM_construct_int(OSSL_OBJECT_PARAM_TYPE, &object_type);
-    // const_cast: OSSL_PARAM_construct_utf8_string takes a non-const char*; the string is not
-    // modified.
     params[1] = OSSL_PARAM_construct_utf8_string(OSSL_OBJECT_PARAM_DATA_TYPE, const_cast<char *>(ec_data_type), 0);
     params[2] = OSSL_PARAM_construct_octet_string(OSSL_OBJECT_PARAM_REFERENCE, reference.data(), reference.size());
-    params[3] = OSSL_PARAM_construct_end();
+    params[3] = OSSL_PARAM_END;
 
     return object_cb(params, object_cbarg);
 }
@@ -116,7 +122,6 @@ extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *
 extern "C" const OSSL_PARAM *mpss_store_settable_ctx_params([[maybe_unused]] void *provctx)
 {
     static const OSSL_PARAM settable[] = {OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, nullptr),
-                                          OSSL_PARAM_utf8_string(OSSL_STORE_PARAM_PROPERTIES, nullptr, 0),
                                           OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0), OSSL_PARAM_END};
     return settable;
 }
@@ -127,6 +132,12 @@ extern "C" int mpss_store_set_ctx_params(void *loaderctx, const OSSL_PARAM param
     if (nullptr == ctx)
     {
         return 0;
+    }
+
+    // "Passing NULL for params should return true." per OpenSSL documentation.
+    if (nullptr == params)
+    {
+        return 1;
     }
 
     // Optional mpss_backend selects which backend the key is opened from (symmetric with the
@@ -144,9 +155,16 @@ extern "C" int mpss_store_set_ctx_params(void *loaderctx, const OSSL_PARAM param
         ctx->backend = value_str;
     }
 
-    // OpenSSL also forwards the caller's property query and expected-object-type hint here; it
-    // handles both itself (key management is fetched with that property query, and the result is
-    // filtered against the expected type), so those are accepted without further action.
+    // The expected-object-type hint carries an OSSL_STORE_INFO_* value; mpss_store_load uses it to
+    // avoid delivering an object the caller did not ask for.
+    p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_EXPECT);
+    if (nullptr != p && !OSSL_PARAM_get_int(p, &ctx->expected_type))
+    {
+        return 0;
+    }
+
+    // OpenSSL also passes down the caller's property query, which it keeps and applies itself, so
+    // it is accepted and ignored here.
     return 1;
 }
 
@@ -159,6 +177,7 @@ extern "C" int mpss_store_eof(void *loaderctx)
     {
         return 1;
     }
+
     return ctx->loaded ? 1 : 0;
 }
 
@@ -205,13 +224,8 @@ extern "C" int mpss_store_delete([[maybe_unused]] void *provctx, const char *uri
 
     // Open the key (default backend when none is given) and delete it. A missing key or a failed
     // deletion reports failure.
-    const std::unique_ptr<mpss::KeyPair> key =
-        backend.empty() ? mpss::KeyPair::Open(key_name) : mpss::KeyPair::Open(key_name, backend);
-    if (nullptr == key)
-    {
-        return 0;
-    }
-    return key->delete_key() ? 1 : 0;
+    const bool deleted = backend.empty() ? delete_key(key_name) : delete_key(key_name, backend);
+    return deleted ? 1 : 0;
 }
 
 const OSSL_DISPATCH mpss_store_functions[] = {

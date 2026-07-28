@@ -3,7 +3,7 @@
 
 #include "mpss-openssl/api.h"
 #include "mpss-openssl/utils/names.h"
-#include <memory>
+#include "mpss-openssl/utils/utils.h"
 #include <mpss/mpss.h>
 #include <mutex>
 #include <string>
@@ -16,20 +16,7 @@ bool mpss_delete_key(const char *key_name)
         return false;
     }
 
-    // Try to open the key.
-    const std::unique_ptr<mpss::KeyPair> key_pair = mpss::KeyPair::Open(key_name);
-    if (nullptr == key_pair)
-    {
-        return false;
-    }
-
-    // Delete the key.
-    if (!key_pair->delete_key())
-    {
-        return false;
-    }
-
-    return true;
+    return mpss_openssl::utils::delete_key(key_name);
 }
 
 bool mpss_delete_key_from_backend(const char *key_name, const char *backend_name)
@@ -39,15 +26,7 @@ bool mpss_delete_key_from_backend(const char *key_name, const char *backend_name
         return false;
     }
 
-    // Try to open the key from the specified backend.
-    const std::unique_ptr<mpss::KeyPair> key_pair = mpss::KeyPair::Open(key_name, backend_name);
-    if (nullptr == key_pair)
-    {
-        return false;
-    }
-
-    // Delete the key.
-    return key_pair->delete_key();
+    return mpss_openssl::utils::delete_key(key_name, backend_name);
 }
 
 bool mpss_is_algorithm_available(const char *algorithm_name)

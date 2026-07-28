@@ -8,6 +8,7 @@
 #include <mpss/mpss.h>
 #include <openssl/types.h>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -37,5 +38,13 @@ bool verify_der(const std::unique_ptr<mpss::KeyPair> &key_pair, std::span<const 
 
 [[nodiscard]]
 byte_vector mpss_vk_params_to_spki(OSSL_LIB_CTX *libctx, const OSSL_PARAM *params);
+
+// Open the named key from the default backend, or from backend_name, and delete it. Returns false
+// if the key cannot be opened or the deletion fails.
+[[nodiscard]]
+bool delete_key(std::string_view name);
+
+[[nodiscard]]
+bool delete_key(std::string_view name, std::string_view backend_name);
 
 } // namespace mpss_openssl::utils
