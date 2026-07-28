@@ -21,8 +21,8 @@
 namespace
 {
 
-using namespace mpss_openssl::provider;
-using namespace mpss_openssl::utils;
+using namespace ::mpss_openssl::provider;
+using namespace ::mpss_openssl::utils;
 using enum digest_state;
 
 struct mpss_signature_ctx

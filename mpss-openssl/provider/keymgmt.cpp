@@ -28,11 +28,15 @@ struct mpss_keymgmt_gen_ctx
 mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
                    const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy)
 {
+    // This constructor has a dual purpose. If mpss_algorithm is empty, it tries to open the key with the given name. If
+    // mpss_algorithm is not empty, it tries to create a new key with the given name and algorithm.
+
     if (key_name.empty())
     {
         // If key_name is empty, we cannot create a key.
         return;
     }
+
     if (!mpss_algorithm)
     {
         // If mpss_algorithm is empty, just try to open the key.
@@ -207,7 +211,8 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
     return types_array[types_idx];
 }
 
-extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] void *provctx)
+extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] void *genctx,
+                                                              [[maybe_unused]] void *provctx)
 {
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
@@ -432,6 +437,12 @@ extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *
         return nullptr;
     }
 
+    // The algorithm name must be present; otherwise we cannot create a key.
+    if (ctx->mpss_algorithm.empty())
+    {
+        return nullptr;
+    }
+
     // Set up the new mpss_key struct with the right info.
     std::optional<std::string> mpss_algorithm = ctx->mpss_algorithm;
     const auto policy = static_cast<mpss::KeyPolicy>(ctx->key_policy);
@@ -441,27 +452,13 @@ extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *
         return nullptr;
     }
 
-    do
+    if (!pkey->has_valid_key())
     {
-        // Check that everything went well.
-        if (!pkey->has_valid_key())
-        {
-            break;
-        }
+        mpss_delete(pkey);
+        return nullptr;
+    }
 
-        // If a key already existed, mpss_algorithm now has the algorithm type that was loaded.
-        // This has to be the same as the one that was requested, otherwise return nullptr.
-        if (!mpss_algorithm || mpss_algorithm.value() != ctx->mpss_algorithm)
-        {
-            break;
-        }
-
-        // Key generation succeeded.
-        return pkey;
-    } while (false);
-
-    mpss_delete(pkey);
-    return nullptr;
+    return pkey;
 }
 
 extern "C" int mpss_keymgmt_has(const void *provkey, int selection)

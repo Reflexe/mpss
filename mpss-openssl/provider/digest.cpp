@@ -54,7 +54,8 @@ mpss_digest_ctx::mpss_digest_ctx(const mpss_digest_ctx &copy)
 
 namespace
 {
-using namespace mpss_openssl::provider;
+
+using namespace ::mpss_openssl::provider;
 using enum digest_state;
 
 #define MPSS_MAKE_DIGEST_NEWCTX(digest)                                                                                \
@@ -258,8 +259,8 @@ int mpss_digest_digest_internal(void *ctx, const unsigned char *in, ::size_t inl
         void *ctx = mpss_digest_newctx_##digest(provctx);                                                              \
         const int result = mpss_digest_digest_internal(ctx, in, inl, out, outl, outsz);                                \
         /* The one-shot entry owns the context it just allocated -- the caller never sees the pointer, so it     */    \
-        /* must be freed here or every invocation leaks the struct plus the EVP_MD/EVP_MD_CTX owned by its        */    \
-        /* destructor. mpss_digest_freectx tolerates a null ctx (null provctx path allocates nothing).            */    \
+        /* must be freed here or every invocation leaks the struct plus the EVP_MD/EVP_MD_CTX owned by its       */    \
+        /* destructor. mpss_digest_freectx tolerates a null ctx (null provctx path allocates nothing).           */    \
         mpss_digest_freectx(ctx);                                                                                      \
         return result;                                                                                                 \
     }

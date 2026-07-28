@@ -312,6 +312,73 @@ TEST(MPSS_OpenSSL, GenSetParamsRejectsNullString)
     OSSL_LIB_CTX_free(mpss_libctx);
 }
 
+TEST(MPSS_OpenSSL, GenerateRequiresAlgorithm)
+{
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    OSSL_LIB_CTX *mpss_libctx = OSSL_LIB_CTX_new();
+    ASSERT_NE(nullptr, mpss_libctx);
+    SCOPE_GUARD(OSSL_LIB_CTX_free(mpss_libctx));
+    ASSERT_NE(0, OSSL_PROVIDER_add_builtin(mpss_libctx, "mpss", OSSL_provider_init));
+    OSSL_PROVIDER *mpss_prov = OSSL_PROVIDER_load(mpss_libctx, "mpss");
+    ASSERT_NE(nullptr, mpss_prov);
+    SCOPE_GUARD(OSSL_PROVIDER_unload(mpss_prov));
+
+    char key_name[] = "test_key_requires_algorithm";
+    const bool _ = mpss_delete_key(key_name);
+    SCOPE_GUARD(mpss_delete_key(key_name));
+
+    {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss");
+        ASSERT_NE(nullptr, ctx);
+        SCOPE_GUARD(EVP_PKEY_CTX_free(ctx));
+        ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+
+        char algorithm[] = "ecdsa_secp256r1_sha256";
+        OSSL_PARAM params[] = {
+            OSSL_PARAM_construct_utf8_string("mpss_key_name", key_name, 0),
+            OSSL_PARAM_construct_utf8_string("mpss_algorithm", algorithm, 0),
+            OSSL_PARAM_END,
+        };
+        ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, params));
+
+        EVP_PKEY *pkey = nullptr;
+        SCOPE_GUARD(EVP_PKEY_free(pkey));
+        ASSERT_EQ(1, EVP_PKEY_generate(ctx, &pkey));
+        ASSERT_NE(nullptr, pkey);
+    }
+
+    const auto expect_generate_rejected = [mpss_libctx](const OSSL_PARAM *params) {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(mpss_libctx, "EC", "provider=mpss");
+        ASSERT_NE(nullptr, ctx);
+        SCOPE_GUARD(EVP_PKEY_CTX_free(ctx));
+        ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx));
+        ASSERT_EQ(1, EVP_PKEY_CTX_set_params(ctx, params));
+
+        EVP_PKEY *pkey = nullptr;
+        SCOPE_GUARD(EVP_PKEY_free(pkey));
+        EXPECT_EQ(0, EVP_PKEY_generate(ctx, &pkey));
+        EXPECT_EQ(nullptr, pkey);
+    };
+
+    OSSL_PARAM missing_algorithm[] = {
+        OSSL_PARAM_construct_utf8_string("mpss_key_name", key_name, 0),
+        OSSL_PARAM_END,
+    };
+    expect_generate_rejected(missing_algorithm);
+
+    char empty_algorithm[] = "";
+    OSSL_PARAM empty_algorithm_params[] = {
+        OSSL_PARAM_construct_utf8_string("mpss_key_name", key_name, 0),
+        OSSL_PARAM_construct_utf8_string("mpss_algorithm", empty_algorithm, 0),
+        OSSL_PARAM_END,
+    };
+    expect_generate_rejected(empty_algorithm_params);
+}
+
 TEST(MPSS_OpenSSL, DefaultBackendReturned)
 {
     if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))

@@ -13,8 +13,8 @@
 namespace
 {
 
-using namespace mpss_openssl::provider;
-using namespace mpss_openssl::utils;
+using namespace ::mpss_openssl::provider;
+using namespace ::mpss_openssl::utils;
 
 extern "C" void mpss_provider_teardown(void *provctx)
 {
@@ -60,8 +60,8 @@ const OSSL_DISPATCH mpss_provider_functions[] = {
 extern "C" int OSSL_provider_init(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *in, const OSSL_DISPATCH **out,
                                   void **provctx)
 {
-    using namespace mpss_openssl::provider;
-    using namespace mpss_openssl::utils;
+    using namespace ::mpss_openssl::provider;
+    using namespace ::mpss_openssl::utils;
 
     mpss_provider_ctx *ctx = mpss_new<mpss_provider_ctx>();
     ctx->handle = handle;

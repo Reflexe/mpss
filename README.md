@@ -983,8 +983,8 @@ EVP_PKEY_free(pkey);
 #### 2. Opening Existing Keys and Public Key Extraction
 
 An existing key is reopened by name through OpenSSL's `OSSL_STORE` interface. The provider registers
-the `mpss` URI scheme, so a key stored under the name `my_key_name` is addressed as
-`"mpss:my_key_name"`. The key material never leaves the secure backend; the store yields an
+the `mpss` URI scheme, so a key stored under the name `my-openssl-key` is addressed as
+`"mpss:my-openssl-key"`. The key material never leaves the secure backend; the store yields an
 `EVP_PKEY` that references the hardware-backed key and can be used for signing, certificates, and
 public-key extraction.
 
@@ -996,7 +996,7 @@ no key.
 ```cpp
 // Open an existing MPSS key by name.
 OSSL_STORE_CTX *store =
-    OSSL_STORE_open_ex("mpss:my_key_name", libctx, "provider=mpss", nullptr, nullptr, nullptr, nullptr, nullptr);
+    OSSL_STORE_open_ex("mpss:my-openssl-key", libctx, "provider=mpss", nullptr, nullptr, nullptr, nullptr, nullptr);
 
 EVP_PKEY *existing_pkey = nullptr;
 while (OSSL_STORE_eof(store) == 0)
@@ -1095,7 +1095,7 @@ library context.
 // Delete "my-old-key" through the MPSS provider. Returns 1 on success, 0 on failure / not found.
 int deleted = OSSL_STORE_delete("mpss:my-old-key", libctx, "provider=mpss", nullptr, nullptr, nullptr);
 if (deleted == 1) {
-    printf("MPSS key deleted from secure storage\n");
+    // Key was deleted from secure storage.
 }
 
 // To delete from a specific backend, pass an mpss_backend parameter:
@@ -1113,10 +1113,11 @@ Use `mpss_delete_key_from_backend` to target a specific backend.
 const char *ca_key_name = "my-old-key";
 bool deletion_success = mpss_delete_key(ca_key_name);
 if (deletion_success) {
-    printf("MPSS CA key '%s' deleted from secure storage\n", ca_key_name);
+    // Key was deleted from secure storage.
 } else {
+    // Failed to delete key.
     const char *error_msg = mpss_get_error();
-    printf("Failed to delete MPSS key '%s': %s\n", ca_key_name, error_msg);
+    fprintf(stderr, "Error: %s\n", error_msg);
 }
 ```
 
