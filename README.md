@@ -582,6 +582,10 @@ if (!deleted) {
 }
 ```
 
+After `delete_key()` succeeds, all `KeyPair` objects referring to that key must be considered invalid
+and must not be used. Their subsequent behavior is backend-dependent and is not part of the MPSS API
+contract.
+
 ### Supported Algorithms
 
 The library supports the following ECDSA algorithms:
@@ -656,28 +660,6 @@ After calling `close()` on a logger, all handlers are reset and subsequent log c
 To restore logging, call `mpss::ResetDefaultLogger()` to reinstall the default logger, or use `mpss::GetOrSetLogger` to install a new custom logger.
 
 The global logger and MPSS's internal backend registry are intentionally **never destroyed** at process exit. This keeps MPSS safe to call from a host object's static or global destructor (avoiding the static destruction-order problem), but it has one consequence for custom loggers: a custom logger's `flush`/`close` handlers are **not** invoked automatically at process exit. If your logger buffers output or holds a resource such as a file handle, call `mpss::GetLogger()->close()` (or `mpss_log_close()` from C) during your controlled shutdown to guarantee a final flush. The default `std::cout`/`std::cerr` logger requires no action. For the same reason, avoid performing MPSS-dependent work in your own static/global destructors where ordering relative to the C runtime's stream flushing is undefined.
-
-### Platform-Dependent Behavior
-There is a single known difference in how MPSS behaves on different platforms.
-This happens when opening several instances of the same key.
-Take the following code, for example:
-```cpp
-// Open an existing key pair.
-auto existing_key1 = KeyPair::Open("my-key");
-auto existing_key2 = KeyPair::Open("my-key");
-
-// Delete existing key.
-existing_key1->delete_key();
-
-// Sign with the remaining KeyPair object.
-auto sig_size = existing_key2->sign_hash(hash, sig);
-```
-This code opens two instances of the same key and deletes the first one from the operating system.
-- In Windows, the signing operation with ```existing_key2``` will succeed.
-The Windows instance implementation holds a handle to the opened key, which will persist until closed, even if the underlying key representation has been deleted.
-- In other platforms the operation will fail.
-All other platform implementations hold only a reference to an in-memory cache that does not persist the key when it is deleted.
-- The YubiKey PIV backend fails this operation for a slightly different reason. Each operation connects to the YubiKey fresh, so deleting the key makes it unavailable immediately.
 
 ## Using MPSS with YubiKey PIV
 
