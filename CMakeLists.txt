@@ -12,6 +12,10 @@ option(MPSS_BUILD_TESTS "Build the test suite." NO)
 option(MPSS_BACKEND_YUBIKEY "Build with YubiKey PIV backend." NO)
 option(MPSS_ENABLE_HARDENING "Enable security hardening compile and link flags." YES)
 
+# Drives the provider fallbacks, which real hardware cannot be made to fail on demand.
+# Windows and a static backend only.
+option(MPSS_BUILD_WIN32_MOCK_TESTS "Build the gmock-win32 NCrypt mock test executable." NO)
+
 # If BUILD_SHARED_LIBS is set and no explicit library type options were provided,
 # default to building shared libraries. Explicit -D options take precedence.
 if(BUILD_SHARED_LIBS)
