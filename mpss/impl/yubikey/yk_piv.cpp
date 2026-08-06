@@ -10,8 +10,12 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <format>
+#include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
+#include <span>
+#include <utility>
 #include <ykpiv/ykpiv.h>
 
 namespace
@@ -107,6 +111,63 @@ bool is_reserved_key_name(std::string_view name)
     return available_slot_label == name;
 }
 
+namespace
+{
+// Largest X9.63 uncompressed point MPSS handles (P-521: 1 + 66 * 2). YubiKey PIV tops out at P-384,
+// but sizing to the library maximum keeps the buffer correct if a larger algorithm is ever reachable.
+constexpr std::size_t max_public_key_bytes = 133;
+
+/**
+ * @brief Report a failure through the last error, or through the trace log only when speculative.
+ *
+ * A slot scan reads keys it has no reason to expect are there, so a failure is an expected outcome
+ * rather than a failure of whatever operation the caller actually asked for.
+ */
+template <typename... Args> void report_failure(bool probe, std::format_string<Args...> fmt, Args &&...args)
+{
+    if (probe)
+    {
+        mpss::utils::log_trace(fmt, std::forward<Args>(args)...);
+    }
+    else
+    {
+        mpss::utils::log_and_set_error(fmt, std::forward<Args>(args)...);
+    }
+}
+
+/**
+ * @brief Build an EC public key from a raw X9.63 uncompressed point.
+ *
+ * @param group_name OpenSSL group name for the point.
+ * @param point The uncompressed point (04 || X || Y).
+ * @return An owning EVP_PKEY the caller must free, or nullptr on failure.
+ */
+EVP_PKEY *make_ec_public_key(const char *group_name, std::span<const std::byte> point)
+{
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, const_cast<char *>(group_name), 0),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_PKEY_PARAM_PUB_KEY, const_cast<unsigned char *>(reinterpret_cast<const unsigned char *>(point.data())),
+            point.size()),
+        OSSL_PARAM_END};
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr);
+    if (nullptr == ctx)
+    {
+        return nullptr;
+    }
+    SCOPE_GUARD(EVP_PKEY_CTX_free(ctx));
+
+    EVP_PKEY *pkey = nullptr;
+    if (EVP_PKEY_fromdata_init(ctx) <= 0 || EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0)
+    {
+        return nullptr;
+    }
+
+    return pkey;
+}
+} // namespace
+
 YubiKeyPIV::YubiKeyPIV(std::uint32_t serial)
 {
     connect(serial);
@@ -172,8 +233,7 @@ mpss::PinResult YubiKeyPIV::authenticate_pin(std::string_view pin, int &retries_
 
     if (YKPIV_PIN_LOCKED == rc || 0 == tries)
     {
-        mpss::utils::log_and_set_error(
-            "YubiKey PIN is locked. Use the PUK to unlock it or reset the PIV module with 'ykman piv reset'.");
+        mpss::utils::log_and_set_error("YubiKey PIN is locked. Use the PUK to unlock it or reset the PIV module.");
         return mpss::PinResult::locked;
     }
 
@@ -333,7 +393,7 @@ bool YubiKeyPIV::generate_key(std::uint8_t slot, std::uint8_t algorithm, KeyPoli
 }
 
 std::size_t YubiKeyPIV::sign(std::uint8_t slot, std::span<const std::byte> hash, Algorithm algorithm,
-                             std::span<std::byte> sig)
+                             std::span<std::byte> sig, bool probe)
 {
     if (nullptr == state_)
     {
@@ -358,9 +418,8 @@ std::size_t YubiKeyPIV::sign(std::uint8_t slot, std::span<const std::byte> hash,
 
     if (YKPIV_OK != rc)
     {
-        // Authentication errors are not logged here. The caller is expected to handle them
-        // (e.g., by prompting for PIN and retrying).
-        if (YKPIV_AUTHENTICATION_ERROR != rc)
+        // A probe expects an authentication failure when the PIN is not yet verified, so only a probe suppresses it.
+        if (!probe || YKPIV_AUTHENTICATION_ERROR != rc)
         {
             mpss::utils::log_and_set_error("Signing failed in slot {}: {}", utils::get_slot_name(slot),
                                            ykpiv_strerror(rc));
@@ -371,11 +430,12 @@ std::size_t YubiKeyPIV::sign(std::uint8_t slot, std::span<const std::byte> hash,
     return sig_len;
 }
 
-std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> public_key)
+std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> public_key, bool probe)
 {
+
     if (nullptr == state_)
     {
-        mpss::utils::log_and_set_error("YubiKey not connected.");
+        report_failure(probe, "YubiKey not connected.");
         return 0;
     }
 
@@ -386,8 +446,8 @@ std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> p
     ykpiv_rc rc = ykpiv_get_metadata(state_, slot, metadata_buf, &metadata_len);
     if (YKPIV_OK != rc)
     {
-        mpss::utils::log_and_set_error("Failed to get metadata from slot {}: {}", utils::get_slot_name(slot),
-                                       ykpiv_strerror(rc));
+        report_failure(probe, "Failed to get metadata from slot {}: {}", utils::get_slot_name(slot),
+                       ykpiv_strerror(rc));
         return 0;
     }
 
@@ -396,8 +456,8 @@ std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> p
     rc = ykpiv_util_parse_metadata(metadata_buf, metadata_len, &metadata);
     if (YKPIV_OK != rc)
     {
-        mpss::utils::log_and_set_error("Failed to parse metadata from slot {}: {}", utils::get_slot_name(slot),
-                                       ykpiv_strerror(rc));
+        report_failure(probe, "Failed to parse metadata from slot {}: {}", utils::get_slot_name(slot),
+                       ykpiv_strerror(rc));
         return 0;
     }
 
@@ -423,8 +483,8 @@ std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> p
 
         if (header_len > pubkey_len)
         {
-            mpss::utils::log_and_set_error("Malformed BER-TLV public key in slot {}: header exceeds data length.",
-                                           utils::get_slot_name(slot));
+            report_failure(probe, "Malformed BER-TLV public key in slot {}: header exceeds data length.",
+                           utils::get_slot_name(slot));
             return 0;
         }
 
@@ -434,13 +494,62 @@ std::size_t YubiKeyPIV::get_public_key(std::uint8_t slot, std::span<std::byte> p
 
     if (pubkey_len > public_key.size())
     {
-        mpss::utils::log_and_set_error("Public key buffer too small.");
+        report_failure(probe, "Public key buffer too small.");
         return 0;
     }
 
     // Copy directly into the caller's buffer.
     std::copy_n(reinterpret_cast<const std::byte *>(pubkey), pubkey_len, public_key.data());
     return pubkey_len;
+}
+
+Algorithm YubiKeyPIV::read_slot_algorithm(std::uint8_t slot)
+{
+    if (nullptr == state_)
+    {
+        return Algorithm::unsupported;
+    }
+
+    unsigned char metadata_buf[YKPIV_OBJ_MAX_SIZE];
+    std::size_t metadata_len = sizeof(metadata_buf);
+    if (YKPIV_OK != ykpiv_get_metadata(state_, slot, metadata_buf, &metadata_len))
+    {
+        return Algorithm::unsupported;
+    }
+
+    ykpiv_metadata metadata = {};
+    if (YKPIV_OK != ykpiv_util_parse_metadata(metadata_buf, metadata_len, &metadata))
+    {
+        return Algorithm::unsupported;
+    }
+
+    return utils::yk_to_mpss_algorithm(metadata.algorithm);
+}
+
+bool YubiKeyPIV::slot_key_matches_label(std::uint8_t slot, X509 *cert)
+{
+    std::array<std::byte, max_public_key_bytes> slot_point{};
+    const std::size_t slot_point_len = get_public_key(slot, slot_point, /* probe */ true);
+    if (0 == slot_point_len)
+    {
+        return false;
+    }
+
+    EVP_PKEY *cert_key = X509_get0_pubkey(cert);
+    if (nullptr == cert_key)
+    {
+        return false;
+    }
+
+    unsigned char *cert_point = nullptr;
+    const std::size_t cert_point_len = EVP_PKEY_get1_encoded_public_key(cert_key, &cert_point);
+    if (0 == cert_point_len || nullptr == cert_point)
+    {
+        return false;
+    }
+    SCOPE_GUARD(OPENSSL_free(cert_point));
+
+    return cert_point_len == slot_point_len && 0 == std::memcmp(cert_point, slot_point.data(), slot_point_len);
 }
 
 bool YubiKeyPIV::delete_key(std::uint8_t slot)
@@ -565,9 +674,37 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
         return false;
     }
 
-    // Generate an ephemeral EC P-256 key for the certificate.
-    // This key is only used to create a syntactically valid self-signed cert;
-    // the actual signing key lives in the YubiKey slot.
+    // The certificate names the slot's own key as its subject, so a label can be checked against the
+    // key it claims to describe. Read that key first: a label written against anything else would
+    // assert a name for a key that is not there.
+    std::array<std::byte, max_public_key_bytes> slot_point_buf{};
+    const std::size_t slot_point_len = get_public_key(slot, slot_point_buf);
+    if (0 == slot_point_len)
+    {
+        return false;
+    }
+
+    const Algorithm slot_algorithm = read_slot_algorithm(slot);
+    const char *group_name = utils::get_group_name(slot_algorithm);
+    if (nullptr == group_name)
+    {
+        mpss::utils::log_and_set_error("Cannot label slot {}: its key uses an unsupported algorithm.",
+                                       utils::get_slot_name(slot));
+        return false;
+    }
+
+    EVP_PKEY *slot_key = make_ec_public_key(group_name, std::span{slot_point_buf}.first(slot_point_len));
+    if (nullptr == slot_key)
+    {
+        mpss::utils::log_and_set_error("Failed to load the public key of slot {} for labeling.",
+                                       utils::get_slot_name(slot));
+        return false;
+    }
+    SCOPE_GUARD(EVP_PKEY_free(slot_key));
+
+    // The slot's private key cannot sign here without a PIN and, under a touch policy, a user touch,
+    // so the certificate is signed by an ephemeral key. The signature therefore proves nothing; the
+    // binding that matters is the subject public key set below.
     EVP_PKEY *ephemeral_key = EVP_EC_gen("P-256"); // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
     if (nullptr == ephemeral_key)
     {
@@ -576,7 +713,7 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
     }
     SCOPE_GUARD(EVP_PKEY_free(ephemeral_key));
 
-    // Create a minimal self-signed X.509 certificate.
+    // Create a minimal X.509 certificate to carry the label.
     X509 *cert = X509_new();
     if (nullptr == cert)
     {
@@ -607,7 +744,7 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
         mpss::utils::log_and_set_error("Failed to set notBefore for slot {} certificate.", utils::get_slot_name(slot));
         return false;
     }
-    if (nullptr == X509_gmtime_adj(X509_get_notAfter(cert), 100L * 365 * 24 * 3600))
+    if (nullptr == X509_time_adj_ex(X509_get_notAfter(cert), 100 * 365, 0, nullptr))
     {
         mpss::utils::log_and_set_error("Failed to set notAfter for slot {} certificate.", utils::get_slot_name(slot));
         return false;
@@ -637,16 +774,22 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
         return false;
     }
 
-    // Self-signed: issuer = subject.
-    if (0 == X509_set_issuer_name(cert, subject))
+    // The certificate is signed by a key that is not its subject, so naming the subject as issuer
+    // would assert a self-signature that does not verify. The issuer omits the OU the subject always
+    // carries, so the two names cannot coincide whatever the key is called.
+    X509_NAME *issuer = X509_get_issuer_name(cert);
+    if (0 == X509_NAME_add_entry_by_txt(issuer, "O", MBSTRING_UTF8,
+                                        reinterpret_cast<const unsigned char *>("Microsoft"), -1, -1, 0) ||
+        0 == X509_NAME_add_entry_by_txt(issuer, "CN", MBSTRING_UTF8,
+                                        reinterpret_cast<const unsigned char *>("mpss label"), -1, -1, 0))
     {
         mpss::utils::log_and_set_error("Failed to set issuer name for slot {} certificate.",
                                        utils::get_slot_name(slot));
         return false;
     }
 
-    // Set the ephemeral public key.
-    if (0 == X509_set_pubkey(cert, ephemeral_key))
+    // Bind the label to the slot's key: the subject public key is the key this name describes.
+    if (0 == X509_set_pubkey(cert, slot_key))
     {
         mpss::utils::log_and_set_error("Failed to set public key for slot {} certificate.", utils::get_slot_name(slot));
         return false;
@@ -694,20 +837,88 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
     return true;
 }
 
-std::string YubiKeyPIV::read_slot_label(std::uint8_t slot)
+namespace
+{
+/**
+ * @brief Disambiguate a @c YKPIV_INVALID_OBJECT result from @c ykpiv_util_read_cert.
+ *
+ * That code is reported both for a slot that holds nothing and for one holding an object it could not
+ * decode. Those mean opposite things to a probe that runs before key creation, so this re-fetches the
+ * raw PIV object to separate them: a not-found status word from the card confirms the slot is empty,
+ * while a successful fetch proves the slot holds data, which may be a key stored under the name being
+ * probed. Only meaningful once @c ykpiv_util_read_cert has already failed with that code - a
+ * successful fetch is read as "present but undecodable", which a valid certificate would not be.
+ *
+ * @c key_exists reads the same code from @c ykpiv_get_metadata, where it is unambiguous, and is
+ * correct to treat it as an empty slot.
+ *
+ * @param state Connected ykpiv session.
+ * @param slot The slot to probe.
+ * @return not_found if the slot is confirmed to hold no certificate object; operational_error if it
+ * holds one that could not be decoded, or if occupancy could not be established at all.
+ */
+KeyProbeStatus probe_certificate_object(ykpiv_state *state, std::uint8_t slot)
+{
+    const int object_id = static_cast<int>(ykpiv_util_slot_object(slot));
+    if (-1 == object_id)
+    {
+        // The slot maps to no PIV data object, so there is nothing that could hold a certificate.
+        return KeyProbeStatus::not_found;
+    }
+
+    unsigned char object_buf[YKPIV_OBJ_MAX_SIZE];
+    unsigned long object_len = sizeof(object_buf);
+    const ykpiv_rc rc = ykpiv_fetch_object(state, object_id, object_buf, &object_len);
+    if (YKPIV_KEY_ERROR == rc || YKPIV_INVALID_OBJECT == rc)
+    {
+        // Here these codes come only from a status word, so the card is reporting no such object.
+        return KeyProbeStatus::not_found;
+    }
+
+    // YKPIV_OK proves an object is present that ykpiv_util_read_cert could not decode; any other
+    // failure leaves occupancy unknown. Neither rules out a key stored under the requested name.
+    return KeyProbeStatus::operational_error;
+}
+} // namespace
+
+KeyProbeResult<std::string> YubiKeyPIV::read_slot_label(std::uint8_t slot)
 {
     if (nullptr == state_)
     {
-        return {};
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
     }
 
     // Read the certificate from the slot.
     std::uint8_t *cert_data = nullptr;
     std::size_t cert_len = 0;
     ykpiv_rc rc = ykpiv_util_read_cert(state_, slot, &cert_data, &cert_len);
-    if (YKPIV_OK != rc || nullptr == cert_data || 0 == cert_len)
+    if (YKPIV_KEY_ERROR == rc)
     {
-        return {};
+        // On this path the code can only originate from the SW_ERR_REFERENCE_NOT_FOUND or
+        // SW_ERR_INCORRECT_SLOT status word, so the slot is confirmed to hold no certificate.
+        return {.status = KeyProbeStatus::not_found, .value = {}};
+    }
+    if (YKPIV_INVALID_OBJECT == rc)
+    {
+        // Ambiguous: an empty slot and an undecodable certificate share this code. See
+        // probe_certificate_object above.
+        const KeyProbeStatus object_status = probe_certificate_object(state_, slot);
+        if (KeyProbeStatus::operational_error == object_status)
+        {
+            mpss::utils::log_warning("Slot {} holds a certificate that could not be decoded.",
+                                     utils::get_slot_name(slot));
+        }
+        return {.status = object_status, .value = {}};
+    }
+    if (YKPIV_OK != rc)
+    {
+        mpss::utils::log_warning("Could not read the certificate in slot {}: {}.", utils::get_slot_name(slot),
+                                 ykpiv_strerror(rc));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
+    }
+    if (nullptr == cert_data || 0 == cert_len)
+    {
+        return {.status = KeyProbeStatus::not_found, .value = {}};
     }
     SCOPE_GUARD(ykpiv_util_free(state_, cert_data));
 
@@ -716,15 +927,16 @@ std::string YubiKeyPIV::read_slot_label(std::uint8_t slot)
     X509 *cert = d2i_X509(nullptr, &p, static_cast<long>(cert_len));
     if (nullptr == cert)
     {
-        return {};
+        mpss::utils::log_warning("Could not parse the certificate in slot {}.", utils::get_slot_name(slot));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
     }
     SCOPE_GUARD(X509_free(cert));
 
-    // Extract Subject fields.
     X509_NAME *subject = X509_get_subject_name(cert);
     if (nullptr == subject)
     {
-        return {};
+        mpss::utils::log_warning("The certificate in slot {} has no subject name.", utils::get_slot_name(slot));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
     }
 
     // Check that O = "Microsoft" and OU = "mpss" (this is our certificate, not someone else's).
@@ -732,14 +944,14 @@ std::string YubiKeyPIV::read_slot_label(std::uint8_t slot)
     const int org_len = X509_NAME_get_text_by_NID(subject, NID_organizationName, org_buf, sizeof(org_buf));
     if (org_len <= 0 || std::string_view{org_buf, static_cast<std::size_t>(org_len)} != "Microsoft")
     {
-        return {};
+        return {.status = KeyProbeStatus::not_found, .value = {}};
     }
 
     char ou_buf[8] = {};
     const int ou_len = X509_NAME_get_text_by_NID(subject, NID_organizationalUnitName, ou_buf, sizeof(ou_buf));
     if (ou_len <= 0 || std::string_view{ou_buf, static_cast<std::size_t>(ou_len)} != "mpss")
     {
-        return {};
+        return {.status = KeyProbeStatus::not_found, .value = {}};
     }
 
     // Extract CN = key name. Max 64 characters per X.520 ub-common-name, plus null terminator.
@@ -747,59 +959,122 @@ std::string YubiKeyPIV::read_slot_label(std::uint8_t slot)
     const int cn_len = X509_NAME_get_text_by_NID(subject, NID_commonName, cn_buf, sizeof(cn_buf));
     if (cn_len <= 0)
     {
-        return {};
+        mpss::utils::log_warning("The MPSS certificate in slot {} has no common name.", utils::get_slot_name(slot));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
     }
 
-    return std::string{cn_buf, static_cast<std::size_t>(cn_len)};
+    // The label names a key, so it counts only while it still describes the key that is there. A
+    // certificate left behind by a key that has since been replaced names something the slot no
+    // longer holds, and reporting that name would hand a caller a key it did not ask for.
+    if (!slot_key_matches_label(slot, cert))
+    {
+        mpss::utils::log_warning("Ignoring the label in slot {}: it does not describe the key held there.",
+                                 utils::get_slot_name(slot));
+        return {.status = KeyProbeStatus::not_found, .value = {}};
+    }
+
+    return {.status = KeyProbeStatus::found, .value = std::string{cn_buf, static_cast<std::size_t>(cn_len)}};
 }
 
-auto YubiKeyPIV::find_slot_by_name(std::string_view name) -> std::optional<SlotInfo>
+auto YubiKeyPIV::find_slot_by_name(std::string_view name) -> KeyProbeResult<SlotInfo>
 {
     if (nullptr == state_)
     {
-        return std::nullopt;
+        mpss::utils::log_and_set_error("Not connected to a YubiKey.");
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
     }
+
+    // Set for any slot that could not be read; consumed after the scan.
+    bool undetermined = false;
+
+    // Nothing prevents two slots from carrying the same label. MPSS refuses to create a duplicate,
+    // but another PIV application can write one, as can a create that was interrupted between
+    // generating the key and labeling its slot. Scan every slot rather than stopping at the first
+    // match, so that an ambiguous name is refused instead of silently resolving to whichever slot
+    // happens to be scanned first.
+    std::uint8_t match_slot = 0;
+    std::size_t match_count = 0;
+    std::string match_slot_names;
 
     for (std::uint8_t slot : usable_slots)
     {
-        const std::string label = read_slot_label(slot);
-        if (label != name)
+        const KeyProbeResult<std::string> label = read_slot_label(slot);
+        if (KeyProbeStatus::operational_error == label.status)
+        {
+            undetermined = true;
+            continue;
+        }
+        if (KeyProbeStatus::not_found == label.status || label.value != name)
         {
             continue;
         }
 
-        // Found the slot. Now get the algorithm from metadata.
-        unsigned char metadata_buf[YKPIV_OBJ_MAX_SIZE];
-        std::size_t metadata_len = sizeof(metadata_buf);
-        ykpiv_rc rc = ykpiv_get_metadata(state_, slot, metadata_buf, &metadata_len);
-        if (YKPIV_OK != rc)
+        if (0 != match_count)
         {
-            mpss::utils::log_and_set_error("Key '{}' found in slot {} but failed to read metadata: {}", name,
-                                           utils::get_slot_name(slot), ykpiv_strerror(rc));
-            return std::nullopt;
+            match_slot_names += ", ";
         }
-
-        ykpiv_metadata metadata = {};
-        rc = ykpiv_util_parse_metadata(metadata_buf, metadata_len, &metadata);
-        if (YKPIV_OK != rc)
-        {
-            mpss::utils::log_and_set_error("Key '{}' found in slot {} but failed to parse metadata: {}", name,
-                                           utils::get_slot_name(slot), ykpiv_strerror(rc));
-            return std::nullopt;
-        }
-
-        const Algorithm algorithm = utils::yk_to_mpss_algorithm(metadata.algorithm);
-        if (Algorithm::unsupported == algorithm)
-        {
-            mpss::utils::log_and_set_error("Key '{}' in slot {} has unsupported algorithm.", name,
-                                           utils::get_slot_name(slot));
-            return std::nullopt;
-        }
-
-        return SlotInfo{.slot = slot, .algorithm = algorithm, .serial = serial_};
+        match_slot_names += utils::get_slot_name(slot);
+        match_slot = slot;
+        ++match_count;
     }
 
-    return std::nullopt;
+    if (match_count > 1)
+    {
+        mpss::utils::log_and_set_error("Refusing to resolve key '{}': {} slots share this name ({}).", name,
+                                       match_count, match_slot_names);
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
+    }
+
+    // An unreadable slot could hold the requested name, so a scan that found nothing cannot assert the
+    // name is absent. A scan that found a match can still return it: only a slot that was read can be
+    // returned, so a second copy hidden in an unreadable slot is unreachable either way.
+    if (undetermined)
+    {
+        if (0 == match_count)
+        {
+            mpss::utils::log_and_set_error("Could not determine whether key '{}' is present: at least one slot "
+                                           "could not be read.",
+                                           name);
+            return {.status = KeyProbeStatus::operational_error, .value = {}};
+        }
+        mpss::utils::log_warning("At least one slot could not be read while resolving key '{}'.", name);
+    }
+
+    if (0 == match_count)
+    {
+        return {.status = KeyProbeStatus::not_found, .value = {}};
+    }
+
+    // Exactly one slot carries the name. Now get the algorithm from metadata.
+    unsigned char metadata_buf[YKPIV_OBJ_MAX_SIZE];
+    std::size_t metadata_len = sizeof(metadata_buf);
+    ykpiv_rc rc = ykpiv_get_metadata(state_, match_slot, metadata_buf, &metadata_len);
+    if (YKPIV_OK != rc)
+    {
+        mpss::utils::log_and_set_error("Key '{}' found in slot {} but failed to read metadata: {}", name,
+                                       utils::get_slot_name(match_slot), ykpiv_strerror(rc));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
+    }
+
+    ykpiv_metadata metadata = {};
+    rc = ykpiv_util_parse_metadata(metadata_buf, metadata_len, &metadata);
+    if (YKPIV_OK != rc)
+    {
+        mpss::utils::log_and_set_error("Key '{}' found in slot {} but failed to parse metadata: {}", name,
+                                       utils::get_slot_name(match_slot), ykpiv_strerror(rc));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
+    }
+
+    const Algorithm algorithm = utils::yk_to_mpss_algorithm(metadata.algorithm);
+    if (Algorithm::unsupported == algorithm)
+    {
+        mpss::utils::log_and_set_error("Key '{}' in slot {} has unsupported algorithm.", name,
+                                       utils::get_slot_name(match_slot));
+        return {.status = KeyProbeStatus::operational_error, .value = {}};
+    }
+
+    return {.status = KeyProbeStatus::found,
+            .value = SlotInfo{.slot = match_slot, .algorithm = algorithm, .serial = serial_}};
 }
 
 std::uint8_t YubiKeyPIV::find_free_slot()
@@ -808,7 +1083,8 @@ std::uint8_t YubiKeyPIV::find_free_slot()
     // genuinely empty slot.
     for (std::uint8_t slot : usable_slots)
     {
-        if (available_slot_label == read_slot_label(slot))
+        const KeyProbeResult<std::string> label = read_slot_label(slot);
+        if (KeyProbeStatus::found == label.status && available_slot_label == label.value)
         {
             return slot;
         }

@@ -18,7 +18,7 @@ namespace mpss::impl::os::utils
  * @param operation Operation that raised the exception
  * @return True if an exception was cleared
  */
-bool CheckAndClearException(JNIEnv *env, std::string_view operation);
+bool check_and_clear_exception(JNIEnv *env, std::string_view operation);
 
 /**
  * Convert a std::span of bytes to a Java byte array
@@ -26,7 +26,7 @@ bool CheckAndClearException(JNIEnv *env, std::string_view operation);
  * @param bytes Span to convert
  * @return Java byte array
  */
-jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes);
+jbyteArray to_jbyte_array(JNIEnv *env, std::span<const std::byte> bytes);
 
 /**
  * Copy the contents of a Java byte array to a span of bytes
@@ -35,22 +35,22 @@ jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes);
  * @param output Destination span where bytes are copied
  * @return Size of the Java byte array
  */
-std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::byte> output);
+std::size_t copy_jbyte_array_to_span(JNIEnv *env, jbyteArray array, std::span<std::byte> output);
 
 /**
  * Unbox a Java Boolean object into a C++ bool
  * @param env Java environment
- * @param booleanObj Java boolean object to unbox
+ * @param boolean_obj Java boolean object to unbox
  * @return Value of the Java boolean object, or no value on failure
  */
-std::optional<bool> UnboxBoolean(JNIEnv *env, jobject booleanObj);
+std::optional<bool> unbox_boolean(JNIEnv *env, jobject boolean_obj);
 
 /**
  * Consume the current KeyManagement error and report it with operation context.
  * @param env Java environment
  * @param operation Java operation that failed
  */
-void ReportJavaError(JNIEnv *env, std::string_view operation);
+void report_java_error(JNIEnv *env, std::string_view operation);
 
 /**
  * Convert a Java String into a std::string
@@ -58,6 +58,6 @@ void ReportJavaError(JNIEnv *env, std::string_view operation);
  * @param str Java string to convert
  * @return Standard string
  */
-std::string GetString(JNIEnv *env, jstring str);
+std::string get_string(JNIEnv *env, jstring str);
 
 } // namespace mpss::impl::os::utils

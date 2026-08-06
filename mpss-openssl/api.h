@@ -62,33 +62,86 @@ extern "C"
 
     /**
      * @brief Checks whether an algorithm is available in the default backend.
+     *
+     * What "available" means is decided by the backend and is not uniform across backends. A backend
+     * may answer by probing at runtime -- creating a scratch key, signing, verifying and deleting it --
+     * in which case a true result means the algorithm works end-to-end at that moment. A backend may
+     * instead answer from static capability, in which case a true result means only that the backend
+     * implements the algorithm and says nothing about whether its device is attached or usable. The
+     * YubiKey backend answers statically and so reports availability with no device present; the
+     * operating-system backends probe. Treat a true result as "worth attempting", not as a guarantee
+     * that the next call will succeed.
+     *
      * @param[in] algorithm_name The algorithm name (e.g. "ecdsa_secp256r1_sha256").
-     * @return True if the algorithm is available, false otherwise.
+     * @return true if the algorithm is available, false if it is unavailable or if availability could
+     * not be determined. The two are distinguished by @ref mpss_has_error.
      */
     MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available(const char *algorithm_name);
 
     /**
      * @brief Checks whether an algorithm is available in the specified backend.
+     *
+     * The meaning of "available" is the named backend's; see @ref mpss_is_algorithm_available.
+     *
      * @param[in] algorithm_name The algorithm name (e.g. "ecdsa_secp256r1_sha256").
      * @param[in] backend_name The backend to check (e.g. "os", "yubikey").
-     * @return True if the algorithm is available in the given backend, false otherwise.
+     * @return true if the algorithm is available, false if it is unavailable or if availability could
+     * not be determined. The two are distinguished by @ref mpss_has_error.
      */
     MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available_in_backend(const char *algorithm_name,
                                                                    const char *backend_name);
 
     /**
      * @brief Returns all algorithm names available in the default backend.
-     * @return A null-terminated array of algorithm name strings. The returned pointer and strings are
-     * valid for the lifetime of the process.
+     *
+     * Each algorithm is decided as described in @ref mpss_is_algorithm_available and inherits its
+     * meaning of "available". The list is recomputed on every call.
+     *
+     * @return A null-terminated array of algorithm name strings. The array is valid until the next
+     * call to @ref mpss_get_available_algorithms on the same thread, and is destroyed when that
+     * thread exits; copy it if it must outlive either. The strings it points to are valid for the
+     * lifetime of the process.
      */
     MPSS_OPENSSL_DECOR const char **mpss_get_available_algorithms(void);
 
     /**
-     * @brief Retrieves the last error message.
-     * @return A string describing the last error. The returned pointer is valid until the next call
-     * to @ref mpss_get_error on the same thread.
+     * @brief Retrieves the last error message recorded on this thread.
+     *
+     * The last error is per-thread: a call that fails on one thread leaves nothing for another
+     * thread to read, so it must be retrieved on the thread that made the failing call. This does
+     * not consume the error; see @ref mpss_clear_error.
+     *
+     * @return A string describing the last error, or an empty string if there is none. The returned
+     * pointer is valid until the next call to @ref mpss_get_error on the same thread.
      */
     MPSS_OPENSSL_DECOR const char *mpss_get_error(void);
+
+    /**
+     * @brief Determines whether the last operation on this thread left an error.
+     *
+     * Equivalent to testing whether @ref mpss_get_error returns a non-empty string, but copies
+     * nothing and does not invalidate the pointer previously returned by @ref mpss_get_error.
+     * Like @ref mpss_get_error, this does not clear the last error.
+     *
+     * @return true if an error is set, false otherwise.
+     */
+    MPSS_OPENSSL_DECOR bool mpss_has_error(void);
+
+    /**
+     * @brief Clears the last error for this thread.
+     *
+     * Every fallible MPSS operation already clears the last error on entry, so this is not needed
+     * to keep one call's error from leaking into the next.
+     *
+     * It is for marking an error as handled. Since @ref mpss_get_error does not consume the error,
+     * an outer layer that inspects it cannot tell an error an inner layer already reported from a
+     * fresh one. Clearing it once handled keeps it from being reported twice. Entering another MPSS
+     * call does not substitute for this, as the error must survive until whoever handles it has run.
+     *
+     * This does not invalidate the pointer previously returned by @ref mpss_get_error, which stays
+     * valid until that function is called again on the same thread.
+     */
+    MPSS_OPENSSL_DECOR void mpss_clear_error(void);
 
     /**
      * @brief Returns the names of all available backends.

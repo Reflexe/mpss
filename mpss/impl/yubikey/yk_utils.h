@@ -81,6 +81,13 @@ std::uint8_t mpss_to_yk_algorithm(Algorithm algorithm);
 Algorithm yk_to_mpss_algorithm(std::uint8_t yk_algorithm);
 
 /**
+ * @brief Get the OpenSSL group name for an algorithm.
+ * @param algorithm The MPSS algorithm.
+ * @return The group name, or nullptr if the algorithm has no YubiKey-supported group.
+ */
+const char *get_group_name(Algorithm algorithm);
+
+/**
  * @brief Get the PIV slot name (for logging/debugging).
  * @param slot The PIV slot number.
  * @return Human-readable slot name.

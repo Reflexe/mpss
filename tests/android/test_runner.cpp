@@ -7,7 +7,7 @@
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM * /*vm*/, void * /*reserved*/)
 {
-    return mpss::impl::os::JNIHelper::Initialized() ? JNI_VERSION_1_6 : JNI_ERR;
+    return mpss::impl::os::JNIHelper::initialized() ? JNI_VERSION_1_6 : JNI_ERR;
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_com_microsoft_research_mpss_tests_TestRunner_runAllTests(JNIEnv * /*env*/,

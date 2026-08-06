@@ -19,10 +19,19 @@ class AndroidKeyPair : public mpss::KeyPair
 
     ~AndroidKeyPair() override
     {
-        // Release on destruction.
-        close_key();
+        try
+        {
+            close_key();
+        }
+        // NOLINTNEXTLINE(bugprone-empty-catch) - a destructor must not propagate exceptions.
+        catch (...)
+        {
+        }
     }
 
+    void release_key() override;
+
+  protected:
     bool do_delete_key() override;
 
     [[nodiscard]]
@@ -33,8 +42,6 @@ class AndroidKeyPair : public mpss::KeyPair
 
     [[nodiscard]]
     std::size_t do_extract_key(std::span<std::byte> public_key) const override;
-
-    void release_key() noexcept override;
 
   private:
     void close_key();

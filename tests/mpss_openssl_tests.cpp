@@ -7,6 +7,7 @@
 #endif
 #include "mpss/key_policy.h"
 #include "mpss/utils/scope_guard.h"
+#include "tests/test_key_names.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -132,6 +133,69 @@ class MPSSDigest : public ::testing::Test
 
 namespace mpss_openssl::tests
 {
+using mpss::tests::test_key_name;
+
+TEST(CApiErrorContract, AvailabilityQueriesHonorTheContract)
+{
+    // Prime the availability cache for every algorithm, so that the queries below take the
+    // early-return path, where nothing else would incidentally overwrite a stale error.
+    const char **available = mpss_get_available_algorithms();
+    ASSERT_NE(nullptr, available);
+
+    // A query that cannot be answered reports why. Each starts from a clean slate, so only the call
+    // under test can account for the error.
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_is_algorithm_available(nullptr));
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_is_algorithm_available("no_such_algorithm"));
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_is_algorithm_available_in_backend("no_such_algorithm", "os"));
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_is_algorithm_available_in_backend(nullptr, nullptr));
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_delete_key(nullptr));
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_delete_key_from_backend(test_key_name("no_such_key").c_str(), nullptr));
+    EXPECT_TRUE(mpss_has_error());
+
+    // Answering the question is the success, whichever way the answer goes, so a stale error does
+    // not survive an availability query.
+    if (nullptr != available[0])
+    {
+        EXPECT_FALSE(mpss_delete_key(""));
+        ASSERT_TRUE(mpss_has_error());
+        EXPECT_TRUE(mpss_is_algorithm_available(available[0]));
+        EXPECT_FALSE(mpss_has_error());
+    }
+
+    EXPECT_FALSE(mpss_delete_key(""));
+    ASSERT_TRUE(mpss_has_error());
+    (void)mpss_get_available_algorithms();
+    EXPECT_FALSE(mpss_has_error());
+
+    // Discovery accessors leave the last error alone.
+    (void)mpss_get_available_backends();
+    (void)mpss_get_default_backend_name();
+    EXPECT_FALSE(mpss_has_error());
+
+    EXPECT_FALSE(mpss_delete_key(""));
+    ASSERT_TRUE(mpss_has_error());
+    (void)mpss_get_available_backends();
+    (void)mpss_get_default_backend_name();
+    EXPECT_TRUE(mpss_has_error());
+
+    mpss_clear_error();
+}
 
 TEST_F(MPSSDigest, SHA256)
 {
@@ -245,7 +309,8 @@ TEST(MPSS_OpenSSL, GetKeyDescriptors)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_params";
+    const std::string key_name_str = test_key_name("test_key_params");
+    const char *key_name = key_name_str.c_str();
     const bool _ = mpss_delete_key(key_name);
 
     OSSL_LIB_CTX *mpss_libctx = OSSL_LIB_CTX_new();
@@ -328,7 +393,8 @@ TEST(MPSS_OpenSSL, GenerateRequiresAlgorithm)
     ASSERT_NE(nullptr, mpss_prov);
     SCOPE_GUARD(OSSL_PROVIDER_unload(mpss_prov));
 
-    char key_name[] = "test_key_requires_algorithm";
+    std::string key_name_str = test_key_name("test_key_requires_algorithm");
+    char *key_name = key_name_str.data();
     const bool _ = mpss_delete_key(key_name);
     SCOPE_GUARD(mpss_delete_key(key_name));
 
@@ -387,7 +453,8 @@ TEST(MPSS_OpenSSL, DefaultBackendReturned)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_default_backend";
+    const std::string key_name_str = test_key_name("test_key_default_backend");
+    const char *key_name = key_name_str.c_str();
     const bool _ = mpss_delete_key(key_name);
 
     const char *default_backend = mpss_get_default_backend_name();
@@ -433,7 +500,8 @@ TEST(MPSS_OpenSSL, ExplicitBackend)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_explicit_backend";
+    const std::string key_name_str = test_key_name("test_key_explicit_backend");
+    const char *key_name = key_name_str.c_str();
     const bool _ = mpss_delete_key(key_name);
 
     const char *default_backend = mpss_get_default_backend_name();
@@ -497,7 +565,7 @@ TEST(MPSS_OpenSSL, DeleteKeyFromBackend)
             continue;
         }
 
-        const std::string key_name = std::string("test_delete_from_backend_") + backend;
+        const std::string key_name = test_key_name(std::string("test_delete_from_backend_") + backend);
 
         // Clean up a possible leftover from a previous run.
         mpss_delete_key_from_backend(key_name.c_str(), backend);
@@ -585,7 +653,8 @@ TEST(MPSS_OpenSSL, CreateKeyWithPolicyParam)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_policy_provider";
+    const std::string key_name_str = test_key_name("test_key_policy_provider");
+    const char *key_name = key_name_str.c_str();
     const bool _ = mpss_delete_key(key_name);
 
     OSSL_LIB_CTX *mpss_libctx = OSSL_LIB_CTX_new();
@@ -803,12 +872,13 @@ TEST_F(MPSSStore, ReopenByNameDefaultBackend)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    reopen_roundtrip("test_key_reopen_by_name", nullptr, MPSS_KEY_POLICY_NONE);
+    const std::string reopen_name = test_key_name("test_key_reopen_by_name");
+    reopen_roundtrip(reopen_name.c_str(), nullptr, MPSS_KEY_POLICY_NONE);
     ASSERT_FALSE(HasFatalFailure());
 
     // A deleted / nonexistent name yields no key: the store delivers the reference object, but key
     // management load fails to open it, so nothing is produced.
-    ASSERT_EQ(nullptr, store_open_key("test_key_reopen_by_name", nullptr));
+    ASSERT_EQ(nullptr, store_open_key(reopen_name, nullptr));
 
     // A URI with an empty key name is rejected when the store is opened.
     ASSERT_EQ(nullptr,
@@ -824,7 +894,8 @@ TEST_F(MPSSStore, ReopenByNameExplicitBackendOS)
 
     // Selecting the backend explicitly through the mpss_backend store parameter must reopen the same
     // key that key generation created on that backend.
-    reopen_roundtrip("test_key_reopen_os", "os", MPSS_KEY_POLICY_NONE);
+    const std::string reopen_os_name = test_key_name("test_key_reopen_os");
+    reopen_roundtrip(reopen_os_name.c_str(), "os", MPSS_KEY_POLICY_NONE);
 }
 
 TEST_F(MPSSStore, DeleteByName)
@@ -834,7 +905,8 @@ TEST_F(MPSSStore, DeleteByName)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_delete_by_name";
+    const std::string key_name_str = test_key_name("test_key_delete_by_name");
+    const char *key_name = key_name_str.c_str();
     mpss_delete_key(key_name);
 
     // Create a key on the default backend.
@@ -914,7 +986,8 @@ TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_export_refuses_private";
+    const std::string key_name_str = test_key_name("test_key_export_refuses_private");
+    const char *key_name = key_name_str.c_str();
     mpss_delete_key(key_name);
     // The key is persisted in the backend, so remove it even if an assertion below returns early.
     SCOPE_GUARD(mpss_delete_key(key_name));
@@ -965,7 +1038,8 @@ TEST_F(MPSSStore, AdvertisesGroupNameParam)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const char *key_name = "test_key_group_name_param";
+    const std::string key_name_str = test_key_name("test_key_group_name_param");
+    const char *key_name = key_name_str.c_str();
     mpss_delete_key(key_name);
     // The key is persisted in the backend, so remove it even if an assertion below returns early.
     SCOPE_GUARD(mpss_delete_key(key_name));
@@ -1009,7 +1083,8 @@ TEST_F(MPSSStore, ReopenByNameYubiKey)
 
     // touch=never so signing does not block on a physical touch during automated runs; pin=once uses
     // the configured PIN (MPSS_YUBIKEY_PIN) for the signing operation.
-    reopen_roundtrip("test_key_reopen_yk", "yubikey",
+    const std::string reopen_yk_name = test_key_name("test_key_reopen_yk");
+    reopen_roundtrip(reopen_yk_name.c_str(), "yubikey",
                      MPSS_KEY_POLICY_YUBIKEY_TOUCH_NEVER | MPSS_KEY_POLICY_YUBIKEY_PIN_ONCE);
 }
 #endif // MPSS_BACKEND_YUBIKEY
@@ -1026,7 +1101,7 @@ TEST_P(CreateAndDeleteKeyTest, CreateAndDeleteKey)
         GTEST_SKIP() << "Algorithm not supported by current backend: " << mpss_algorithm;
     }
 
-    std::string key_name = "test_create_delete_key_";
+    std::string key_name = test_key_name("test_create_delete_key_");
     key_name.append(mpss_algorithm);
 
     // Delete existing key.

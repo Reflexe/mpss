@@ -80,24 +80,25 @@ class InteractionHandler
     /**
      * @brief Called after each PIN authentication attempt with the result.
      *
-     * This is a notification callback - the return value is void. Implementations can use it to
+     * This is a notification callback; the return value is void. Implementations can use it to
      * update UI (e.g., dismiss a dialog on success, show a "PIN locked" warning). The default
      * implementation does nothing.
      *
      * @param result The outcome of the PIN attempt.
      * @param retries_remaining PIN retries remaining on the device, or -1 if unknown.
      */
-    virtual void notify_pin_result(PinResult result, int retries_remaining)
+    virtual void notify_pin_result([[maybe_unused]] PinResult result, [[maybe_unused]] int retries_remaining)
     {
-        (void)result;
-        (void)retries_remaining;
     }
 
     /** @brief Notify that a touch-requiring operation is starting. */
     virtual void notify_touch_needed() = 0;
 
-    /** @brief Notify that the touch-requiring operation has completed. */
-    virtual void notify_touch_complete() = 0;
+    /**
+     * @brief Notify that the touch-requiring operation has finished.
+     * @param success True if the operation completed, false if it failed (for example, the touch timed out).
+     */
+    virtual void notify_touch_complete(bool success) = 0;
 };
 
 /**

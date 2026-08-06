@@ -618,14 +618,36 @@ if (!key_pair) {
 }
 ```
 
+Two companion functions round out the error surface. `mpss::has_error()` reports whether an error is
+set without building a string, so unlike `mpss::get_error()` it allocates nothing and is `noexcept` —
+safe to call from a `noexcept` context or after an allocation failure. `mpss::clear_error()` resets
+the last error for the calling thread.
+
+```cpp
+if (mpss::has_error()) {
+    std::cerr << "Key creation failed: " << mpss::get_error() << std::endl;
+    mpss::clear_error();
+}
+```
+
+Every fallible operation already clears the last error on entry (rule 1 below), so `clear_error()` is
+never needed to keep one call's error from leaking into the next. It is for callers that have
+consumed an error and want a clean slate before running their own logic, or before a sequence of
+accessors, which deliberately leave the last error untouched. There is deliberately no public way to
+*set* the last error: only MPSS itself can produce a diagnostic.
+
 #### Last-error contract
 
 Every backend (Windows, Apple, Android, and YubiKey) honors the same last-error contract, so
 `mpss::get_error()` behaves identically regardless of which backend is active:
 
-1. **Cleared on entry.** Each public operation clears the last-error string before it does any work.
-   After a call returns, `mpss::get_error()` reflects *only* that call — never a stale message left
-   over from an earlier operation on the same thread.
+1. **Cleared on entry.** Each public operation that can fail clears the last-error string before it
+   does any work. After such a call returns, `mpss::get_error()` reflects *only* that call — never a
+   stale message left over from an earlier operation on the same thread. Accessors that cannot fail
+   (`algorithm()`, `key_info()`, `sign_hash_size()`, `extract_key_size()`, `release_key()`,
+   `get_error()`, `has_error()`, `get_available_backends()`, `get_default_backend_name()`) leave the
+   last error untouched, so a diagnostic remains readable while the caller prepares to report it —
+   including while naming the backend it came from.
 2. **Set on operational failure.** A descriptive message is set whenever an operation cannot be
    carried out: empty or malformed input, an unsupported algorithm or key policy, attempting to
    create a key whose name already exists, or a failure reported by the underlying OS, device, or
@@ -634,13 +656,32 @@ Every backend (Windows, Apple, Android, and YubiKey) honors the same last-error 
 3. **Empty on a clean outcome.** A clean result never sets an error, even when the return value is
    negative. This includes success, a `verify` that returns `false` solely because the signature
    does not match the data, and `KeyPair::Open` returning `nullptr` because the requested key does
-   not exist. In all of these `mpss::get_error()` is empty.
+   not exist. In all of these `mpss::get_error()` is empty. Success is guaranteed to leave it empty
+   even where the backend had to recover from a failed internal step, such as an existence probe or
+   a fallback to a second provider.
 4. **Thread-local and immediate.** The last error is stored per thread and is only meaningful
    immediately after a failed call on the same thread. Distinguish the two negative cases by pairing
    the return value with `get_error()`: a `false`/`nullptr` result *with* an empty error is the
    clean outcome of rule 3, while a non-empty error is the operational failure of rule 2.
 
-The C interface (`mpss-openssl`) exposes the same contract through `mpss_get_error()`.
+The C interface (`mpss-openssl`) exposes the same contract through `mpss_get_error()`,
+`mpss_has_error()`, and `mpss_clear_error()`.
+
+##### Availability queries
+
+`is_algorithm_available()` and `get_available_algorithms()` need one clarification, because their
+return value is an *answer* rather than a success indicator. Returning `false` (or omitting an
+algorithm from the list) means "this algorithm does not work here" — that is the query succeeding,
+so it leaves no error. How a backend decides is up to the backend: the operating-system backends probe
+at runtime by creating, signing with and deleting a scratch key, while the YubiKey backend answers from
+static capability and so reports availability even with no device attached. Whatever a probe's steps
+report describes the scratch key, not the question that was asked, so it is logged but never left as
+the last error.
+
+An error is set only when the query cannot be answered at all: an unknown algorithm, an unknown
+backend name, or no backend registered. So a `false` result with an empty error means "not
+available", while a `false` result with a non-empty error means "could not determine" — the same
+rule 2 / rule 3 distinction that applies everywhere else.
 
 ### Logging
 
@@ -807,7 +848,7 @@ public:
         // show "PIN locked" warning on lockout).
     }
     void notify_touch_needed() override { /* show "touch your YubiKey" UI */ }
-    void notify_touch_complete() override { /* dismiss UI */ }
+    void notify_touch_complete(bool success) override { /* dismiss UI; report failure if !success */ }
 };
 
 // Install before any MPSS operations (typically at application startup).
@@ -845,10 +886,10 @@ All operations (key creation, opening, and deletion) will fail with an error if 
 
 When using the YubiKey PIV backend, be aware of the following:
 
-1. **Slot Limit**: The YubiKey PIV backend uses the 20 [retired key management slots](https://developers.yubico.com/PIV/Introduction/Certificate_slots.html) for storing ECDSA keys (and self-signed certificates).
+1. **Slot Limit**: The YubiKey PIV backend uses the 20 [retired key management slots](https://developers.yubico.com/PIV/Introduction/Certificate_slots.html) for storing ECDSA keys (and the label certificates described below).
 Once all slots are full, you cannot create new keys until you delete existing ones.
 
-1. **Algorithm Support**: Only P-256 and P-384 curves are supported. P-521 is not available.
+1. **Algorithm Support**: Only `ecdsa_secp256r1_sha256` and `ecdsa_secp384r1_sha384` are supported. `ecdsa_secp521r1_sha512` is not available.
 
 1. **PIN Requirement**: Key generation and deletion require the management key. MPSS first attempts these operations without verifying the PIN; this succeeds when the management key is available via `MPSS_YUBIKEY_MGM_KEY`, or when the device still uses the factory default and `MPSS_YUBIKEY_ALLOW_DEFAULT_MGM_KEY` is explicitly enabled. If that fails (e.g., because the management key is PIN-protected), MPSS prompts for the PIN and retries. For signing, MPSS reads the key's PIN and touch policies from the YubiKey metadata. If the PIN policy is anything other than `never`, MPSS will prompt for the PIN (see [PIN Policy](#yubikey-backend-limitations-and-considerations) below for why `once` and `always` behave identically). When both PIN and touch are required, MPSS prompts for the PIN upfront to avoid blocking on touch without user notification. Set the `MPSS_YUBIKEY_PIN` environment variable for non-interactive use; for interactive use, let MPSS prompt on the terminal or install a custom `InteractionHandler` (see [Custom Interaction Handlers](#custom-interaction-handlers)).
 
@@ -856,7 +897,9 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **Key Name Length**: Key names must not exceed 64 characters. This limit is enforced across all backends because the YubiKey backend stores names in the X.509 Common Name (CN) field, which is limited to 64 characters by the X.520 standard.
 
-1. **Key Name Mapping**: MPSS stores key names directly on the YubiKey by writing a minimal X.509 certificate into each slot's certificate object. This means the name-to-slot mapping travels with the device and works on any machine without additional configuration. Note that this uses the certificate object in each PIV slot, so external certificates cannot be stored alongside MPSS-managed keys.
+1. **Key Name Mapping**: MPSS stores key names directly on the YubiKey by writing a minimal X.509 certificate into each slot's certificate object. This means the name-to-slot mapping travels with the device and works on any machine without additional configuration. Note that this uses the certificate object in each PIV slot, so external certificates cannot be stored alongside MPSS-managed keys. The certificate's subject public key is the public key of the key held in the slot, so a label counts only while it still describes that key: if the key is replaced without rewriting the label — by another PIV application, or by a create that was interrupted between generating the key and labeling its slot — the name no longer resolves and MPSS reports the key as not found. This is a consistency check, not a security boundary; anyone who can authenticate with the management key can regenerate a slot key and write a matching label. The certificate is signed by an ephemeral key rather than by the slot key, because signing with the slot key would require a PIN and, under a touch policy, a physical touch on every key creation and deletion. The signature therefore carries no meaning, and the certificate is deliberately not self-issued so that it does not assert a self-signature that would fail to verify.
+
+   > **Compatibility**: Slots labeled by MPSS versions that predate this binding carry certificates whose subject public key is unrelated to the slot, so those labels no longer resolve. A key in such a slot becomes invisible to MPSS, and a slot marked `CN=(available)` by an older version is no longer offered for reuse. Reclaim such a slot by erasing its key material with `ykman piv keys delete <slot>` (requires firmware 5.7 or later; earlier firmware cannot delete PIV keys, in which case only `ykman piv reset` — which destroys everything in PIV — will recover it).
 
 1. **Performance**: Operations are slower than OS-native backends due to USB communication overhead. MPSS does not persist the connection to the YubiKey, but creates a new connection for each operation.
 
@@ -864,7 +907,7 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **PIN Policy**: Keys created by MPSS use PIN policy `once` by default (configurable via `MPSS_YUBIKEY_PINPOLICY`). With the connection-per-operation architecture, `once` and `always` behave identically, both requiring the PIN on every MPSS call, because each operation opens a fresh PIV session. The only policy that changes MPSS behavior is `never`, which allows signing operations to succeed without a PIN prompt. Because a `never` key is permanently unprotected, `MPSS_YUBIKEY_PINPOLICY=never` is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `once`); a policy set programmatically via `KeyPolicy` is not gated. Note that key creation and deletion operations need access to the management key, which, if PIN-protected, will require the PIN no matter what (`MPSS_YUBIKEY_PINPOLICY` has nothing to do with this).
 
-1. **Touch Policy**: Keys created by MPSS use touch policy `cached` by default (configurable via `MPSS_YUBIKEY_TOUCHPOLICY`). The `cached` policy requires a physical touch once per 15-second window, balancing security and usability. When a key has a touch policy other than `never`, the YubiKey will wait for a physical touch before completing signing operations. MPSS notifies the application via the `InteractionHandler` (`notify_touch_needed` / `notify_touch_complete`) so it can display appropriate UI. If the user does not touch the device within the YubiKey's timeout window (typically ~15 seconds), the signing operation fails. To disable touch entirely, set `MPSS_YUBIKEY_TOUCHPOLICY=never`; because this is a permanent downgrade, it is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `cached`).
+1. **Touch Policy**: Keys created by MPSS use touch policy `cached` by default (configurable via `MPSS_YUBIKEY_TOUCHPOLICY`). The `cached` policy requires a physical touch once per 15-second window, balancing security and usability. When a key has a touch policy other than `never`, the YubiKey will wait for a physical touch before completing signing operations. MPSS notifies the application via the `InteractionHandler` (`notify_touch_needed` / `notify_touch_complete`) so it can display appropriate UI; `notify_touch_complete` receives whether the operation succeeded. If the user does not touch the device within the YubiKey's timeout window (typically ~15 seconds), the signing operation fails. To disable touch entirely, set `MPSS_YUBIKEY_TOUCHPOLICY=never`; because this is a permanent downgrade, it is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `cached`).
 
 1. **Key Deletion**: Deleting a key from the YubiKey PIV does *not* erase the slot. Instead, MPSS overwrites the private key with a newly generated dummy key and writes a marker certificate with `CN=(available)` to indicate the slot is free for reuse. You can observe this with `ykman piv info`. A deleted key may show up as follows:
    ```
@@ -872,9 +915,9 @@ Once all slots are full, you cannot create new keys until you delete existing on
      Private key type: ECCP256
      Public key type:  ECCP256
      Subject DN:       CN=(available),OU=mpss,O=Microsoft
-     Issuer DN:        CN=(available),OU=mpss,O=Microsoft
+     Issuer DN:        CN=mpss label,O=Microsoft
    ```
-   Slots bearing this marker are treated as free by MPSS so that they may be overwritten with new keys. The original private key material is securely destroyed by the overwrite.
+   Slots bearing this marker are treated as free by MPSS so that they may be overwritten with new keys. The original private key material is securely destroyed by the overwrite. The marker certificate is bound to the dummy key in the same way as a named label (see [Key Name Mapping](#yubikey-backend-limitations-and-considerations) above), so a slot is only offered for reuse when the marker describes the key actually sitting in it; a marker written over a live key by some other application does not make that key's slot reusable.
 
 ### Running Tests with a YubiKey
 

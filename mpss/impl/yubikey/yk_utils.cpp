@@ -270,6 +270,19 @@ Algorithm yk_to_mpss_algorithm(std::uint8_t yk_algorithm)
     }
 }
 
+const char *get_group_name(Algorithm algorithm)
+{
+    switch (algorithm)
+    {
+    case ecdsa_secp256r1_sha256:
+        return "P-256";
+    case ecdsa_secp384r1_sha384:
+        return "P-384";
+    default:
+        return nullptr;
+    }
+}
+
 #define MPSS_YKPIV_SLOT_CASE(slot_const, friendly_name)                                                                \
     case YKPIV_KEY_##slot_const:                                                                                       \
         return friendly_name;

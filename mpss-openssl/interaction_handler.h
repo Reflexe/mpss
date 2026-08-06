@@ -63,6 +63,12 @@ extern "C"
     typedef void (*mpss_notify_touch_handler_t)(void);
 
     /**
+     * @brief Callback type for touch completion notifications.
+     * @param success True if the operation completed, false if it failed (for example, the touch timed out).
+     */
+    typedef void (*mpss_notify_touch_complete_handler_t)(bool success);
+
+    /**
      * @brief Installs a custom interaction handler for YubiKey operations.
      *
      * When installed, the MPSS_YUBIKEY_PIN environment variable is ignored; the
@@ -74,12 +80,12 @@ extern "C"
      * @param[in] request_pin Called when a PIN is needed.
      * @param[in] notify_pin_result Called after each PIN attempt with the result. May be NULL.
      * @param[in] notify_touch_needed Called when a touch-requiring operation starts.
-     * @param[in] notify_touch_complete Called when the touch-requiring operation completes.
+     * @param[in] notify_touch_complete Called when the touch-requiring operation finishes, with whether it succeeded.
      */
     MPSS_OPENSSL_DECOR void mpss_set_interaction_handler(mpss_request_pin_handler_t request_pin,
                                                          mpss_notify_pin_result_handler_t notify_pin_result,
                                                          mpss_notify_touch_handler_t notify_touch_needed,
-                                                         mpss_notify_touch_handler_t notify_touch_complete);
+                                                         mpss_notify_touch_complete_handler_t notify_touch_complete);
 
     /**
      * @brief Resets the interaction handler to the default terminal-based handler.

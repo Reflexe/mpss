@@ -23,7 +23,7 @@ class CInteractionHandler : public mpss::InteractionHandler
   public:
     CInteractionHandler(mpss_request_pin_handler_t request_pin, mpss_notify_pin_result_handler_t notify_pin_result,
                         mpss_notify_touch_handler_t notify_touch_needed,
-                        mpss_notify_touch_handler_t notify_touch_complete)
+                        mpss_notify_touch_complete_handler_t notify_touch_complete)
         : request_pin_{request_pin}, notify_pin_result_{notify_pin_result}, notify_touch_needed_{notify_touch_needed},
           notify_touch_complete_{notify_touch_complete}
     {
@@ -70,11 +70,11 @@ class CInteractionHandler : public mpss::InteractionHandler
         }
     }
 
-    void notify_touch_complete() override
+    void notify_touch_complete(bool success) override
     {
         if (nullptr != notify_touch_complete_)
         {
-            notify_touch_complete_();
+            notify_touch_complete_(success);
         }
     }
 
@@ -82,7 +82,7 @@ class CInteractionHandler : public mpss::InteractionHandler
     mpss_request_pin_handler_t request_pin_;
     mpss_notify_pin_result_handler_t notify_pin_result_;
     mpss_notify_touch_handler_t notify_touch_needed_;
-    mpss_notify_touch_handler_t notify_touch_complete_;
+    mpss_notify_touch_complete_handler_t notify_touch_complete_;
 };
 
 } // namespace
@@ -90,7 +90,7 @@ class CInteractionHandler : public mpss::InteractionHandler
 void mpss_set_interaction_handler(mpss_request_pin_handler_t request_pin,
                                   mpss_notify_pin_result_handler_t notify_pin_result,
                                   mpss_notify_touch_handler_t notify_touch_needed,
-                                  mpss_notify_touch_handler_t notify_touch_complete)
+                                  mpss_notify_touch_complete_handler_t notify_touch_complete)
 {
     auto handler = std::make_shared<CInteractionHandler>(request_pin, notify_pin_result, notify_touch_needed,
                                                          notify_touch_complete);

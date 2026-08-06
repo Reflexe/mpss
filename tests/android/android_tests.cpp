@@ -38,9 +38,9 @@ std::vector<std::byte> java_sign_hash(std::string_view key_name, std::span<const
         mpss::GetLogger()->error("Could not get JNI environment.");
         return {};
     }
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
-    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    jclass key_management = mpss::impl::os::JNIHelper::key_management_class();
     if (nullptr == key_management)
     {
         mpss::GetLogger()->error("Could not get KeyManagement Java class.");
@@ -48,7 +48,7 @@ std::vector<std::byte> java_sign_hash(std::string_view key_name, std::span<const
     }
 
     jmethodID method = env->GetStaticMethodID(key_management, "SignHash", "(Ljava/lang/String;[B)[B");
-    if (mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement.SignHash"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.SignHash"))
     {
         return {};
     }
@@ -60,11 +60,11 @@ std::vector<std::byte> java_sign_hash(std::string_view key_name, std::span<const
 
     const std::string key_name_string{key_name};
     jni_string java_key_name(env, env->NewStringUTF(key_name_string.c_str()));
-    if (mpss::impl::os::utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "converting an Android key name to a Java string"))
     {
         return {};
     }
-    jni_bytearray java_hash(env, mpss::impl::os::utils::ToJByteArray(env, hash));
+    jni_bytearray java_hash(env, mpss::impl::os::utils::to_jbyte_array(env, hash));
     if (java_key_name.is_null() || java_hash.is_null())
     {
         mpss::GetLogger()->error("Could not convert standalone-signing inputs to Java.");
@@ -73,19 +73,19 @@ std::vector<std::byte> java_sign_hash(std::string_view key_name, std::span<const
 
     jni_bytearray java_signature(env, reinterpret_cast<jbyteArray>(env->CallStaticObjectMethod(
                                           key_management, method, java_key_name.get(), java_hash.get())));
-    if (mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement.SignHash"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement.SignHash"))
     {
         return {};
     }
     if (java_signature.is_null())
     {
-        mpss::impl::os::utils::ReportJavaError(env, "KeyManagement.SignHash");
+        mpss::impl::os::utils::report_java_error(env, "KeyManagement.SignHash");
         mpss::GetLogger()->error("{}", mpss::get_error());
         return {};
     }
 
     const jsize signature_size = env->GetArrayLength(java_signature.get());
-    if (mpss::impl::os::utils::CheckAndClearException(env, "getting a Java signature length"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "getting a Java signature length"))
     {
         return {};
     }
@@ -96,7 +96,7 @@ std::vector<std::byte> java_sign_hash(std::string_view key_name, std::span<const
     }
 
     std::vector<std::byte> signature(static_cast<std::size_t>(signature_size));
-    const std::size_t copied = mpss::impl::os::utils::CopyJByteArrayToSpan(env, java_signature.get(), signature);
+    const std::size_t copied = mpss::impl::os::utils::copy_jbyte_array_to_span(env, java_signature.get(), signature);
     if (signature.size() != copied)
     {
         return {};
@@ -113,9 +113,9 @@ bool java_verify_signature(std::span<const std::byte> hash, std::span<const std:
         mpss::GetLogger()->error("Could not get JNI environment.");
         return false;
     }
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
-    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    jclass key_management = mpss::impl::os::JNIHelper::key_management_class();
     if (nullptr == key_management)
     {
         mpss::GetLogger()->error("Could not get KeyManagement Java class.");
@@ -123,7 +123,7 @@ bool java_verify_signature(std::span<const std::byte> hash, std::span<const std:
     }
 
     jmethodID method = env->GetStaticMethodID(key_management, "VerifySignature", "([B[B[B)Ljava/lang/Boolean;");
-    if (mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement.VerifySignature"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.VerifySignature"))
     {
         return false;
     }
@@ -133,9 +133,9 @@ bool java_verify_signature(std::span<const std::byte> hash, std::span<const std:
         return false;
     }
 
-    jni_bytearray java_hash(env, mpss::impl::os::utils::ToJByteArray(env, hash));
-    jni_bytearray java_signature(env, mpss::impl::os::utils::ToJByteArray(env, signature));
-    jni_bytearray java_public_key(env, mpss::impl::os::utils::ToJByteArray(env, public_key));
+    jni_bytearray java_hash(env, mpss::impl::os::utils::to_jbyte_array(env, hash));
+    jni_bytearray java_signature(env, mpss::impl::os::utils::to_jbyte_array(env, signature));
+    jni_bytearray java_public_key(env, mpss::impl::os::utils::to_jbyte_array(env, public_key));
     if (java_hash.is_null() || java_signature.is_null() || java_public_key.is_null())
     {
         mpss::GetLogger()->error("Could not convert standalone-verification inputs to Java.");
@@ -144,18 +144,18 @@ bool java_verify_signature(std::span<const std::byte> hash, std::span<const std:
 
     jni_object result(env, env->CallStaticObjectMethod(key_management, method, java_hash.get(), java_signature.get(),
                                                        java_public_key.get()));
-    if (mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement.VerifySignature"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement.VerifySignature"))
     {
         return false;
     }
     if (result.is_null())
     {
-        mpss::impl::os::utils::ReportJavaError(env, "KeyManagement.VerifySignature");
+        mpss::impl::os::utils::report_java_error(env, "KeyManagement.VerifySignature");
         mpss::GetLogger()->error("{}", mpss::get_error());
         return false;
     }
 
-    const std::optional<bool> verified = mpss::impl::os::utils::UnboxBoolean(env, result.get());
+    const std::optional<bool> verified = mpss::impl::os::utils::unbox_boolean(env, result.get());
     return verified.value_or(false);
 }
 
@@ -167,9 +167,9 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
         mpss::utils::set_error("Could not get JNI environment.");
         return std::nullopt;
     }
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
-    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    jclass key_management = mpss::impl::os::JNIHelper::key_management_class();
     if (nullptr == key_management)
     {
         mpss::utils::set_error("Could not get KeyManagement Java class.");
@@ -179,7 +179,7 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
     const std::string operation_string{operation};
     jmethodID method =
         env->GetStaticMethodID(key_management, operation_string.c_str(), "(Ljava/lang/String;)Ljava/lang/Boolean;");
-    if (mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement operation"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement operation"))
     {
         return std::nullopt;
     }
@@ -191,7 +191,7 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 
     const std::string key_name_string{key_name};
     jni_string java_key_name(env, env->NewStringUTF(key_name_string.c_str()));
-    if (mpss::impl::os::utils::CheckAndClearException(env, "converting an Android key name to a Java string"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "converting an Android key name to a Java string"))
     {
         return std::nullopt;
     }
@@ -202,18 +202,18 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
     }
 
     jni_object result(env, env->CallStaticObjectMethod(key_management, method, java_key_name.get()));
-    if (mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement operation"))
+    if (mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement operation"))
     {
         return std::nullopt;
     }
     if (result.is_null())
     {
         const std::string operation_name = "KeyManagement." + operation_string;
-        mpss::impl::os::utils::ReportJavaError(env, operation_name);
+        mpss::impl::os::utils::report_java_error(env, operation_name);
         return std::nullopt;
     }
 
-    return mpss::impl::os::utils::UnboxBoolean(env, result.get());
+    return mpss::impl::os::utils::unbox_boolean(env, result.get());
 }
 
 } // namespace
@@ -604,10 +604,10 @@ TEST(AndroidJNITest, PendingJavaExceptionIsCleared)
 {
     mpss::impl::os::JNIEnvGuard guard;
     ASSERT_TRUE(guard.valid());
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
     jclass missing_class = env->FindClass("com/microsoft/research/mpss/MissingForTest");
-    ASSERT_TRUE(mpss::impl::os::utils::CheckAndClearException(env, "finding a test-only missing class"));
+    ASSERT_TRUE(mpss::impl::os::utils::check_and_clear_exception(env, "finding a test-only missing class"));
     ASSERT_EQ(nullptr, missing_class);
     ASSERT_FALSE(env->ExceptionCheck());
 
@@ -615,10 +615,10 @@ TEST(AndroidJNITest, PendingJavaExceptionIsCleared)
     EXPECT_NE(std::string::npos, exception_error.find("finding a test-only missing class"));
     EXPECT_NE(std::string::npos, exception_error.find("ClassNotFoundException"));
 
-    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    jclass key_management = mpss::impl::os::JNIHelper::key_management_class();
     ASSERT_NE(nullptr, key_management);
     jmethodID take_error = env->GetStaticMethodID(key_management, "TakeError", "()Ljava/lang/String;");
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement.TakeError"));
+    ASSERT_FALSE(mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.TakeError"));
     ASSERT_NE(nullptr, take_error);
 }
 
@@ -632,35 +632,36 @@ TEST(AndroidJNITest, JavaErrorIsContextualAndConsumed)
 
     mpss::impl::os::JNIEnvGuard guard;
     ASSERT_TRUE(guard.valid());
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
     ASSERT_EQ(nullptr, mpss::KeyPair::Open(key_name));
-    mpss::impl::os::utils::ReportJavaError(env, "missing-key open probe");
+    mpss::impl::os::utils::report_java_error(env, "missing-key open probe");
     const std::string open_probe_error = mpss::get_error();
     EXPECT_NE(std::string::npos, open_probe_error.find("missing-key open probe failed without Java error detail."));
     EXPECT_EQ(std::string::npos, open_probe_error.find(key_name));
 
-    jclass key_management = mpss::impl::os::JNIHelper::KeyManagementClass();
+    jclass key_management = mpss::impl::os::JNIHelper::key_management_class();
     ASSERT_NE(nullptr, key_management);
     jmethodID get_security_level =
         env->GetStaticMethodID(key_management, "GetKeySecurityLevel", "(Ljava/lang/String;)I");
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "resolving KeyManagement.GetKeySecurityLevel"));
+    ASSERT_FALSE(mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.GetKeySecurityLevel"));
     ASSERT_NE(nullptr, get_security_level);
 
     jni_string java_key_name(env, env->NewStringUTF(key_name.c_str()));
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "converting an Android key name to a Java string"));
+    ASSERT_FALSE(
+        mpss::impl::os::utils::check_and_clear_exception(env, "converting an Android key name to a Java string"));
     ASSERT_FALSE(java_key_name.is_null());
 
     const jint security_level = env->CallStaticIntMethod(key_management, get_security_level, java_key_name.get());
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "calling KeyManagement.GetKeySecurityLevel"));
+    ASSERT_FALSE(mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement.GetKeySecurityLevel"));
     ASSERT_EQ(-1, security_level);
 
-    mpss::impl::os::utils::ReportJavaError(env, "KeyManagement.GetKeySecurityLevel");
+    mpss::impl::os::utils::report_java_error(env, "KeyManagement.GetKeySecurityLevel");
     const std::string first_error = mpss::get_error();
     EXPECT_NE(std::string::npos, first_error.find("KeyManagement.GetKeySecurityLevel failed:"));
     EXPECT_NE(std::string::npos, first_error.find("Could not get key: " + key_name));
 
-    mpss::impl::os::utils::ReportJavaError(env, "second operation");
+    mpss::impl::os::utils::report_java_error(env, "second operation");
     const std::string second_error = mpss::get_error();
     EXPECT_NE(std::string::npos, second_error.find("second operation failed without Java error detail."));
     EXPECT_EQ(std::string::npos, second_error.find(key_name));
@@ -670,21 +671,21 @@ TEST(AndroidJNITest, BooleanUnboxingReusesCachedMetadata)
 {
     mpss::impl::os::JNIEnvGuard guard;
     ASSERT_TRUE(guard.valid());
-    JNIEnv *const env = guard.Env();
+    JNIEnv *const env = guard.env();
 
-    jclass boolean_class = mpss::impl::os::JNIHelper::BooleanClass();
+    jclass boolean_class = mpss::impl::os::JNIHelper::boolean_class();
     ASSERT_NE(nullptr, boolean_class);
     jfieldID true_field = env->GetStaticFieldID(boolean_class, "TRUE", "Ljava/lang/Boolean;");
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "resolving Boolean.TRUE"));
+    ASSERT_FALSE(mpss::impl::os::utils::check_and_clear_exception(env, "resolving Boolean.TRUE"));
     ASSERT_NE(nullptr, true_field);
 
     jni_object true_value(env, env->GetStaticObjectField(boolean_class, true_field));
-    ASSERT_FALSE(mpss::impl::os::utils::CheckAndClearException(env, "getting Boolean.TRUE"));
+    ASSERT_FALSE(mpss::impl::os::utils::check_and_clear_exception(env, "getting Boolean.TRUE"));
     ASSERT_FALSE(true_value.is_null());
 
     for (std::size_t iteration = 0; iteration < 1024; ++iteration)
     {
-        const std::optional<bool> value = mpss::impl::os::utils::UnboxBoolean(env, true_value.get());
+        const std::optional<bool> value = mpss::impl::os::utils::unbox_boolean(env, true_value.get());
         ASSERT_TRUE(value.value_or(false));
     }
 }
@@ -730,7 +731,7 @@ TEST(AndroidJNITest, StandaloneVerifyRecoversAfterMalformedPublicKey)
 
     mpss::impl::os::JNIEnvGuard guard;
     ASSERT_TRUE(guard.valid());
-    mpss::impl::os::utils::ReportJavaError(guard.Env(), "invalid-signature probe");
+    mpss::impl::os::utils::report_java_error(guard.env(), "invalid-signature probe");
     EXPECT_NE(std::string::npos, mpss::get_error().find("invalid-signature probe failed without Java error detail."));
 
     std::vector<std::byte> malformed_public_key = public_key;

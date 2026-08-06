@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <openssl/crypto.h>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -121,7 +122,7 @@ class SecureString : private std::basic_string<char, std::char_traits<char>, Cle
 
     friend bool operator==(const SecureString &lhs, const SecureString &rhs) noexcept
     {
-        return 0 == static_cast<const Base &>(lhs).compare(static_cast<const Base &>(rhs));
+        return std::string_view{lhs} == std::string_view{rhs};
     }
 
   private:

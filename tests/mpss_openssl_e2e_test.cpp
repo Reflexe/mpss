@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
+#include "tests/test_key_names.h"
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <openssl/pem.h>
@@ -64,6 +65,7 @@ int add_ca_extensions(X509 *cert)
 
 namespace mpss_openssl::tests
 {
+using mpss::tests::test_key_name;
 
 class CertificateChainSerializationTest : public ::testing::TestWithParam<const char *>
 {
@@ -71,7 +73,7 @@ class CertificateChainSerializationTest : public ::testing::TestWithParam<const 
     void TearDown() override
     {
         // Clean up the mpss key in case the test failed before deleting it.
-        const std::string ca_key_name = std::string("mpss_test_ca_key_") + GetParam();
+        const std::string ca_key_name = test_key_name(std::string("mpss_test_ca_key_") + GetParam());
         mpss_delete_key(ca_key_name.c_str());
     }
 };
@@ -95,7 +97,7 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
         GTEST_SKIP() << "Algorithm not supported by current backend: " << mpss_algorithm;
     }
 
-    const std::string ca_key_name = std::string("mpss_test_ca_key_") + mpss_algorithm;
+    const std::string ca_key_name = test_key_name(std::string("mpss_test_ca_key_") + mpss_algorithm);
 
     // We delete the key (by its name) to clean up a leftover key that may have been left
     // by an early terminated run of this test. The function returns whether or not the
@@ -113,11 +115,11 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     OSSL_LIB_CTX *mpss_libctx = OSSL_LIB_CTX_new();
     ASSERT_NE(nullptr, mpss_libctx);
 
-    // Built‑in algorithms (ASN.1 encoder/decoder, RSA, etc.)
+    // Built-in algorithms (ASN.1 encoder/decoder, RSA, etc.)
     OSSL_PROVIDER *default_prov = OSSL_PROVIDER_load(mpss_libctx, "default");
     ASSERT_NE(nullptr, default_prov);
 
-    // Register our out‑of‑tree provider with the core *before* loading it.
+    // Register our out-of-tree provider with the core *before* loading it.
     ASSERT_NE(0, OSSL_PROVIDER_add_builtin(mpss_libctx, "mpss", OSSL_provider_init));
 
     // Load the provider; afterwards algorithm names like "ec" with "provider=mpss"
@@ -132,7 +134,7 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     ASSERT_NE(nullptr, ca_ctx);
     ASSERT_EQ(1, EVP_PKEY_keygen_init(ca_ctx));
 
-    // Pass provider‑specific parameters: give the key a persistent name and tell
+    // Pass provider-specific parameters: give the key a persistent name and tell
     // the provider what concrete algorithm suite we want.
     //
     // The "mpss_key_name" indicates a name identifier under which the key is stored in the
@@ -164,21 +166,21 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     X509 *ca_cert = X509_new_ex(mpss_libctx, "provider=mpss");
     ASSERT_NE(nullptr, ca_cert);
 
-    X509_set_version(ca_cert, 2);                           // v3 (zero‑based)
+    X509_set_version(ca_cert, 2);                           // v3 (zero-based)
     ASN1_INTEGER_set(X509_get_serialNumber(ca_cert), 1);    // serial = 1
     X509_gmtime_adj(X509_get_notBefore(ca_cert), 0);        // notBefore = now
-    X509_gmtime_adj(X509_get_notAfter(ca_cert), 31536000L); // +365 days
+    X509_gmtime_adj(X509_get_notAfter(ca_cert), 31536000L); // +365 days
 
     ASSERT_NE(0, X509_set_pubkey(ca_cert, ca_pkey)); // embed CA pubkey
 
-    // Subject == Issuer (self‑signed)
+    // Subject == Issuer (self-signed)
     X509_NAME *ca_name = X509_get_subject_name(ca_cert);
     X509_NAME_add_entry_by_txt(ca_name, "C", MBSTRING_ASC, (const unsigned char *)"US", -1, -1, 0);
     X509_NAME_add_entry_by_txt(ca_name, "O", MBSTRING_ASC, (const unsigned char *)"Test CA", -1, -1, 0);
     X509_NAME_add_entry_by_txt(ca_name, "CN", MBSTRING_ASC, (const unsigned char *)"Test CA", -1, -1, 0);
     ASSERT_NE(0, X509_set_issuer_name(ca_cert, ca_name));
 
-    // Attach mandatory v3 CA extensions (critical BasicConstraints CA:TRUE  +  critical KeyUsage
+    // Attach mandatory v3 CA extensions (critical BasicConstraints CA:TRUE  +  critical KeyUsage
     // keyCertSign|cRLSign)
     ASSERT_EQ(1, add_ca_extensions(ca_cert));
 
@@ -253,7 +255,7 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     // the mpss provider itself. In fact, the verification happens in the secure
     // environment, which is obviously not necessary, as verification is a public
     // operation.
-    ASSERT_EQ(1, X509_verify(ca_cert, ca_pkey));  // CA self‑sig
+    ASSERT_EQ(1, X509_verify(ca_cert, ca_pkey));  // CA self-sig
     ASSERT_EQ(1, X509_verify(end_cert, ca_pkey)); // EE signed by CA
 
     // -------------------------------------------------------------------------
@@ -343,5 +345,26 @@ INSTANTIATE_TEST_SUITE_P(MPSSCertChain, CertificateChainSerializationTest,
                              std::ranges::replace_if(name, [](char c) { return !std::isalnum(c); }, '_');
                              return name;
                          });
+
+TEST(MPSSApiErrorContract, HasErrorAndClearErrorTrackGetError)
+{
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_has_error());
+    EXPECT_STREQ("", mpss_get_error());
+
+    // An empty key name is rejected, which sets the last error.
+    EXPECT_FALSE(mpss_delete_key(""));
+    EXPECT_TRUE(mpss_has_error());
+    EXPECT_STRNE("", mpss_get_error());
+
+    // Reading the error does not consume it, and clearing it does not invalidate the pointer
+    // already returned by mpss_get_error.
+    const char *error = mpss_get_error();
+    EXPECT_TRUE(mpss_has_error());
+    mpss_clear_error();
+    EXPECT_FALSE(mpss_has_error());
+    EXPECT_STRNE("", error);
+    EXPECT_STREQ("", mpss_get_error());
+}
 
 } // namespace mpss_openssl::tests

@@ -6,6 +6,8 @@
 #include "mpss/impl/android/JNIObject.h"
 #include "mpss/utils/utilities.h"
 
+#include <utility>
+
 namespace mpss::impl::os::utils
 {
 
@@ -14,7 +16,7 @@ using jni_string = JNIObj<jstring>;
 namespace
 {
 
-void ClearPendingException(JNIEnv *env)
+void clear_pending_exception(JNIEnv *env)
 {
     if (env->ExceptionCheck())
     {
@@ -22,12 +24,12 @@ void ClearPendingException(JNIEnv *env)
     }
 }
 
-std::string GetThrowableDescription(JNIEnv *env, jthrowable throwable)
+std::string get_throwable_description(JNIEnv *env, jthrowable throwable)
 {
     jclass throwable_class = env->GetObjectClass(throwable);
     if (nullptr == throwable_class || env->ExceptionCheck())
     {
-        ClearPendingException(env);
+        clear_pending_exception(env);
         if (nullptr != throwable_class)
         {
             env->DeleteLocalRef(throwable_class);
@@ -38,7 +40,7 @@ std::string GetThrowableDescription(JNIEnv *env, jthrowable throwable)
     jmethodID to_string = env->GetMethodID(throwable_class, "toString", "()Ljava/lang/String;");
     if (nullptr == to_string || env->ExceptionCheck())
     {
-        ClearPendingException(env);
+        clear_pending_exception(env);
         env->DeleteLocalRef(throwable_class);
         return {};
     }
@@ -46,7 +48,7 @@ std::string GetThrowableDescription(JNIEnv *env, jthrowable throwable)
     jstring description = reinterpret_cast<jstring>(env->CallObjectMethod(throwable, to_string));
     if (nullptr == description || env->ExceptionCheck())
     {
-        ClearPendingException(env);
+        clear_pending_exception(env);
         if (nullptr != description)
         {
             env->DeleteLocalRef(description);
@@ -58,7 +60,7 @@ std::string GetThrowableDescription(JNIEnv *env, jthrowable throwable)
     const char *chars = env->GetStringUTFChars(description, /* isCopy */ nullptr);
     if (nullptr == chars || env->ExceptionCheck())
     {
-        ClearPendingException(env);
+        clear_pending_exception(env);
         env->DeleteLocalRef(description);
         env->DeleteLocalRef(throwable_class);
         return {};
@@ -71,7 +73,7 @@ std::string GetThrowableDescription(JNIEnv *env, jthrowable throwable)
     return result;
 }
 
-void ReportErrorRetrievalFailure(std::string_view operation)
+void report_error_retrieval_failure(std::string_view operation)
 {
     const std::string retrieval_error = mpss::utils::get_error();
     mpss::utils::log_and_set_error("{} failed; {}", operation, retrieval_error);
@@ -79,7 +81,7 @@ void ReportErrorRetrievalFailure(std::string_view operation)
 
 } // namespace
 
-bool CheckAndClearException(JNIEnv *env, std::string_view operation)
+bool check_and_clear_exception(JNIEnv *env, std::string_view operation)
 {
     if (nullptr == env)
     {
@@ -94,7 +96,7 @@ bool CheckAndClearException(JNIEnv *env, std::string_view operation)
     jthrowable throwable = env->ExceptionOccurred();
     env->ExceptionClear();
 
-    const std::string description = nullptr == throwable ? std::string{} : GetThrowableDescription(env, throwable);
+    const std::string description = nullptr == throwable ? std::string{} : get_throwable_description(env, throwable);
     if (nullptr != throwable)
     {
         env->DeleteLocalRef(throwable);
@@ -111,7 +113,7 @@ bool CheckAndClearException(JNIEnv *env, std::string_view operation)
     return true;
 }
 
-jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes)
+jbyteArray to_jbyte_array(JNIEnv *env, std::span<const std::byte> bytes)
 {
     if (nullptr == env)
     {
@@ -119,8 +121,14 @@ jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes)
         return nullptr;
     }
 
-    jbyteArray array = env->NewByteArray(bytes.size());
-    if (CheckAndClearException(env, "allocating a Java byte array"))
+    const jsize length = mpss::utils::narrow_or_error<jsize>(bytes.size());
+    if (std::cmp_not_equal(length, bytes.size()))
+    {
+        return nullptr;
+    }
+
+    jbyteArray array = env->NewByteArray(length);
+    if (check_and_clear_exception(env, "allocating a Java byte array"))
     {
         return nullptr;
     }
@@ -131,8 +139,8 @@ jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes)
     }
 
     env->SetByteArrayRegion(array,
-                            /* start */ 0, bytes.size(), reinterpret_cast<const jbyte *>(bytes.data()));
-    if (CheckAndClearException(env, "copying bytes into a Java array"))
+                            /* start */ 0, length, reinterpret_cast<const jbyte *>(bytes.data()));
+    if (check_and_clear_exception(env, "copying bytes into a Java array"))
     {
         env->DeleteLocalRef(array);
         return nullptr;
@@ -142,7 +150,7 @@ jbyteArray ToJByteArray(JNIEnv *env, std::span<const std::byte> bytes)
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter) - JNI requires non-const JNIEnv.
-std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::byte> output)
+std::size_t copy_jbyte_array_to_span(JNIEnv *env, jbyteArray array, std::span<std::byte> output)
 {
     if (nullptr == env || nullptr == array)
     {
@@ -151,7 +159,7 @@ std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::b
     }
 
     const jsize len = env->GetArrayLength(array);
-    if (CheckAndClearException(env, "getting a Java byte array length"))
+    if (check_and_clear_exception(env, "getting a Java byte array length"))
     {
         return 0;
     }
@@ -163,7 +171,7 @@ std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::b
 
     env->GetByteArrayRegion(array,
                             /* start */ 0, len, reinterpret_cast<jbyte *>(output.data()));
-    if (CheckAndClearException(env, "copying bytes from a Java array"))
+    if (check_and_clear_exception(env, "copying bytes from a Java array"))
     {
         return 0;
     }
@@ -171,24 +179,24 @@ std::size_t CopyJByteArrayToSpan(JNIEnv *env, jbyteArray array, std::span<std::b
     return len;
 }
 
-std::optional<bool> UnboxBoolean(JNIEnv *env, jobject booleanObj)
+std::optional<bool> unbox_boolean(JNIEnv *env, jobject boolean_obj)
 {
-    if (nullptr == env || nullptr == booleanObj)
+    if (nullptr == env || nullptr == boolean_obj)
     {
         mpss::utils::log_and_set_error("Cannot unbox an unavailable Java Boolean.");
         return std::nullopt;
     }
 
-    jclass boolean_class = JNIHelper::BooleanClass();
-    jmethodID method = JNIHelper::BooleanValueMethod();
+    jclass boolean_class = JNIHelper::boolean_class();
+    jmethodID method = JNIHelper::boolean_value_method();
     if (nullptr == boolean_class || nullptr == method)
     {
         mpss::utils::log_and_set_error("Java Boolean metadata is unavailable.");
         return std::nullopt;
     }
 
-    const jboolean result = env->CallBooleanMethod(booleanObj, method);
-    if (CheckAndClearException(env, "unboxing a Java Boolean"))
+    const jboolean result = env->CallBooleanMethod(boolean_obj, method);
+    if (check_and_clear_exception(env, "unboxing a Java Boolean"))
     {
         return std::nullopt;
     }
@@ -197,7 +205,7 @@ std::optional<bool> UnboxBoolean(JNIEnv *env, jobject booleanObj)
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter) - JNI requires non-const JNIEnv.
-void ReportJavaError(JNIEnv *env, std::string_view operation)
+void report_java_error(JNIEnv *env, std::string_view operation)
 {
     if (nullptr == env)
     {
@@ -205,7 +213,7 @@ void ReportJavaError(JNIEnv *env, std::string_view operation)
         return;
     }
 
-    jclass key_management = JNIHelper::KeyManagementClass();
+    jclass key_management = JNIHelper::key_management_class();
     if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("{} failed; KeyManagement Java class is unavailable.", operation);
@@ -213,9 +221,9 @@ void ReportJavaError(JNIEnv *env, std::string_view operation)
     }
 
     jmethodID method = env->GetStaticMethodID(key_management, "TakeError", "()Ljava/lang/String;");
-    if (CheckAndClearException(env, "resolving KeyManagement.TakeError"))
+    if (check_and_clear_exception(env, "resolving KeyManagement.TakeError"))
     {
-        ReportErrorRetrievalFailure(operation);
+        report_error_retrieval_failure(operation);
         return;
     }
     if (nullptr == method)
@@ -225,9 +233,9 @@ void ReportJavaError(JNIEnv *env, std::string_view operation)
     }
 
     jni_string error(env, reinterpret_cast<jstring>(env->CallStaticObjectMethod(key_management, method)));
-    if (CheckAndClearException(env, "calling KeyManagement.TakeError"))
+    if (check_and_clear_exception(env, "calling KeyManagement.TakeError"))
     {
-        ReportErrorRetrievalFailure(operation);
+        report_error_retrieval_failure(operation);
         return;
     }
     if (error.is_null())
@@ -237,9 +245,9 @@ void ReportJavaError(JNIEnv *env, std::string_view operation)
     }
 
     const char *chars = env->GetStringUTFChars(error.get(), /* isCopy */ nullptr);
-    if (CheckAndClearException(env, "reading the KeyManagement error"))
+    if (check_and_clear_exception(env, "reading the KeyManagement error"))
     {
-        ReportErrorRetrievalFailure(operation);
+        report_error_retrieval_failure(operation);
         return;
     }
     if (nullptr == chars)
@@ -262,7 +270,7 @@ void ReportJavaError(JNIEnv *env, std::string_view operation)
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter) - JNI requires non-const JNIEnv.
-std::string GetString(JNIEnv *env, jstring str)
+std::string get_string(JNIEnv *env, jstring str)
 {
     if (nullptr == env)
     {
@@ -277,7 +285,7 @@ std::string GetString(JNIEnv *env, jstring str)
     }
 
     const char *chars = env->GetStringUTFChars(str, /* isCopy */ nullptr);
-    if (CheckAndClearException(env, "reading a Java string"))
+    if (check_and_clear_exception(env, "reading a Java string"))
     {
         return {};
     }

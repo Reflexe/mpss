@@ -84,7 +84,7 @@ std::size_t YubiKeyKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
         {
             // No touch policy, so sign() returns instantly. Use it as a probe to check whether PIN authentication
             // is actually needed (it may already be cached).
-            const std::size_t written = piv.sign(slot_, hash, algorithm(), sig);
+            const std::size_t written = piv.sign(slot_, hash, algorithm(), sig, /* probe */ true);
             if (0 != written)
             {
                 return written;
@@ -110,7 +110,7 @@ std::size_t YubiKeyKeyPair::do_sign_hash(std::span<const std::byte> hash, std::s
 
     if (needs_touch)
     {
-        handler->notify_touch_complete();
+        handler->notify_touch_complete(0 != written);
     }
 
     if (0 != written)

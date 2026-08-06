@@ -24,35 +24,86 @@ class BackendNameSetter;
 } // namespace impl
 
 /**
- * @brief Retrieves the last error that occurred.
- * @return The last error that occurred in the library.
+ * @brief Retrieves the last error recorded on this thread.
+ *
+ * The last error is per-thread: a call that fails on one thread leaves nothing for another thread
+ * to read, so it must be retrieved on the thread that made the failing call. This is a pure
+ * accessor and does not consume the error; see @ref clear_error.
+ *
+ * @return The last error recorded on this thread, or an empty string if there is none.
  */
 [[nodiscard]]
 MPSS_DECOR std::string get_error();
 
 /**
+ * @brief Determines whether the last operation on this thread left an error.
+ *
+ * Equivalent to `!get_error().empty()`, but allocates nothing and cannot throw, so it is safe to
+ * call from a `noexcept` context or after an allocation failure. Like @ref get_error, this is a
+ * pure accessor: it does not clear the last error.
+ *
+ * @return true if an error is set, false otherwise.
+ */
+[[nodiscard]]
+MPSS_DECOR bool has_error() noexcept;
+
+/**
+ * @brief Clears the last error for this thread.
+ *
+ * Every fallible MPSS operation already clears the last error on entry, so this is not needed to
+ * keep one call's error from leaking into the next.
+ *
+ * It is for marking an error as handled. Since @ref get_error does not consume the error, an outer
+ * layer that inspects it cannot tell an error an inner layer already reported from a fresh one.
+ * Clearing it once handled keeps it from being reported twice. Entering another MPSS call does not
+ * substitute for this, as the error must survive until whoever handles it has run.
+ */
+MPSS_DECOR void clear_error() noexcept;
+
+/**
  * @brief Determines whether the given signature algorithm is available in the default backend.
  *
- * This performs a runtime probe (key creation, signing, verification, deletion) to check that
- * the algorithm works end-to-end. Results are cached after the first call per algorithm.
+ * What "available" means is decided by the backend and is not uniform across backends. A backend may
+ * answer by probing at runtime -- creating a scratch key, signing with it and deleting it -- in which
+ * case a true result means creation and signing worked at that moment. A backend may instead answer
+ * from static capability, in which case a true result means only that the backend implements the
+ * algorithm and says nothing about whether its device is attached or usable. The YubiKey backend
+ * answers statically and so reports availability with no device present; the operating-system backends
+ * probe. Treat a true result as "worth attempting", not as a guarantee that the next call will succeed.
+ *
+ * A true result is cached for the remainder of the process; a false one is not, so a transient failure
+ * does not become permanent.
  *
  * @param algorithm The signature algorithm to check.
- * @return true if the algorithm is available, false otherwise.
+ * @return true if the algorithm is available, false otherwise. @ref has_error is set only when the
+ * query could not be dispatched at all, that is, when the algorithm is unknown or no backend could be
+ * selected. Once a backend answers, the answer is reported without an error, so a probe that failed
+ * because the device was locked or busy is indistinguishable from a genuine negative. That is why a
+ * false result is never cached.
  */
 [[nodiscard]]
 MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
 
 /**
  * @brief Determines whether the given signature algorithm is available in a specific backend.
+ *
+ * The meaning of "available" is the named backend's; see @ref is_algorithm_available(Algorithm).
+ *
  * @param algorithm The signature algorithm to check.
  * @param backend_name The backend to check (e.g., "os", "yubikey").
- * @return true if the algorithm is available, false otherwise.
+ * @return true if the algorithm is available, false otherwise. @ref has_error is set only when the
+ * query could not be dispatched at all, that is, when the algorithm is unknown or the named backend
+ * does not exist. Once the backend answers, the answer is reported without an error.
  */
 [[nodiscard]]
 MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name);
 
 /**
  * @brief Returns all signature algorithms available in the default backend.
+ *
+ * Each algorithm is decided by @ref is_algorithm_available(Algorithm) and inherits its meaning of
+ * "available".
+ *
  * @return A vector of available @ref Algorithm values.
  */
 [[nodiscard]]

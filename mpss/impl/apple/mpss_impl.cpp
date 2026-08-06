@@ -7,6 +7,7 @@
 #include "mpss/impl/apple/apple_se_keypair.h"
 #include "mpss/impl/apple/apple_se_wrapper.h"
 #include "mpss/impl/apple/apple_utils.h"
+#include "mpss/impl/key_probe.h"
 #include "mpss/utils/utilities.h"
 
 namespace mpss::impl::os
@@ -17,18 +18,7 @@ using enum Algorithm;
 namespace
 {
 
-enum class OpenKeyStatus
-{
-    found,
-    not_found,
-    operational_error
-};
-
-struct OpenKeyResult
-{
-    OpenKeyStatus status;
-    std::unique_ptr<KeyPair> key;
-};
+using OpenKeyResult = KeyProbeResult<std::unique_ptr<KeyPair>>;
 
 OpenKeyResult try_open_key(const std::string &key_name)
 {
@@ -42,15 +32,16 @@ OpenKeyResult try_open_key(const std::string &key_name)
         {
         case success:
             mpss::utils::log_trace("Key '{}' found in Secure Enclave.", key_name);
-            return {OpenKeyStatus::found, std::make_unique<AppleSEKeyPair>(key_name, ecdsa_secp256r1_sha256)};
+            return {.status = KeyProbeStatus::found,
+                    .value = std::make_unique<AppleSEKeyPair>(key_name, ecdsa_secp256r1_sha256)};
         case expected_negative:
             break;
         case operational_error:
             utils::report_secure_enclave_error("open key");
-            return {OpenKeyStatus::operational_error, nullptr};
+            return {.status = KeyProbeStatus::operational_error, .value = nullptr};
         case invalid_result:
             utils::report_invalid_apple_result("Secure Enclave", "open key", raw_result);
-            return {OpenKeyStatus::operational_error, nullptr};
+            return {.status = KeyProbeStatus::operational_error, .value = nullptr};
         }
     }
 
@@ -61,13 +52,13 @@ OpenKeyResult try_open_key(const std::string &key_name)
     case success:
         break;
     case expected_negative:
-        return {OpenKeyStatus::not_found, nullptr};
+        return {.status = KeyProbeStatus::not_found, .value = nullptr};
     case operational_error:
         utils::report_keychain_error("open key");
-        return {OpenKeyStatus::operational_error, nullptr};
+        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     case invalid_result:
         utils::report_invalid_apple_result("Keychain", "open key", raw_result);
-        return {OpenKeyStatus::operational_error, nullptr};
+        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
     Algorithm algorithm = unsupported;
@@ -85,19 +76,19 @@ OpenKeyResult try_open_key(const std::string &key_name)
     default:
         MPSS_RemoveKey(key_name.c_str());
         mpss::utils::log_and_set_error("Opened key '{}' has unsupported bit size {}.", key_name, bit_size);
-        return {OpenKeyStatus::operational_error, nullptr};
+        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
     mpss::utils::log_trace("Key '{}' found in Keychain with algorithm '{}'.", key_name,
                            get_algorithm_info(algorithm).type_str);
-    return {OpenKeyStatus::found, std::make_unique<AppleKeychainKeyPair>(key_name, algorithm)};
+    return {.status = KeyProbeStatus::found, .value = std::make_unique<AppleKeychainKeyPair>(key_name, algorithm)};
 }
 
 } // namespace
 
 std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
-    mpss::utils::set_error({});
+    mpss::utils::clear_error();
     const std::string key_name{name};
     if (key_name.empty())
     {
@@ -106,17 +97,17 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     }
 
     OpenKeyResult result = try_open_key(key_name);
-    if (OpenKeyStatus::not_found == result.status)
+    if (KeyProbeStatus::not_found == result.status)
     {
         mpss::utils::log_debug("Key '{}' not found.", key_name);
     }
 
-    return std::move(result.key);
+    return std::move(result.value);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
-    mpss::utils::set_error({});
+    mpss::utils::clear_error();
     const std::string key_name{name};
     if (key_name.empty())
     {
@@ -148,11 +139,11 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     OpenKeyResult existing_key = try_open_key(key_name);
-    if (OpenKeyStatus::operational_error == existing_key.status)
+    if (KeyProbeStatus::operational_error == existing_key.status)
     {
         return nullptr;
     }
-    if (OpenKeyStatus::found == existing_key.status)
+    if (KeyProbeStatus::found == existing_key.status)
     {
         mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
@@ -186,7 +177,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig)
 {
-    mpss::utils::set_error({});
+    mpss::utils::clear_error();
     if (hash.empty() || public_key.empty() || sig.empty())
     {
         mpss::utils::log_and_set_error("Hash, public key, and signature cannot be empty.");

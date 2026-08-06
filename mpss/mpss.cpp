@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
 #include "mpss/mpss.h"
@@ -11,42 +11,66 @@
 namespace mpss
 {
 
+namespace
+{
+// Success is the truthy result: a non-null key, true, or a non-zero size. Explicit conversions are
+// permitted, so that std::unique_ptr qualifies.
+template <typename T>
+concept boolean_testable = requires(const T &value) { static_cast<bool>(value); };
+
+// A successful operation never reports an error. A backend may set one on an internal step - an
+// existence probe, a provider fallback - and still succeed, so success is normalized here rather
+// than in each backend.
+template <boolean_testable T>
+[[nodiscard]]
+T clear_error_on_success(T result)
+{
+    if (static_cast<bool>(result))
+    {
+        clear_error();
+    }
+    return result;
+}
+} // namespace
+
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
                      get_algorithm_info(algorithm).type_str);
-    return impl::create_key(name, algorithm, policy);
+    return clear_error_on_success(impl::create_key(name, algorithm, policy));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                          KeyPolicy policy)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend_name);
-    return impl::create_key(backend_name, name, algorithm, policy);
+    return clear_error_on_success(impl::create_key(backend_name, name, algorithm, policy));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("KeyPair::Open called for key '{}'.", name);
-    return impl::open_key(name);
+    return clear_error_on_success(impl::open_key(name));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("KeyPair::Open called for key '{}' on backend '{}'.", name, backend_name);
-    return impl::open_key(backend_name, name);
+    return clear_error_on_success(impl::open_key(backend_name, name));
 }
 
 bool is_algorithm_available(Algorithm algorithm)
 {
+    clear_error();
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
+        utils::log_and_set_error("Unknown or unsupported algorithm.");
         return false;
     }
 
@@ -71,7 +95,7 @@ bool is_algorithm_available(Algorithm algorithm)
     utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
     const bool available = impl::is_algorithm_available(algorithm);
 
-    // Cache positive results only. A positive is stable — the platform genuinely supports the algorithm.
+    // Cache positive results only. A positive is stable -- the platform genuinely supports the algorithm.
     // A negative is the only direction that can be wrong and stick: a one-time probe can fail while the
     // keystore is temporarily unavailable (e.g. a locked device on a long-lived process) or a probe name
     // briefly collides, which memoizing would turn into a permanent, process-wide understatement of
@@ -88,9 +112,11 @@ bool is_algorithm_available(Algorithm algorithm)
 
 bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
 {
+    clear_error();
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
+        utils::log_and_set_error("Unknown or unsupported algorithm.");
         return false;
     }
     utils::log_trace("Checking algorithm availability for '{}' on backend '{}'.", info.type_str, backend_name);
@@ -99,6 +125,7 @@ bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
 
 std::vector<Algorithm> get_available_algorithms()
 {
+    clear_error();
     std::vector<Algorithm> result;
     for (const auto &[alg, info] : algorithm_info)
     {
@@ -117,19 +144,19 @@ std::vector<Algorithm> get_available_algorithms()
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("Standalone verify called with algorithm '{}', hash size {}, signature size {}.",
                      get_algorithm_info(algorithm).type_str, hash.size(), sig.size());
-    return impl::verify(hash, public_key, algorithm, sig);
+    return clear_error_on_success(impl::verify(hash, public_key, algorithm, sig));
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
             std::span<const std::byte> sig, std::string_view backend_name)
 {
-    utils::set_error({});
+    clear_error();
     utils::log_trace("Standalone verify called with algorithm '{}' on backend '{}', hash size {}, signature size {}.",
                      get_algorithm_info(algorithm).type_str, backend_name, hash.size(), sig.size());
-    return impl::verify(backend_name, hash, public_key, algorithm, sig);
+    return clear_error_on_success(impl::verify(backend_name, hash, public_key, algorithm, sig));
 }
 
 std::vector<const char *> get_available_backends()
@@ -147,6 +174,16 @@ std::string get_error()
     return utils::get_error();
 }
 
+bool has_error() noexcept
+{
+    return utils::has_error();
+}
+
+void clear_error() noexcept
+{
+    utils::clear_error();
+}
+
 std::size_t KeyPair::sign_hash_size() const
 {
     return utils::get_max_signature_size(algorithm());
@@ -159,13 +196,13 @@ std::size_t KeyPair::extract_key_size() const
 
 bool KeyPair::delete_key()
 {
-    utils::set_error({});
-    return do_delete_key();
+    clear_error();
+    return clear_error_on_success(do_delete_key());
 }
 
 std::size_t KeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::byte> sig) const
 {
-    utils::set_error({});
+    clear_error();
     if (sig.empty())
     {
         // An empty signature buffer is a request for the required signature size.
@@ -179,12 +216,12 @@ std::size_t KeyPair::sign_hash(std::span<const std::byte> hash, std::span<std::b
     {
         return 0;
     }
-    return do_sign_hash(hash, sig);
+    return clear_error_on_success(do_sign_hash(hash, sig));
 }
 
 bool KeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte> sig) const
 {
-    utils::set_error({});
+    clear_error();
     if (hash.empty() || sig.empty())
     {
         utils::log_and_set_error("Nothing to verify.");
@@ -194,12 +231,12 @@ bool KeyPair::verify(std::span<const std::byte> hash, std::span<const std::byte>
     {
         return false;
     }
-    return do_verify(hash, sig);
+    return clear_error_on_success(do_verify(hash, sig));
 }
 
 std::size_t KeyPair::extract_key(std::span<std::byte> public_key) const
 {
-    utils::set_error({});
+    clear_error();
     if (public_key.empty())
     {
         // An empty output buffer is a request for the required public key size.
@@ -209,7 +246,7 @@ std::size_t KeyPair::extract_key(std::span<std::byte> public_key) const
     {
         return 0;
     }
-    return do_extract_key(public_key);
+    return clear_error_on_success(do_extract_key(public_key));
 }
 
 KeyPair::KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description)

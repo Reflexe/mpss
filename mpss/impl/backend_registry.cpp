@@ -119,12 +119,6 @@ class BackendRegistry
     std::shared_ptr<Backend> get_default_backend()
     {
         initialize_if_needed();
-
-        if (nullptr == default_backend_)
-        {
-            utils::log_and_set_error("No default backend available.");
-        }
-
         return default_backend_;
     }
 
@@ -208,7 +202,7 @@ class BackendRegistry
                 utils::log_warning("Default backend redirected to '{}' via MPSS_DEFAULT_BACKEND.", requested);
                 return;
             }
-            utils::log_and_set_error("Requested backend '{}' not found.", requested);
+            utils::log_error("Requested backend '{}' not found.", requested);
             return;
         }
 
@@ -225,7 +219,7 @@ class BackendRegistry
             }
         }
 
-        utils::log_and_set_error("No available backend found.");
+        utils::log_error("No available backend found.");
     }
 
   private:
@@ -233,11 +227,19 @@ class BackendRegistry
 
     void install_builtin(std::shared_ptr<Backend> backend)
     {
+        // Sole entry point into the map, and the map is dereferenced unguarded when listing
+        // backends, so nothing unusable may enter it.
+        if (nullptr == backend || nullptr == backend->name())
+        {
+            utils::log_error("Refusing to register a built-in backend that has no instance or no name.");
+            return;
+        }
+
         const std::string backend_name = backend->name();
         const bool inserted = backends_.try_emplace(backend_name, std::move(backend)).second;
         if (!inserted)
         {
-            utils::log_and_set_error("Built-in backend '{}' was registered twice.", backend_name);
+            utils::log_error("Built-in backend '{}' was registered twice.", backend_name);
             return;
         }
         utils::log_trace("Registered backend '{}'.", backend_name);
@@ -274,6 +276,7 @@ bool is_algorithm_available(Algorithm algorithm)
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
     {
+        utils::log_and_set_error("No default backend available.");
         return false;
     }
     return backend->is_algorithm_available(algorithm);
@@ -284,7 +287,7 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_backend(backend_name);
     if (nullptr == backend)
     {
-        utils::log_warning("Backend '{}' not found.", backend_name);
+        utils::log_and_set_error("Backend '{}' not found.", backend_name);
         return false;
     }
     return backend->is_algorithm_available(algorithm);
@@ -296,7 +299,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
 {
     if (!is_valid_key_name(name))
     {
-        utils::log_warning("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
+        utils::log_and_set_error("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
         return nullptr;
     }
 
@@ -323,7 +326,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_vie
 {
     if (!is_valid_key_name(name))
     {
-        utils::log_warning("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
+        utils::log_and_set_error("Invalid key name (must be 1-{} printable ASCII characters).", max_key_name_length);
         return nullptr;
     }
 
@@ -394,7 +397,11 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
     return verify(backend->name(), hash, public_key, algorithm, sig);
 }
 
-// Discovery functions.
+// Discovery functions. Which backends exist is fixed when the library is built; which one is the
+// default is that set's platform default unless MPSS_DEFAULT_BACKEND redirects it. Neither can
+// report failure: an empty result is a complete answer, and a default that could not be selected is
+// diagnosed in the log. They are accessors: they neither set nor clear the last error, which lets a
+// caller name the backend while composing a diagnostic about an earlier failure.
 std::vector<const char *> get_available_backends()
 {
     return BackendRegistry::Instance().get_available_backend_names();
@@ -421,6 +428,13 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
 
     // Sample a random name for a key and try creating it.
     const std::string random_key = "MPSS_TEST_KEY_" + random_string(16) + "_CAN_DELETE";
+
+    // The probe answers the caller's question with its return value. Creating, signing with and
+    // deleting the scratch key below can report failures of its own, but those describe the scratch
+    // key rather than the question that was asked, so they must not be left as this call's last
+    // error. They remain in the log. Registered before the deletion guard so that it runs last.
+    SCOPE_GUARD({ utils::clear_error(); });
+
     std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none);
 
     // Could we even create a key?

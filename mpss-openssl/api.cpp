@@ -7,70 +7,54 @@
 #include <mpss/mpss.h>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace
+{
+// Forwards a null C string as empty rather than rejecting it here, so the library's own validation
+// reports it. Returning early would hand back false with no error set, which the caller cannot
+// distinguish from a conclusive negative answer.
+constexpr std::string_view as_view(const char *str) noexcept
+{
+    return nullptr == str ? std::string_view{} : std::string_view{str};
+}
+} // namespace
 
 bool mpss_delete_key(const char *key_name)
 {
-    if (nullptr == key_name)
-    {
-        return false;
-    }
-
-    return mpss_openssl::utils::delete_key(key_name);
+    return mpss_openssl::utils::delete_key(as_view(key_name));
 }
 
 bool mpss_delete_key_from_backend(const char *key_name, const char *backend_name)
 {
-    if (nullptr == key_name || nullptr == backend_name)
-    {
-        return false;
-    }
-
-    return mpss_openssl::utils::delete_key(key_name, backend_name);
+    return mpss_openssl::utils::delete_key(as_view(key_name), as_view(backend_name));
 }
 
 bool mpss_is_algorithm_available(const char *algorithm_name)
 {
-    if (nullptr == algorithm_name)
-    {
-        return false;
-    }
-    const mpss::Algorithm algorithm = mpss_openssl::utils::try_get_mpss_algorithm(algorithm_name);
-    if (mpss::Algorithm::unsupported == algorithm)
-    {
-        return false;
-    }
-    return mpss::is_algorithm_available(algorithm);
+    return mpss::is_algorithm_available(mpss_openssl::utils::try_get_mpss_algorithm(as_view(algorithm_name)));
 }
 
 bool mpss_is_algorithm_available_in_backend(const char *algorithm_name, const char *backend_name)
 {
-    if (nullptr == algorithm_name || nullptr == backend_name)
-    {
-        return false;
-    }
-    const mpss::Algorithm algorithm = mpss_openssl::utils::try_get_mpss_algorithm(algorithm_name);
-    if (mpss::Algorithm::unsupported == algorithm)
-    {
-        return false;
-    }
-    return mpss::is_algorithm_available(algorithm, backend_name);
+    return mpss::is_algorithm_available(mpss_openssl::utils::try_get_mpss_algorithm(as_view(algorithm_name)),
+                                        as_view(backend_name));
 }
 
 const char **mpss_get_available_algorithms()
 {
-    // Build a static null-terminated array of string pointers on first call.
-    // The algorithm name strings are compile-time constants, so no ownership issues.
-    static std::vector<const char *> cache;
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        for (const mpss::Algorithm &alg : mpss::get_available_algorithms())
-        {
-            cache.push_back(mpss::get_algorithm_info(alg).type_str);
-        }
-        cache.push_back(nullptr); // null-terminate
-    });
-    return cache.data();
+    // Rebuilt on every call. The underlying availability query caches positive results only, because a
+    // negative can be a transient probe failure; memoizing the list here would make such a failure a
+    // permanent, process-wide understatement of what the platform supports.
+    static thread_local std::vector<const char *> names;
+    names.clear();
+    for (const mpss::Algorithm &alg : mpss::get_available_algorithms())
+    {
+        names.push_back(mpss::get_algorithm_info(alg).type_str);
+    }
+    names.push_back(nullptr);
+    return names.data();
 }
 
 const char *mpss_get_error()
@@ -80,6 +64,16 @@ const char *mpss_get_error()
 
     last_error_str = mpss::get_error(); // Update buffer
     return last_error_str.c_str();
+}
+
+bool mpss_has_error()
+{
+    return mpss::has_error();
+}
+
+void mpss_clear_error()
+{
+    mpss::clear_error();
 }
 
 const char **mpss_get_available_backends()

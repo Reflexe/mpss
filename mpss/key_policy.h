@@ -25,33 +25,25 @@ namespace mpss
  */
 enum class MPSS_DECOR KeyPolicy : std::uint64_t
 {
-    /** @brief No policy specified. All fields fall back to env var / backend defaults. */
-    none = 0,
+    none = 0, /**< No policy specified. All fields fall back to env var / backend defaults. */
 
 #ifdef MPSS_BACKEND_YUBIKEY
     // -- YubiKey PIN policy (bits 0-3). Zero = use env var / MPSS default. --
 
-    /** @brief Never require PIN for signing. */
-    yubikey_pin_never = 1U,
-    /** @brief Require PIN once per PIV session. */
-    yubikey_pin_once = 2U,
-    /** @brief Require PIN for every signing operation. */
-    yubikey_pin_always = 3U,
+    yubikey_pin_never = 1U,  /**< Never require PIN for signing. */
+    yubikey_pin_once = 2U,   /**< Require PIN once per PIV session. */
+    yubikey_pin_always = 3U, /**< Require PIN for every signing operation. */
     // Values 4-15 reserved (match_once, match_always pending biometric InteractionHandler support).
 
     // -- YubiKey touch policy (bits 4-7). Zero = use env var / MPSS default. --
 
-    /** @brief Never require physical touch for signing. */
-    yubikey_touch_never = 1U << 4U,
-    /** @brief Require physical touch for every signing operation. */
-    yubikey_touch_always = 2U << 4U,
-    /** @brief Require physical touch once per 15-second window. */
-    yubikey_touch_cached = 3U << 4U,
+    yubikey_touch_never = 1U << 4U,  /**< Never require physical touch for signing. */
+    yubikey_touch_always = 2U << 4U, /**< Require physical touch for every signing operation. */
+    yubikey_touch_cached = 3U << 4U, /**< Require physical touch once per 15-second window. */
     // Values 4-15 reserved (auto, future policies).
 #endif // MPSS_BACKEND_YUBIKEY
 
-    /** @brief Require system user authentication when a Secure Enclave key signs. */
-    apple_secure_enclave_user_presence = 1ULL << 8U,
+    apple_secure_enclave_user_presence = 1ULL << 8U, /**< Require system user authentication when this key signs. */
 };
 
 #ifdef MPSS_BACKEND_YUBIKEY

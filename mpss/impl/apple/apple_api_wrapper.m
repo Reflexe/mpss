@@ -222,6 +222,41 @@ int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
   }
 }
 
+// Counts the private-key items carrying this name. Uses the same query shape as the ambiguity check
+// in OpenExistingKeyInternal, but deliberately bypasses the in-process key cache: this runs right
+// after a creation, when the cache cannot yet reflect what another process has done.
+static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut) {
+  *countOut = 0;
+
+  NSDictionary *query = @{
+    (id)kSecClass : (__bridge id)kSecClassKey,
+    (id)kSecAttrKeyType : SupportedKeychainKeyType(),
+    (id)kSecAttrApplicationTag :
+        [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
+    (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
+    (id)kSecReturnRef : @YES,
+    (id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll
+  };
+
+  CFTypeRef matches = NULL;
+  const OSStatus status =
+      SecItemCopyMatching((__bridge CFDictionaryRef)query, &matches);
+
+  if (status == errSecItemNotFound) {
+    return errSecSuccess;
+  }
+  if (status != errSecSuccess) {
+    return status;
+  }
+
+  CFArrayRef items = (CFArrayRef)matches;
+  if (items != NULL) {
+    *countOut = CFArrayGetCount(items);
+    CFRelease(items);
+  }
+  return errSecSuccess;
+}
+
 bool MPSS_CreateKey(const char *keyName, int bitSize) {
   ClearThreadLocalError();
   if (keyName == NULL) {
@@ -312,6 +347,42 @@ bool MPSS_CreateKey(const char *keyName, int bitSize) {
     }
 
     mpss_log_trace("Key generated successfully.");
+
+    // The existence check at the top of this function and the creation above are not atomic, and the
+    // Keychain does not enforce uniqueness on the application tag, so a concurrent creator can add a
+    // second item under this name in between. Confirm the name resolves to exactly one item and, if
+    // it does not, remove the item just created and report failure. Deleting by reference bounds the
+    // removal to this key, so a concurrent creator's key is never touched.
+    CFIndex matchCount = 0;
+    const OSStatus countStatus = CountItemsWithName(keyLabel, &matchCount);
+    if (countStatus != errSecSuccess || matchCount != 1) {
+      NSDictionary *deleteQuery = @{
+        (id)kSecClass : (__bridge id)kSecClassKey,
+        (id)kSecValueRef : (__bridge id)keyRef
+      };
+      const OSStatus deleteStatus =
+          SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+      CFRelease(keyRef);
+
+      if (countStatus != errSecSuccess) {
+        SetThreadLocalError([NSString
+            stringWithFormat:
+                @"Could not confirm key '%s' is unique after creation, status: %d.",
+                keyName, (int)countStatus]);
+      } else {
+        SetThreadLocalError([NSString
+            stringWithFormat:@"Refusing to create key '%s': %ld items share "
+                             @"this name after creation.",
+                             keyName, (long)matchCount]);
+      }
+
+      if (deleteStatus != errSecSuccess) {
+        mpss_log_warning(
+            "Failed to remove the key created under a name that is not unique.");
+      }
+      return false;
+    }
+
     StoreKey(keyLabel, keyRef);
     CFRelease(keyRef);
 
@@ -605,6 +676,35 @@ bool MPSS_GetPublicKey(const char *keyName, uint8_t *pk, size_t *pkSize) {
   }
 }
 
+// Deletes every Keychain item matching the query, reporting how many were removed.
+//
+// A single SecItemDelete removes only one matching item per call, so deleting a name that matches
+// several items one call at a time would report success while leaving the rest in place. Items are
+// removed until the Keychain reports there are none left.
+static OSStatus DeleteAllMatchingItems(NSDictionary *query, NSUInteger *deletedCount) {
+  // A name matches one item per distinct key, so it should never come anywhere near this many. The
+  // bound exists only so that a Keychain reporting success without removing anything cannot spin
+  // here forever; reaching it means the loop is not making progress.
+  static const NSUInteger maxItemsPerName = 1024;
+
+  NSUInteger deleted = 0;
+  while (deleted < maxItemsPerName) {
+    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+    if (status == errSecItemNotFound) {
+      *deletedCount = deleted;
+      return deleted > 0 ? errSecSuccess : errSecItemNotFound;
+    }
+    if (status != errSecSuccess) {
+      *deletedCount = deleted;
+      return status;
+    }
+    deleted++;
+  }
+
+  *deletedCount = deleted;
+  return errSecInternalError;
+}
+
 bool MPSS_DeleteKey(const char *keyName) {
   ClearThreadLocalError();
   if (keyName == NULL) {
@@ -626,10 +726,12 @@ bool MPSS_DeleteKey(const char *keyName) {
       (id)kSecAttrApplicationTag : [keyLabel dataUsingEncoding:NSUTF8StringEncoding]
     } mutableCopy];
 
-    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+    NSUInteger deleted = 0;
+    OSStatus status = DeleteAllMatchingItems(query, &deleted);
 
     if (status == errSecSuccess) {
-      mpss_log_trace("Deleted private key.");
+      mpss_log_trace([[NSString stringWithFormat:@"Deleted %lu private key item(s).",
+                                                 (unsigned long)deleted] UTF8String]);
     } else if (status == errSecItemNotFound) {
       mpss_log_trace("Private key not found, nothing to delete.");
     } else {
@@ -638,13 +740,17 @@ bool MPSS_DeleteKey(const char *keyName) {
           stringByAppendingFormat:@"Private key deletion failed with status: %d", (int)status];
     }
 
-    // Modify query to delete now public key.
+    // Nothing this library creates matches here: SecKeyCreateRandomKey stores only the private key,
+    // and the public half is derived on demand rather than persisted. The pass is kept for keys left
+    // by the deprecated SecKeyGeneratePair, which stored both halves as separate items, so an older
+    // build or another tool can leave a public key behind. Matching nothing is a success.
     query[(id)kSecAttrKeyClass] = (__bridge id)kSecAttrKeyClassPublic;
 
-    status = SecItemDelete((__bridge CFDictionaryRef)query);
+    status = DeleteAllMatchingItems(query, &deleted);
 
     if (status == errSecSuccess) {
-      mpss_log_trace("Deleted public key.");
+      mpss_log_trace([[NSString stringWithFormat:@"Deleted %lu public key item(s).",
+                                                 (unsigned long)deleted] UTF8String]);
     } else if (status == errSecItemNotFound) {
       mpss_log_trace("Public key not found, nothing to delete.");
     } else {

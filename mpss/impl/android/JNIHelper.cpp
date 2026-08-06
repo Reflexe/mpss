@@ -6,12 +6,12 @@
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void * /*reserved*/)
 {
-    return mpss::impl::os::JNIHelper::Init(vm) ? JNI_VERSION_1_6 : JNI_ERR;
+    return mpss::impl::os::JNIHelper::init(vm) ? JNI_VERSION_1_6 : JNI_ERR;
 }
 
 extern "C" JNIEXPORT void JNI_OnUnload(JavaVM *vm, void * /*reserved*/)
 {
-    mpss::impl::os::JNIHelper::Uninit(vm);
+    mpss::impl::os::JNIHelper::uninit(vm);
 }
 
 JavaVM *mpss::impl::os::JNIHelper::java_vm_ = nullptr;
@@ -25,7 +25,7 @@ thread_local int mpss::impl::os::JNIEnvGuard::ref_count_ = 0;
 namespace mpss::impl::os
 {
 
-bool JNIHelper::Init(JavaVM *vm)
+bool JNIHelper::init(JavaVM *vm)
 {
     if (nullptr == vm)
     {
@@ -33,7 +33,7 @@ bool JNIHelper::Init(JavaVM *vm)
     }
     if (nullptr != java_vm_)
     {
-        return vm == java_vm_ && Initialized();
+        return vm == java_vm_ && initialized();
     }
 
     JNIEnv *env = nullptr;
@@ -46,13 +46,13 @@ bool JNIHelper::Init(JavaVM *vm)
 
     const auto cache_class = [env](const char *name, jclass &destination) {
         jclass local_class = env->FindClass(name);
-        if (utils::CheckAndClearException(env, name) || nullptr == local_class)
+        if (utils::check_and_clear_exception(env, name) || nullptr == local_class)
         {
             return false;
         }
 
         destination = reinterpret_cast<jclass>(env->NewGlobalRef(local_class));
-        const bool failed = utils::CheckAndClearException(env, name) || nullptr == destination;
+        const bool failed = utils::check_and_clear_exception(env, name) || nullptr == destination;
         env->DeleteLocalRef(local_class);
         return !failed;
     };
@@ -61,21 +61,21 @@ bool JNIHelper::Init(JavaVM *vm)
         !cache_class("com/microsoft/research/mpss/Algorithm", algorithm_class_) ||
         !cache_class("java/lang/Boolean", boolean_class_))
     {
-        Uninit(vm);
+        uninit(vm);
         return false;
     }
 
     boolean_value_method_ = env->GetMethodID(boolean_class_, "booleanValue", "()Z");
-    if (utils::CheckAndClearException(env, "resolving Boolean.booleanValue") || nullptr == boolean_value_method_)
+    if (utils::check_and_clear_exception(env, "resolving Boolean.booleanValue") || nullptr == boolean_value_method_)
     {
-        Uninit(vm);
+        uninit(vm);
         return false;
     }
 
     return true;
 }
 
-void JNIHelper::Uninit(JavaVM *vm)
+void JNIHelper::uninit(JavaVM *vm)
 {
     if (nullptr == vm || vm != java_vm_)
     {
@@ -106,13 +106,13 @@ void JNIHelper::Uninit(JavaVM *vm)
     java_vm_ = nullptr;
 }
 
-bool JNIHelper::Initialized()
+bool JNIHelper::initialized()
 {
     return nullptr != java_vm_ && nullptr != key_management_class_ && nullptr != algorithm_class_ &&
            nullptr != boolean_class_ && nullptr != boolean_value_method_;
 }
 
-void JNIHelper::Detach()
+void JNIHelper::detach()
 {
     if (nullptr != java_vm_)
     {
@@ -120,7 +120,7 @@ void JNIHelper::Detach()
     }
 }
 
-JNIEnv *JNIHelper::GetEnv(bool *did_attach)
+JNIEnv *JNIHelper::get_env(bool *did_attach)
 {
     if (nullptr != did_attach)
     {
@@ -153,22 +153,22 @@ JNIEnv *JNIHelper::GetEnv(bool *did_attach)
     return nullptr;
 }
 
-jclass JNIHelper::KeyManagementClass()
+jclass JNIHelper::key_management_class()
 {
     return key_management_class_;
 }
 
-jclass JNIHelper::AlgorithmClass()
+jclass JNIHelper::algorithm_class()
 {
     return algorithm_class_;
 }
 
-jclass JNIHelper::BooleanClass()
+jclass JNIHelper::boolean_class()
 {
     return boolean_class_;
 }
 
-jmethodID JNIHelper::BooleanValueMethod()
+jmethodID JNIHelper::boolean_value_method()
 {
     return boolean_value_method_;
 }
@@ -177,7 +177,7 @@ jmethodID JNIHelper::BooleanValueMethod()
 JNIEnvGuard::JNIEnvGuard()
 {
     bool attached = false;
-    env_ = JNIHelper::GetEnv(&attached);
+    env_ = JNIHelper::get_env(&attached);
     if (nullptr == env_)
     {
         return;
@@ -202,7 +202,7 @@ JNIEnvGuard::~JNIEnvGuard()
     {
         if (attached_)
         {
-            JNIHelper::Detach();
+            JNIHelper::detach();
             attached_ = false;
         }
     }

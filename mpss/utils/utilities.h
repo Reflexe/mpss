@@ -74,10 +74,25 @@ std::optional<ByteVectorType> hex_string_to_bytes(std::string_view hex_str)
 std::string get_error();
 
 /**
+ * @brief Determine whether an error is currently set for this thread.
+ * @return true if the last error string is non-empty, false otherwise.
+ */
+[[nodiscard]]
+bool has_error() noexcept;
+
+/**
  * @brief Set the last error string that occurred.
  * @param error The error string to set.
  */
 void set_error(std::string error) noexcept;
+
+/**
+ * @brief Clear the last error for this thread.
+ */
+inline void clear_error() noexcept
+{
+    set_error({});
+}
 
 /**
  * @brief Log an error message and set it as the last error.
@@ -100,6 +115,32 @@ inline void log_and_set_error(std::string msg)
 template <typename... Args> void log_and_set_error(std::format_string<Args...> fmt, Args &&...args)
 {
     log_and_set_error(std::format(fmt, std::forward<Args>(args)...));
+}
+
+/**
+ * @brief Log an error message without setting it as the last error.
+ *
+ * For failures that are not the caller's operation failing: the message belongs in the log at error
+ * severity, but the last error must be left for whichever operation the caller actually invoked.
+ *
+ * @param msg The error message to log.
+ */
+inline void log_error(std::string msg)
+{
+    if (auto logger = mpss::GetLogger())
+    {
+        logger->error("{}", msg);
+    }
+}
+
+/**
+ * @brief Log a formatted error message without setting it as the last error.
+ * @param fmt The format string for the error message.
+ * @param args The format arguments for the error message.
+ */
+template <typename... Args> void log_error(std::format_string<Args...> fmt, Args &&...args)
+{
+    log_error(std::format(fmt, std::forward<Args>(args)...));
 }
 
 /**
@@ -226,7 +267,7 @@ template <std::integral Out, std::integral In> Out narrow_or_error(In in)
 /**
  * @brief Get the key size in bytes for a given algorithm.
  * @param algorithm The algorithm to get the key size for.
- * @return The key size in bytes (i.e., the byte length of one curve scalar).
+ * @return The key size in bytes.
  */
 std::size_t get_key_bytes(Algorithm algorithm) noexcept;
 

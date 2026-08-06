@@ -11,16 +11,16 @@ namespace mpss::impl::os
 class JNIHelper
 {
   public:
-    static bool Init(JavaVM *vm);
-    static void Uninit(JavaVM *vm);
+    static bool init(JavaVM *vm);
+    static void uninit(JavaVM *vm);
     [[nodiscard]]
-    static bool Initialized();
-    static void Detach();
-    static JNIEnv *GetEnv(bool *did_attach = nullptr);
-    static jclass KeyManagementClass();
-    static jclass AlgorithmClass();
-    static jclass BooleanClass();
-    static jmethodID BooleanValueMethod();
+    static bool initialized();
+    static void detach();
+    static JNIEnv *get_env(bool *did_attach = nullptr);
+    static jclass key_management_class();
+    static jclass algorithm_class();
+    static jclass boolean_class();
+    static jmethodID boolean_value_method();
 
   private:
     static JavaVM *java_vm_;
@@ -54,7 +54,7 @@ class JNIEnvGuard
     }
 
     [[nodiscard]]
-    JNIEnv *Env() const
+    JNIEnv *env() const
     {
         return env_;
     }

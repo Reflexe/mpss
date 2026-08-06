@@ -161,8 +161,14 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
         return nullptr;
     }
 
-    // Check if key already exists on the device.
-    if (piv.find_slot_by_name(name).has_value())
+    // Check if key already exists on the device. A scan that could not rule the name out must not create, or the
+    // device could end up with two slots carrying the same name.
+    const KeyProbeResult<YubiKeyPIV::SlotInfo> existing = piv.find_slot_by_name(name);
+    if (KeyProbeStatus::operational_error == existing.status)
+    {
+        return nullptr;
+    }
+    if (KeyProbeStatus::found == existing.status)
     {
         mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
@@ -215,9 +221,19 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     // The create sequence (find free slot -> generate -> label) is not a single PC/SC transaction,
     // so a concurrent PIV writer could have taken this slot in between. Re-resolve the name and fail
     // closed rather than hand back a key that may already have been overwritten.
-    const std::optional<YubiKeyPIV::SlotInfo> confirm = piv.find_slot_by_name(name);
-    if (!confirm || confirm->slot != slot || confirm->algorithm != algorithm)
+    const KeyProbeResult<YubiKeyPIV::SlotInfo> confirm = piv.find_slot_by_name(name);
+    if (KeyProbeStatus::found != confirm.status || confirm.value.slot != slot || confirm.value.algorithm != algorithm)
     {
+        // Remove the key just generated, so a name that two writers reached at once does not stay
+        // ambiguous and consume a slot. Roll back only while this slot still carries this name: a
+        // slot another writer has since taken over holds their key, which is not ours to delete.
+        const KeyProbeResult<std::string> own_label = piv.read_slot_label(slot);
+        if (KeyProbeStatus::found == own_label.status && own_label.value == key_name && !piv.delete_key(slot))
+        {
+            mpss::utils::log_warning("Failed to clean up slot {} after a concurrent modification.",
+                                     utils::get_slot_name(slot));
+        }
+
         mpss::utils::log_and_set_error("Concurrent modification detected while creating key '{}'; aborting.", key_name);
         return nullptr;
     }
@@ -258,22 +274,38 @@ std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
         return nullptr;
     }
 
+    // A device we could not query might hold the key, so it cannot be ruled out.
+    bool undetermined = false;
+
     for (const std::uint32_t serial : serials)
     {
         YubiKeyPIV piv{serial};
         if (!piv.is_connected())
         {
+            undetermined = true;
             continue;
         }
 
-        const std::optional<YubiKeyPIV::SlotInfo> slot_info = piv.find_slot_by_name(name);
-        if (slot_info)
+        const KeyProbeResult<YubiKeyPIV::SlotInfo> slot_info = piv.find_slot_by_name(name);
+        if (KeyProbeStatus::operational_error == slot_info.status)
+        {
+            undetermined = true;
+            continue;
+        }
+        if (KeyProbeStatus::found == slot_info.status)
         {
             mpss::utils::log_trace("Key '{}' found in YubiKey slot {} (serial {}) with algorithm '{}'.", key_name,
-                                   utils::get_slot_name(slot_info->slot), serial,
-                                   get_algorithm_info(slot_info->algorithm).type_str);
-            return std::make_unique<YubiKeyKeyPair>(name, slot_info->algorithm, slot_info->slot, serial);
+                                   utils::get_slot_name(slot_info.value.slot), serial,
+                                   get_algorithm_info(slot_info.value.algorithm).type_str);
+            return std::make_unique<YubiKeyKeyPair>(name, slot_info.value.algorithm, slot_info.value.slot, serial);
         }
+    }
+
+    if (undetermined)
+    {
+        mpss::utils::log_and_set_error("Could not determine whether key '{}' is present on the attached YubiKeys.",
+                                       key_name);
+        return nullptr;
     }
 
     mpss::utils::log_debug("Key '{}' not found on any YubiKey.", key_name);
@@ -301,16 +333,9 @@ bool YubiKeyBackend::verify(std::span<const std::byte> hash, std::span<const std
         return false;
     }
 
-    const char *group_name = nullptr;
-    switch (algorithm)
+    const char *group_name = utils::get_group_name(algorithm);
+    if (nullptr == group_name)
     {
-    case ecdsa_secp256r1_sha256:
-        group_name = "P-256";
-        break;
-    case ecdsa_secp384r1_sha384:
-        group_name = "P-384";
-        break;
-    default:
         mpss::utils::log_and_set_error("Unsupported algorithm '{}' for YubiKey verification.",
                                        get_algorithm_info(algorithm).type_str);
         return false;

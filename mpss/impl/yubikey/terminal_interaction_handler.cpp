@@ -171,10 +171,10 @@ class TerminalInteractionHandler : public mpss::InteractionHandler
         std::cerr << "Touch your YubiKey now ... " << std::flush;
     }
 
-    void notify_touch_complete() override
+    void notify_touch_complete(bool success) override
     {
         // NOLINTNEXTLINE(performance-avoid-endl) - flush is intentional for interactive terminal output.
-        std::cerr << "done." << std::endl;
+        std::cerr << (success ? "done." : "not touched.") << std::endl;
     }
 };
 
