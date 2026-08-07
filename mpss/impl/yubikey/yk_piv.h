@@ -137,6 +137,10 @@ class YubiKeyPIV
     /**
      * @brief Delete the key in the specified slot.
      *
+     * Where the device can erase a slot outright, the key material is destroyed and the slot is left
+     * empty. Devices without that command instead have the key overwritten with a throwaway key and
+     * the slot marked as available, which is the only way older firmware can render a key unusable.
+     *
      * The caller must authenticate PIN and/or management key beforehand if required.
      *
      * @param slot The PIV slot number.
@@ -277,6 +281,27 @@ class YubiKeyPIV
      * @return true when the two keys are the same, false when they differ or the slot key is unreadable.
      */
     bool slot_key_matches_label(std::uint8_t slot, X509 *cert);
+
+    /**
+     * @brief Outcome of an attempt to erase a slot outright.
+     */
+    enum class EraseResult
+    {
+        erased,      ///< The key was destroyed; the slot is left empty.
+        unsupported, ///< The device has no erase command and the slot is unchanged.
+        failed       ///< The erase was attempted and failed; the last error is set.
+    };
+
+    /**
+     * @brief Destroy the key held in a slot and remove the certificate that labeled it.
+     *
+     * Only firmware new enough to support erasing a PIV slot can do this; on older devices the slot is
+     * left untouched and @ref EraseResult::unsupported is returned so the caller can fall back.
+     *
+     * @param slot The PIV slot number.
+     * @return Whether the slot was erased, cannot be erased on this device, or failed to erase.
+     */
+    EraseResult erase_slot(std::uint8_t slot);
 };
 
 /**

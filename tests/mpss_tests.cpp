@@ -1572,18 +1572,49 @@ TEST_F(YubiKeyMgmKeyEnv, FactoryDefaultWorksWithExplicitOptIn)
     }
 }
 
+// Slot-binding tests create a key through the public API, which selects a device on its own, but
+// then inspect and repair that device directly through YubiKeyPIV. Pinning MPSS_YUBIKEY_SERIAL
+// keeps both halves on the same device when more than one YubiKey is attached.
+class YubiKeySlotBinding : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        const char *value = std::getenv("MPSS_YUBIKEY_SERIAL"); // NOLINT(concurrency-mt-unsafe)
+        saved_serial_ = (nullptr == value) ? std::nullopt : std::optional<std::string>{value};
+
+        serials_ = mpss::impl::yubikey::YubiKeyPIV::available_serials();
+        if (serials_.empty())
+        {
+            GTEST_SKIP() << "Requires a connected YubiKey.";
+        }
+
+        const std::string target = std::to_string(serials_[0]);
+        setenv("MPSS_YUBIKEY_SERIAL", target.c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+
+    void TearDown() override
+    {
+        if (saved_serial_.has_value())
+        {
+            setenv("MPSS_YUBIKEY_SERIAL", saved_serial_->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+        }
+        else
+        {
+            unsetenv("MPSS_YUBIKEY_SERIAL"); // NOLINT(concurrency-mt-unsafe)
+        }
+    }
+
+    std::vector<std::uint32_t> serials_;
+    std::optional<std::string> saved_serial_;
+};
+
 // A slot label describes the key held in that slot. Replacing the key without rewriting the label
 // leaves a slot whose name no longer matches its contents, and that name must not resolve.
-TEST(YubiKeySlotBinding, LabelDoesNotResolveAfterSlotKeyIsReplaced)
+TEST_F(YubiKeySlotBinding, LabelDoesNotResolveAfterSlotKeyIsReplaced)
 {
     using mpss::impl::KeyProbeStatus;
     using mpss::impl::yubikey::YubiKeyPIV;
-
-    const std::vector<std::uint32_t> serials = YubiKeyPIV::available_serials();
-    if (1 != serials.size())
-    {
-        GTEST_SKIP() << "Requires exactly one connected YubiKey.";
-    }
 
     const std::string key_name = test_key_name("mpss_yk_slot_binding_test");
     MPSS::DeleteKey(key_name);
@@ -1595,7 +1626,7 @@ TEST(YubiKeySlotBinding, LabelDoesNotResolveAfterSlotKeyIsReplaced)
 
     std::uint8_t slot = 0;
     {
-        YubiKeyPIV piv{serials[0]};
+        YubiKeyPIV piv{serials_[0]};
         ASSERT_TRUE(piv.is_connected());
 
         const auto located = piv.find_slot_by_name(key_name);
@@ -1611,7 +1642,7 @@ TEST(YubiKeySlotBinding, LabelDoesNotResolveAfterSlotKeyIsReplaced)
     // The slot now holds a key its label does not describe, so MPSS can neither open it by name nor
     // offer it for reuse. Reclaim it before asserting, so a failed expectation cannot strand it.
     {
-        YubiKeyPIV piv{serials[0]};
+        YubiKeyPIV piv{serials_[0]};
         EXPECT_TRUE(piv.is_connected());
         EXPECT_TRUE(piv.delete_key(slot));
     }

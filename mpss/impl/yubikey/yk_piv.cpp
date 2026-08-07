@@ -106,6 +106,10 @@ constexpr std::array<std::uint8_t, 20> usable_slots = {
 // with a dummy key. Slots bearing this label are treated as free by find_free_slot.
 constexpr const char *available_slot_label = "(available)";
 
+// Destination that turns a key move into a key erasure. Devices that support the command destroy the
+// key rather than relocating it; any other destination moves the key to that slot.
+constexpr std::uint8_t erase_key_destination = 0xFF;
+
 bool is_reserved_key_name(std::string_view name)
 {
     return available_slot_label == name;
@@ -552,6 +556,44 @@ bool YubiKeyPIV::slot_key_matches_label(std::uint8_t slot, X509 *cert)
     return cert_point_len == slot_point_len && 0 == std::memcmp(cert_point, slot_point.data(), slot_point_len);
 }
 
+YubiKeyPIV::EraseResult YubiKeyPIV::erase_slot(std::uint8_t slot)
+{
+    ykpiv_rc rc = ykpiv_move_key(state_, slot, erase_key_destination);
+    if (YKPIV_AUTHENTICATION_ERROR == rc)
+    {
+        if (!authenticate_mgm_key())
+        {
+            return EraseResult::failed;
+        }
+
+        rc = ykpiv_move_key(state_, slot, erase_key_destination);
+    }
+
+    if (YKPIV_NOT_SUPPORTED == rc)
+    {
+        return EraseResult::unsupported;
+    }
+
+    if (YKPIV_OK != rc)
+    {
+        mpss::utils::log_and_set_error("Failed to erase the key in slot {}: {}", utils::get_slot_name(slot),
+                                       ykpiv_strerror(rc));
+        return EraseResult::failed;
+    }
+
+    // Discard the label describing the key that was just destroyed. The key is removed first so that a
+    // failure here cannot strand the slot: without a key the slot reads as free and is reclaimed, and a
+    // label left behind cannot resolve a name because it no longer matches the key in the slot.
+    rc = ykpiv_util_delete_cert(state_, slot);
+    if (YKPIV_OK != rc)
+    {
+        mpss::utils::log_warning("Erased the key in slot {} but could not remove its label: {}",
+                                 utils::get_slot_name(slot), ykpiv_strerror(rc));
+    }
+
+    return EraseResult::erased;
+}
+
 bool YubiKeyPIV::delete_key(std::uint8_t slot)
 {
     if (nullptr == state_)
@@ -560,7 +602,18 @@ bool YubiKeyPIV::delete_key(std::uint8_t slot)
         return false;
     }
 
-    // Overwrite the private key material by generating a dummy key in the slot.
+    using enum EraseResult;
+    switch (erase_slot(slot))
+    {
+    case erased:
+        return true;
+    case failed:
+        return false;
+    case unsupported:
+        break;
+    }
+
+    // The device cannot erase a slot, so render the key unusable by overwriting it instead.
     // Policy is irrelevant for the dummy key - KeyPolicy::none resolves to device defaults.
     if (!generate_key(slot, YKPIV_ALGO_ECCP256))
     {
@@ -781,7 +834,8 @@ bool YubiKeyPIV::write_slot_label(std::uint8_t slot, std::string_view name)
     if (0 == X509_NAME_add_entry_by_txt(issuer, "O", MBSTRING_UTF8,
                                         reinterpret_cast<const unsigned char *>("Microsoft"), -1, -1, 0) ||
         0 == X509_NAME_add_entry_by_txt(issuer, "CN", MBSTRING_UTF8,
-                                        reinterpret_cast<const unsigned char *>("mpss label"), -1, -1, 0))
+                                        reinterpret_cast<const unsigned char *>("mpss slot label (not an issuer)"), -1,
+                                        -1, 0))
     {
         mpss::utils::log_and_set_error("Failed to set issuer name for slot {} certificate.",
                                        utils::get_slot_name(slot));

@@ -909,15 +909,19 @@ Once all slots are full, you cannot create new keys until you delete existing on
 
 1. **Touch Policy**: Keys created by MPSS use touch policy `cached` by default (configurable via `MPSS_YUBIKEY_TOUCHPOLICY`). The `cached` policy requires a physical touch once per 15-second window, balancing security and usability. When a key has a touch policy other than `never`, the YubiKey will wait for a physical touch before completing signing operations. MPSS notifies the application via the `InteractionHandler` (`notify_touch_needed` / `notify_touch_complete`) so it can display appropriate UI; `notify_touch_complete` receives whether the operation succeeded. If the user does not touch the device within the YubiKey's timeout window (typically ~15 seconds), the signing operation fails. To disable touch entirely, set `MPSS_YUBIKEY_TOUCHPOLICY=never`; because this is a permanent downgrade, it is honored only when `MPSS_YUBIKEY_ALLOW_POLICY_DOWNGRADE=1` is also set (otherwise MPSS warns and uses `cached`).
 
-1. **Key Deletion**: Deleting a key from the YubiKey PIV does *not* erase the slot. Instead, MPSS overwrites the private key with a newly generated dummy key and writes a marker certificate with `CN=(available)` to indicate the slot is free for reuse. You can observe this with `ykman piv info`. A deleted key may show up as follows:
+1. **Key Deletion**: How a slot is freed depends on what the device can do.
+
+   Firmware 5.7 and later can erase a PIV slot outright, so MPSS destroys the key and removes the certificate that labeled it. The slot is left genuinely empty and `ykman piv info` no longer lists it. This is the preferred path: the device's FIPS 140-3 security policy documents the erase as zeroizing the private key, whereas generating over a slot is not documented to do so.
+
+   Earlier firmware has no erase command. There, MPSS renders the key unusable by overwriting it with a newly generated dummy key, then writes a marker certificate with `CN=(available)` to indicate the slot is free for reuse. A key deleted this way shows up as follows:
    ```
    Slot 82 (RETIRED1):
      Private key type: ECCP256
      Public key type:  ECCP256
      Subject DN:       CN=(available),OU=mpss,O=Microsoft
-     Issuer DN:        CN=mpss label,O=Microsoft
+     Issuer DN:        CN=mpss slot label (not an issuer),O=Microsoft
    ```
-   Slots bearing this marker are treated as free by MPSS so that they may be overwritten with new keys. The original private key material is securely destroyed by the overwrite. The marker certificate is bound to the dummy key in the same way as a named label (see [Key Name Mapping](#yubikey-backend-limitations-and-considerations) above), so a slot is only offered for reuse when the marker describes the key actually sitting in it; a marker written over a live key by some other application does not make that key's slot reusable.
+   Slots bearing this marker are treated as free by MPSS so that they may be overwritten with new keys. The original private key material is destroyed by the overwrite. The marker certificate is bound to the dummy key in the same way as a named label (see [Key Name Mapping](#yubikey-backend-limitations-and-considerations) above), so a slot is only offered for reuse when the marker describes the key actually sitting in it; a marker written over a live key by some other application does not make that key's slot reusable.
 
 ### Running Tests with a YubiKey
 
