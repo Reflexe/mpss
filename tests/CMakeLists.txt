@@ -38,7 +38,31 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
             "${CMAKE_CURRENT_LIST_DIR}/test_runner.cpp"
         )
         target_link_libraries(mpss_tests PRIVATE ${mpss_TESTS_LINK_LIBRARIES})
+
+        # gmock-win32 patches the running executable's import table, so the mock tests need the
+        # static backend and their own executable: the patching is process-global and clashes with
+        # the OpenSSL provider's algorithm probing.
+        if(WIN32 AND MPSS_BUILD_MPSS_CORE_STATIC AND MPSS_BUILD_WIN32_MOCK_TESTS AND TARGET ${mpss_TARGET})
+            include(FetchContent)
+            FetchContent_Declare(gmock_win32_fetch
+                GIT_REPOSITORY https://github.com/smalti/gmock-win32.git
+                GIT_TAG 8f7ac8325a6ab4f93bb959621c8e700304b6f739 # 1.3.0
+            )
+            # Upstream ships no CMakeLists, so this only downloads the sources.
+            FetchContent_MakeAvailable(gmock_win32_fetch)
+
+            add_library(gmock_win32 STATIC "${gmock_win32_fetch_SOURCE_DIR}/src/gmock-win32.cpp")
+            target_include_directories(gmock_win32 PUBLIC "${gmock_win32_fetch_SOURCE_DIR}/include")
+            target_link_libraries(gmock_win32 PUBLIC GTest::gmock)
+            target_compile_features(gmock_win32 PUBLIC cxx_std_20)
+
+            add_executable(mpss_win32_mock_tests "${CMAKE_CURRENT_LIST_DIR}/mpss_win32_mock_tests.cpp")
+            target_link_libraries(mpss_win32_mock_tests
+                PRIVATE ${mpss_TARGET} GTest::gtest GTest::gmock gmock_win32)
+            target_include_directories(mpss_win32_mock_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/..")
+        endif()
     endif()
+
     return()
 endif()
 

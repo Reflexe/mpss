@@ -58,7 +58,7 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake -S . --preset "${{ matrix.preset }}"
+        run: cmake -S . --preset "${{ matrix.preset }}" -DMPSS_BUILD_WIN32_MOCK_TESTS=ON
 
       - name: Build
         shell: bash
@@ -82,6 +82,20 @@ jobs:
             exit 1
           fi
           "$BIN"
+
+      - name: Test (Win32 NCrypt mocks)
+        # The runners have no TPM, so these mocks are the only Windows backend coverage here. Static
+        # presets only: import-table patching cannot reach a shared mpss.dll.
+        if: runner.os == 'Windows' && !contains(matrix.preset, 'shared')
+        shell: bash
+        run: |
+          set -euo pipefail
+          MOCK_BIN="out/build/${{ matrix.preset }}/bin/${{ matrix.bindir }}mpss_win32_mock_tests.exe"
+          if [ ! -f "$MOCK_BIN" ]; then
+            echo "Win32 mock test binary not found at $MOCK_BIN" >&2
+            exit 1
+          fi
+          "$MOCK_BIN"
 
   # -------------------------------------------------------------------------
   # Linux (GCC): mpss has no native Linux backend, so we build with the YubiKey
