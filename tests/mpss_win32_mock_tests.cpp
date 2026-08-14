@@ -9,7 +9,7 @@
 // separate executable linked against the static backend and omitting the OpenSSL provider, whose
 // algorithm probing clashes with the process-global patching.
 
-#if defined(_WIN32)
+#ifdef _WIN32
 
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
@@ -78,10 +78,10 @@ class WindowsKeyCreation : public ::testing::Test
         // A distinct handle per provider lets expectations tell them apart.
         EXPECT_MODULE_FUNC_CALL(NCryptOpenStorageProvider, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke([](NCRYPT_PROV_HANDLE *out, LPCWSTR provider, DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([](NCRYPT_PROV_HANDLE *out, LPCWSTR provider, DWORD) -> SECURITY_STATUS {
                 *out = IsTpmProvider(provider) ? tpm_provider_handle : ksp_provider_handle;
                 return ERROR_SUCCESS;
-            }));
+            });
 
         // create_key's existence check must find nothing.
         EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _)
@@ -128,14 +128,14 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptOpenStorageProvider, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke([](NCRYPT_PROV_HANDLE *out, LPCWSTR provider, DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([](NCRYPT_PROV_HANDLE *out, LPCWSTR provider, DWORD) -> SECURITY_STATUS {
                 if (IsTpmProvider(provider))
                 {
                     return status_failure;
                 }
                 *out = ksp_provider_handle;
                 return ERROR_SUCCESS;
-            }));
+            });
     }
 
     // VBS and software share a provider, so fail only the flagged create.
@@ -143,7 +143,7 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke([](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
+            .WillRepeatedly([](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
                                       DWORD flags) -> SECURITY_STATUS {
                 if (0 != (flags & require_vbs_flag))
                 {
@@ -151,7 +151,7 @@ class WindowsKeyCreation : public ::testing::Test
                 }
                 *out = fake_key_handle;
                 return ERROR_SUCCESS;
-            }));
+            });
     }
 
     static std::unique_ptr<mpss::KeyPair> CreateOsKey()
@@ -169,7 +169,7 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke(
+            .WillRepeatedly(
                 [holder](NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *out, LPCWSTR, DWORD, DWORD)
                     -> SECURITY_STATUS {
                     if (provider != holder)
@@ -178,7 +178,7 @@ class WindowsKeyCreation : public ::testing::Test
                     }
                     *out = fake_key_handle;
                     return ERROR_SUCCESS;
-                }));
+                });
     }
 
     // Answers the property queries a reopen makes: algorithm, key length, and VBS isolation.
@@ -186,7 +186,7 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke([virtually_isolated](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size,
+            .WillRepeatedly([virtually_isolated](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size,
                                                         DWORD *written, DWORD) -> SECURITY_STATUS {
                 if (nullptr == property || nullptr == written)
                 {
@@ -233,7 +233,7 @@ class WindowsKeyCreation : public ::testing::Test
                 }
 
                 return status_failure;
-            }));
+            });
     }
 
     bool export_policy_cleared_before_finalize = false;
@@ -245,7 +245,7 @@ class WindowsKeyCreation : public ::testing::Test
         EXPECT_MODULE_FUNC_CALL(NCryptSetProperty, _, _, _, _, _)
             .Times(AnyNumber())
             .WillRepeatedly(
-                Invoke([this](NCRYPT_HANDLE, LPCWSTR property, PBYTE value, DWORD size, DWORD) -> SECURITY_STATUS {
+                [this](NCRYPT_HANDLE, LPCWSTR property, PBYTE value, DWORD size, DWORD) -> SECURITY_STATUS {
                     if (nullptr != property && 0 == wcscmp(property, NCRYPT_EXPORT_POLICY_PROPERTY) &&
                         nullptr != value && sizeof(DWORD) == size && 0 == *reinterpret_cast<DWORD *>(value) &&
                         !finalized)
@@ -253,14 +253,14 @@ class WindowsKeyCreation : public ::testing::Test
                         export_policy_cleared_before_finalize = true;
                     }
                     return ERROR_SUCCESS;
-                }));
+                });
 
         EXPECT_MODULE_FUNC_CALL(NCryptFinalizeKey, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(Invoke([this](NCRYPT_KEY_HANDLE, DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([this](NCRYPT_KEY_HANDLE, DWORD) -> SECURITY_STATUS {
                 finalized = true;
                 return ERROR_SUCCESS;
-            }));
+            });
     }
 
 };
@@ -306,7 +306,7 @@ TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
 // Scenario: a caller asks for a key on a host with no hardware-isolated provider.
 // Expected behavior: success with a software key; the caller must inspect is_hardware_backed to
 // notice the downgrade.
-TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignallingDowngrade)
+TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignalingDowngrade)
 {
     FailTpmProvider();
     FailVbsCreate();
@@ -314,7 +314,7 @@ TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignallingDowngrade)
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
 
     ASSERT_NE(nullptr, key);
-    EXPECT_TRUE(mpss::get_error().empty()) << "a silent downgrade left an error set: " << mpss::get_error();
+    EXPECT_FALSE(mpss::has_error()) << "a silent downgrade left an error set: " << mpss::get_error();
     EXPECT_FALSE(key->key_info().is_hardware_backed);
 }
 
@@ -344,7 +344,7 @@ TEST_F(WindowsKeyCreation, SuccessfulFallbackClearsEarlierProviderError)
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
 
     ASSERT_NE(nullptr, key);
-    EXPECT_TRUE(mpss::get_error().empty()) << "successful create left a stale error: " << mpss::get_error();
+    EXPECT_FALSE(mpss::has_error()) << "successful create left a stale error: " << mpss::get_error();
 }
 
 // Scenario: the TPM-backed provider creates the key.

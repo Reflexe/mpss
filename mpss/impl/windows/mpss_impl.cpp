@@ -41,25 +41,18 @@ constexpr DWORD require_vbs = 0x00020000;
 #define NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY L"Virtual Iso"
 #endif
 
-struct key_storage_provider
-{
-    NCRYPT_KEY_HANDLE (*create_key)(std::string_view, mpss::Algorithm);
-    const char *storage_description;
-    bool is_hardware_backed;
-};
-
 // To open the key for the local machine, set this to NCRYPT_MACHINE_KEY_FLAG.
 // Setting this to 0 opens the key for the current user.
 constexpr DWORD key_open_mode = 0;
 
-NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name_to_use)
+NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name)
 {
     NCRYPT_PROV_HANDLE provider_handle = 0;
 
     // This function uses no extra flags.
     DWORD flags = 0;
 
-    SECURITY_STATUS status = ::NCryptOpenStorageProvider(&provider_handle, provider_name_to_use, flags);
+    SECURITY_STATUS status = ::NCryptOpenStorageProvider(&provider_handle, provider_name, flags);
     if (ERROR_SUCCESS != status)
     {
         mpss::utils::log_and_set_error("NCryptOpenStorageProvider failed with error code {}.",
@@ -99,7 +92,7 @@ NCRYPT_KEY_HANDLE OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_vi
     }
 
     // An earlier provider that did not hold the key left an error; clear it.
-    mpss::utils::set_error({});
+    mpss::utils::clear_error();
     return key_handle;
 }
 
@@ -214,7 +207,7 @@ NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name_to_use, std::string_
     }
 
     // An earlier provider left an error; clear it now that one has succeeded.
-    mpss::utils::set_error({});
+    mpss::utils::clear_error();
 
     const NCRYPT_KEY_HANDLE result = key_handle;
     key_handle = 0; // Disarm the cleanup guard: ownership passes to the caller.
@@ -398,11 +391,18 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
+    struct key_storage_provider
+    {
+        NCRYPT_KEY_HANDLE (*create_key)(std::string_view, mpss::Algorithm);
+        const char *storage_description;
+        bool is_hardware_backed;
+    };
+
     // Strongest protection first: the first provider that creates a key wins.
-    static constexpr key_storage_provider create_providers[] = {
-        {.create_key = CreateKeyTpm, .storage_description = tpm_description, .is_hardware_backed = true},
-        {.create_key = CreateKeyVbs, .storage_description = vbs_description, .is_hardware_backed = true},
-        {.create_key = CreateKeySoftware, .storage_description = software_description, .is_hardware_backed = false},
+    static constexpr std::array create_providers = {
+        key_storage_provider{CreateKeyTpm, tpm_description, true},
+        key_storage_provider{CreateKeyVbs, vbs_description, true},
+        key_storage_provider{CreateKeySoftware, software_description, false},
     };
 
     // Report why each provider failed; the reasons usually differ.

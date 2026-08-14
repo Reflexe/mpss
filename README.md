@@ -700,6 +700,10 @@ The default log level is `mpss::LogLevel::INFO`.
 After calling `close()` on a logger, all handlers are reset and subsequent log calls are silently dropped.
 To restore logging, call `mpss::ResetDefaultLogger()` to reinstall the default logger, or use `mpss::GetOrSetLogger` to install a new custom logger.
 
+For callers that cannot use the C++ API, [mpss/log_c.h](mpss/log_c.h) declares a C-compatible view of the same global logger: the `mpss_log_level_t` levels, plain function-pointer handler types, and the `mpss_log_*` functions (`mpss_log_set_level`, `mpss_log_info`, `mpss_log_flush`, `mpss_log_close`, `mpss_log_set_custom_logger`, `mpss_log_reset_default`, and so on).
+These are implemented in [mpss/log.cpp](mpss/log.cpp) on top of `mpss::Logger` and act on the same global logger as the C++ API, so the two can be mixed freely.
+This header is what lets MPSS's own Objective-C and Swift sources log, and it is what downstream C code (including the OpenSSL provider's consumers, through [mpss-openssl/log.h](mpss-openssl/log.h)) should include.
+
 The global logger and MPSS's internal backend registry are intentionally **never destroyed** at process exit. This keeps MPSS safe to call from a host object's static or global destructor (avoiding the static destruction-order problem), but it has one consequence for custom loggers: a custom logger's `flush`/`close` handlers are **not** invoked automatically at process exit. If your logger buffers output or holds a resource such as a file handle, call `mpss::GetLogger()->close()` (or `mpss_log_close()` from C) during your controlled shutdown to guarantee a final flush. The default `std::cout`/`std::cerr` logger requires no action. For the same reason, avoid performing MPSS-dependent work in your own static/global destructors where ordering relative to the C runtime's stream flushing is undefined.
 
 ## Using MPSS with YubiKey PIV
@@ -953,7 +957,7 @@ The OpenSSL provider consists of several key components:
 - **Encoder ([provider/encoder.h](mpss-openssl/provider/encoder.h) and [.cpp](mpss-openssl/provider/encoder.cpp))** - Handles key encoding and serialization for interoperability
 - **Core API ([api.h](mpss-openssl/api.h) and [.cpp](mpss-openssl/api.cpp))** - Declaration of the `OSSL_provider_init` function, as well as C APIs for a few key management operations that are outside the purview of OpenSSL
 - **Interaction Handler ([interaction_handler.h](mpss-openssl/interaction_handler.h) and [.cpp](mpss-openssl/interaction_handler.cpp))** - C API for installing custom PIN-request and touch-notification callbacks when using the YubiKey backend
-- **Logging API ([log.h](mpss-openssl/log.h) and [.cpp](mpss-openssl/log.cpp))** - C wrappers for the MPSS logging API, providing `mpss_log_*` functions for use from C code
+- **Logging API ([log.h](mpss-openssl/log.h))** - A compatibility header that forwards to [mpss/log_c.h](mpss/log_c.h), where the `mpss_log_*` C logging API is declared. The implementation lives in the core library ([mpss/log.cpp](mpss/log.cpp)), so there is no separate `mpss-openssl` logging source file
 
 ### Using the OpenSSL Provider
 

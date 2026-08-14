@@ -9,10 +9,9 @@
 namespace mpss::impl::os
 {
 
-// Abstract property class for crypto parameters.
-class crypto_params
+// Abstract property struct for crypto parameters.
+struct crypto_params
 {
-  public:
     // Signing key type identifier.
     [[nodiscard]]
     virtual LPCWSTR key_type_name() const = 0;
@@ -34,9 +33,8 @@ class crypto_params
 };
 
 #define MPSS_IMPL_WINDOWS_CRYPTO_PARAMS(curve)                                                                         \
-    class ECDSA_##curve## : public crypto_params                                                                       \
+    struct ECDSA_##curve## : public crypto_params                                                                       \
     {                                                                                                                  \
-      public:                                                                                                          \
         LPCWSTR key_type_name() const override                                                                         \
         {                                                                                                              \
             return NCRYPT_ECDSA_##curve##_ALGORITHM;                                                                   \
