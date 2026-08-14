@@ -51,6 +51,7 @@ constexpr NCRYPT_PROV_HANDLE ksp_provider_handle = 0x1002;
 constexpr NCRYPT_KEY_HANDLE fake_key_handle = 0x2001;
 constexpr SECURITY_STATUS status_not_found = static_cast<SECURITY_STATUS>(NTE_BAD_KEYSET);
 constexpr SECURITY_STATUS status_failure = static_cast<SECURITY_STATUS>(NTE_FAIL);
+constexpr SECURITY_STATUS status_not_supported = static_cast<SECURITY_STATUS>(NTE_NOT_SUPPORTED);
 
 // Mirrors the backend's own fallback so the tests build against older SDKs.
 #ifdef NCRYPT_REQUIRE_VBS_FLAG
@@ -96,9 +97,11 @@ class WindowsKeyCreation : public ::testing::Test
             .Times(AnyNumber())
             .WillRepeatedly(Return(ERROR_SUCCESS));
         EXPECT_MODULE_FUNC_CALL(NCryptFinalizeKey, _, _).Times(AnyNumber()).WillRepeatedly(Return(ERROR_SUCCESS));
-        EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
-            .Times(AnyNumber())
-            .WillRepeatedly(Return(status_failure));
+
+        // A key created through the require_vbs provider reports that it is isolated. Tests that
+        // care about a different answer install their own with AnswerKeyProperties.
+        AnswerKeyProperties(Isolation::isolated);
+
         EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, _, _).Times(AnyNumber()).WillRepeatedly(Return(ERROR_SUCCESS));
         EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, _).Times(AnyNumber()).WillRepeatedly(Return(ERROR_SUCCESS));
     }
@@ -144,7 +147,7 @@ class WindowsKeyCreation : public ::testing::Test
         EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
             .Times(AnyNumber())
             .WillRepeatedly([](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
-                                      DWORD flags) -> SECURITY_STATUS {
+                               DWORD flags) -> SECURITY_STATUS {
                 if (0 != (flags & require_vbs_flag))
                 {
                     return status_failure;
@@ -169,25 +172,38 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(
-                [holder](NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *out, LPCWSTR, DWORD, DWORD)
-                    -> SECURITY_STATUS {
-                    if (provider != holder)
-                    {
-                        return status_not_found;
-                    }
-                    *out = fake_key_handle;
-                    return ERROR_SUCCESS;
-                });
+            .WillRepeatedly([holder](NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *out, LPCWSTR, DWORD,
+                                     DWORD) -> SECURITY_STATUS {
+                if (provider != holder)
+                {
+                    return status_not_found;
+                }
+                *out = fake_key_handle;
+                return ERROR_SUCCESS;
+            });
     }
 
+    // How NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY behaves for a key. All four cases occur on real
+    // hardware, and they differ in the returned status, the DWORD value written, or both:
+    //   isolated     -> ERROR_SUCCESS,     value 1  (software KSP key created with require_vbs)
+    //   not_isolated -> ERROR_SUCCESS,     value 0  (ordinary software KSP key)
+    //   unsupported  -> NTE_NOT_SUPPORTED, no value (the platform provider has no such property)
+    //   read_fails   -> any other status,  no value
+    enum class Isolation
+    {
+        isolated,
+        not_isolated,
+        unsupported,
+        read_fails
+    };
+
     // Answers the property queries a reopen makes: algorithm, key length, and VBS isolation.
-    static void AnswerKeyProperties(bool virtually_isolated)
+    static void AnswerKeyProperties(Isolation isolation)
     {
         EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly([virtually_isolated](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size,
-                                                        DWORD *written, DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([isolation](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
+                                        DWORD) -> SECURITY_STATUS {
                 if (nullptr == property || nullptr == written)
                 {
                     return status_failure;
@@ -223,11 +239,19 @@ class WindowsKeyCreation : public ::testing::Test
 
                 if (0 == wcscmp(property, NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY))
                 {
-                    if (!virtually_isolated || nullptr == out || sizeof(DWORD) > size)
+                    if (Isolation::unsupported == isolation)
+                    {
+                        return status_not_supported;
+                    }
+                    if (Isolation::read_fails == isolation)
                     {
                         return status_failure;
                     }
-                    *reinterpret_cast<DWORD *>(out) = 1;
+                    if (nullptr == out || sizeof(DWORD) > size)
+                    {
+                        return status_failure;
+                    }
+                    *reinterpret_cast<DWORD *>(out) = Isolation::isolated == isolation ? 1 : 0;
                     *written = sizeof(DWORD);
                     return ERROR_SUCCESS;
                 }
@@ -244,16 +268,14 @@ class WindowsKeyCreation : public ::testing::Test
     {
         EXPECT_MODULE_FUNC_CALL(NCryptSetProperty, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly(
-                [this](NCRYPT_HANDLE, LPCWSTR property, PBYTE value, DWORD size, DWORD) -> SECURITY_STATUS {
-                    if (nullptr != property && 0 == wcscmp(property, NCRYPT_EXPORT_POLICY_PROPERTY) &&
-                        nullptr != value && sizeof(DWORD) == size && 0 == *reinterpret_cast<DWORD *>(value) &&
-                        !finalized)
-                    {
-                        export_policy_cleared_before_finalize = true;
-                    }
-                    return ERROR_SUCCESS;
-                });
+            .WillRepeatedly([this](NCRYPT_HANDLE, LPCWSTR property, PBYTE value, DWORD size, DWORD) -> SECURITY_STATUS {
+                if (nullptr != property && 0 == wcscmp(property, NCRYPT_EXPORT_POLICY_PROPERTY) && nullptr != value &&
+                    sizeof(DWORD) == size && 0 == *reinterpret_cast<DWORD *>(value) && !finalized)
+                {
+                    export_policy_cleared_before_finalize = true;
+                }
+                return ERROR_SUCCESS;
+            });
 
         EXPECT_MODULE_FUNC_CALL(NCryptFinalizeKey, _, _)
             .Times(AnyNumber())
@@ -262,7 +284,6 @@ class WindowsKeyCreation : public ::testing::Test
                 return ERROR_SUCCESS;
             });
     }
-
 };
 
 // Scenario: the TPM-backed platform provider accepts the create.
@@ -394,7 +415,7 @@ TEST_F(WindowsKeyCreation, SoftwareProviderMarksTheKeyNonExportable)
 TEST_F(WindowsKeyCreation, ReopenFromTpmReportsTpmProtection)
 {
     KeyLivesIn(tpm_provider_handle);
-    AnswerKeyProperties(false);
+    AnswerKeyProperties(Isolation::unsupported);
 
     std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
 
@@ -408,7 +429,7 @@ TEST_F(WindowsKeyCreation, ReopenFromTpmReportsTpmProtection)
 TEST_F(WindowsKeyCreation, ReopenFromVbsReportsVirtualizationBasedSecurity)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(true);
+    AnswerKeyProperties(Isolation::isolated);
 
     std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
 
@@ -422,13 +443,75 @@ TEST_F(WindowsKeyCreation, ReopenFromVbsReportsVirtualizationBasedSecurity)
 TEST_F(WindowsKeyCreation, ReopenFromSoftwareReportsSoftwareProtection)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(false);
+    AnswerKeyProperties(Isolation::not_isolated);
 
     std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
     EXPECT_FALSE(key->key_info().is_hardware_backed);
+}
+
+// Scenario: the key lives in the software KSP, but reading its isolation property fails outright.
+// Expected behavior: the open fails and reports the error, rather than reporting a tier that was
+// never established.
+TEST_F(WindowsKeyCreation, ReopenWithUnreadableIsolationFailsRatherThanClaimingSoftware)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::read_fails);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_THAT(mpss::get_error(), HasSubstr("virtual isolation"));
+}
+
+// Scenario: the TPM is unavailable, the VBS creation call succeeds, but the created key reports that
+// it is not isolated.
+// Expected behavior: the key is reported as software protected. A successful require_vbs call is not
+// by itself evidence that isolation happened.
+TEST_F(WindowsKeyCreation, VbsCreationThatIsNotIsolatedIsReportedAsSoftware)
+{
+    FailTpmProvider();
+    AnswerKeyProperties(Isolation::not_isolated);
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
+    EXPECT_FALSE(key->key_info().is_hardware_backed);
+}
+
+// Scenario: the TPM is unavailable, the VBS creation call succeeds, and the created key reports that
+// it is isolated.
+// Expected behavior: the key is reported as VBS.
+TEST_F(WindowsKeyCreation, VbsCreationThatIsIsolatedIsReportedAsVbs)
+{
+    FailTpmProvider();
+    AnswerKeyProperties(Isolation::isolated);
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ("Virtualization Based Security", std::string(key->key_info().storage_description));
+    EXPECT_TRUE(key->key_info().is_hardware_backed);
+}
+
+// Scenario: the TPM is unavailable, the VBS creation call succeeds, but the isolation property of
+// the new key cannot be read.
+// Expected behavior: the key is deleted and creation fails, rather than reporting an unverified
+// tier.
+TEST_F(WindowsKeyCreation, VbsCreationWithUnreadableIsolationDeletesTheKeyAndFails)
+{
+    FailTpmProvider();
+    AnswerKeyProperties(Isolation::read_fails);
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(1).WillOnce(Return(ERROR_SUCCESS));
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
 }
 
 } // namespace

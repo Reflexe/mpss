@@ -106,14 +106,41 @@ NCRYPT_KEY_HANDLE OpenKeySoftwareKsp(std::string_view name)
     return OpenKeyInProvider(software_ksp_name, name);
 }
 
-bool IsVirtualIsolationKey(NCRYPT_KEY_HANDLE key_handle)
+// Whether a Software KSP key is VBS-isolated. The property is unsupported on some providers and
+// key handles, which is not the same as a key that is not isolated, and neither is the same as a
+// read that failed outright.
+enum class VirtualIsolation
+{
+    isolated,
+    not_isolated,
+
+    // The property exists but could not be read. The tier is unknown, so the operation fails
+    // rather than reporting a tier that was never established.
+    indeterminate
+};
+
+VirtualIsolation GetVirtualIsolation(NCRYPT_KEY_HANDLE key_handle)
 {
     DWORD virtual_isolation = 0;
     DWORD output_size = 0;
     SECURITY_STATUS status = ::NCryptGetProperty(key_handle, NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY,
                                                  reinterpret_cast<PBYTE>(&virtual_isolation), sizeof(virtual_isolation),
                                                  &output_size, /* dwFlags */ 0);
-    return ERROR_SUCCESS == status && 0 != virtual_isolation;
+    if (ERROR_SUCCESS == status)
+    {
+        return 0 != virtual_isolation ? VirtualIsolation::isolated : VirtualIsolation::not_isolated;
+    }
+
+    // A provider that does not implement the property cannot isolate keys, so the key is software
+    // protected. Any other status means the answer is unknown.
+    if (static_cast<SECURITY_STATUS>(NTE_NOT_SUPPORTED) == status)
+    {
+        return VirtualIsolation::not_isolated;
+    }
+
+    mpss::utils::log_and_set_error("NCryptGetProperty (virtual isolation) failed with error code {}.",
+                                   mpss::utils::to_hex(status));
+    return VirtualIsolation::indeterminate;
 }
 
 NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
@@ -132,7 +159,14 @@ NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description
     key_handle = OpenKeySoftwareKsp(name);
     if (0 != key_handle)
     {
-        if (IsVirtualIsolationKey(key_handle))
+        const VirtualIsolation isolation = GetVirtualIsolation(key_handle);
+        if (VirtualIsolation::indeterminate == isolation)
+        {
+            ::NCryptFreeObject(key_handle);
+            return 0;
+        }
+
+        if (VirtualIsolation::isolated == isolation)
         {
             *storage_description = vbs_description;
             *hardware_backed = true;
@@ -396,13 +430,20 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         NCRYPT_KEY_HANDLE (*create_key)(std::string_view, mpss::Algorithm);
         const char *storage_description;
         bool is_hardware_backed;
+
+        // Whether the reported tier rests on per-key isolation evidence. The TPM provider is not
+        // verified this way: it does not implement the isolation property, and holding the key is
+        // itself the evidence. The software KSP holds both isolated and ordinary keys, so a key
+        // created there must be classified by what the key reports, not by the flag that was asked
+        // for.
+        bool verify_virtual_isolation;
     };
 
     // Strongest protection first: the first provider that creates a key wins.
     static constexpr std::array create_providers = {
-        key_storage_provider{CreateKeyTpm, tpm_description, true},
-        key_storage_provider{CreateKeyVbs, vbs_description, true},
-        key_storage_provider{CreateKeySoftware, software_description, false},
+        key_storage_provider{CreateKeyTpm, tpm_description, true, false},
+        key_storage_provider{CreateKeyVbs, vbs_description, true, true},
+        key_storage_provider{CreateKeySoftware, software_description, false, false},
     };
 
     // Report why each provider failed; the reasons usually differ.
@@ -413,9 +454,33 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         const NCRYPT_KEY_HANDLE key_handle = provider.create_key(name, algorithm);
         if (0 != key_handle)
         {
-            mpss::utils::log_trace("Key '{}' created with {} provider.", name, provider.storage_description);
-            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, provider.is_hardware_backed,
-                                                    provider.storage_description);
+            const char *storage_description = provider.storage_description;
+            bool hardware_backed = provider.is_hardware_backed;
+
+            if (provider.verify_virtual_isolation)
+            {
+                const VirtualIsolation isolation = GetVirtualIsolation(key_handle);
+                if (VirtualIsolation::indeterminate == isolation)
+                {
+                    // The tier could not be established, so the key is removed rather than reported
+                    // at a tier that was never confirmed.
+                    if (ERROR_SUCCESS != ::NCryptDeleteKey(key_handle, /* dwFlags */ 0))
+                    {
+                        ::NCryptFreeObject(key_handle);
+                    }
+                    return nullptr;
+                }
+
+                if (VirtualIsolation::not_isolated == isolation)
+                {
+                    // The key was created but is not isolated, so it is reported as what it is.
+                    storage_description = software_description;
+                    hardware_backed = false;
+                }
+            }
+
+            mpss::utils::log_trace("Key '{}' created with '{}' storage.", name, storage_description);
+            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description);
         }
 
         if (!errors.empty())
