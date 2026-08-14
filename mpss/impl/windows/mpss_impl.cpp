@@ -76,15 +76,17 @@ NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name)
 // on the strength of the second is what overwrites a key that is already there.
 using OpenKeyResult = mpss::impl::KeyProbeResult<NCRYPT_KEY_HANDLE>;
 
-OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_view name)
+OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name, std::string_view name)
 {
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name_to_use);
+    using enum mpss::impl::KeyProbeStatus;
+
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name);
     if (0 == provider_handle)
     {
         // A provider that cannot be opened holds no key that anything can reach, including this
         // backend's own creation path, so it does not make the name indeterminate. This is what a
         // machine without a TPM looks like, and creation has to keep working there.
-        return {.status = mpss::impl::KeyProbeStatus::not_found, .value = 0};
+        return {.status = not_found, .value = 0};
     }
 
     SCOPE_GUARD(::NCryptFreeObject(provider_handle));
@@ -94,22 +96,22 @@ OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_view n
     SECURITY_STATUS status = ::NCryptOpenKey(provider_handle, &key_handle, wname.c_str(), key_spec, key_open_mode);
     if (ERROR_SUCCESS != status)
     {
-        // The provider answered, so only a status that positively confirms absence may be reported
-        // as absence. Measured on Windows: a name held by neither provider gives NTE_BAD_KEYSET,
-        // while a malformed name gives NTE_INVALID_PARAMETER, which says nothing about whether a key
-        // of that name exists.
+        // The provider answered, so only a status that positively confirms absence may be reported as
+        // absence. NTE_BAD_KEYSET is the one status measured to mean that. The rest of the space cannot
+        // be enumerated confidently: the two providers return different statuses for identical input, so
+        // anything else leaves presence unknown and must not be read as a free name.
         if (static_cast<SECURITY_STATUS>(NTE_BAD_KEYSET) == status)
         {
-            return {.status = mpss::impl::KeyProbeStatus::not_found, .value = 0};
+            return {.status = not_found, .value = 0};
         }
 
         mpss::utils::log_and_set_error("NCryptOpenKey failed with error code {}.", mpss::utils::to_hex(status));
-        return {.status = mpss::impl::KeyProbeStatus::operational_error, .value = 0};
+        return {.status = operational_error, .value = 0};
     }
 
     // An earlier provider that did not hold the key left an error; clear it.
     mpss::utils::clear_error();
-    return {.status = mpss::impl::KeyProbeStatus::found, .value = key_handle};
+    return {.status = found, .value = key_handle};
 }
 
 OpenKeyResult OpenKeyTpm(std::string_view name)
@@ -157,6 +159,39 @@ VirtualIsolation GetVirtualIsolation(NCRYPT_KEY_HANDLE key_handle)
     mpss::utils::log_and_set_error("NCryptGetProperty (virtual isolation) failed with error code {}.",
                                    mpss::utils::to_hex(status));
     return VirtualIsolation::indeterminate;
+}
+
+// Whether a key permits export of its private key. MPSS creates keys that prohibit it, so a key
+// that allows it was put there by something else and its private material may be held elsewhere.
+// The archiving flags count as permitting it: they allow the private key to be exported once.
+enum class ExportPolicy
+{
+    prohibited,
+    allowed,
+
+    // The policy could not be read, so whether the key protects its private material is unknown.
+    indeterminate
+};
+
+ExportPolicy GetExportPolicy(NCRYPT_KEY_HANDLE key_handle)
+{
+    using enum ExportPolicy;
+
+    DWORD export_policy = 0;
+    DWORD output_size = 0;
+    SECURITY_STATUS status =
+        ::NCryptGetProperty(key_handle, NCRYPT_EXPORT_POLICY_PROPERTY, reinterpret_cast<PBYTE>(&export_policy),
+                            sizeof(export_policy), &output_size, /* dwFlags */ 0);
+    if (ERROR_SUCCESS != status)
+    {
+        mpss::utils::log_and_set_error("NCryptGetProperty (export policy) failed with error code {}.",
+                                       mpss::utils::to_hex(status));
+        return indeterminate;
+    }
+
+    constexpr DWORD export_allowed = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG |
+                                     NCRYPT_ALLOW_ARCHIVING_FLAG | NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG;
+    return 0 != (export_policy & export_allowed) ? allowed : prohibited;
 }
 
 OpenKeyResult GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
@@ -207,7 +242,7 @@ OpenKeyResult GetKey(std::string_view name, const char **storage_description, bo
     return {.status = any_indeterminate ? operational_error : not_found, .value = 0};
 }
 
-NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name_to_use, std::string_view name, mpss::Algorithm algorithm,
+NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name, std::string_view name, mpss::Algorithm algorithm,
                                       DWORD create_flags)
 {
     mpss::impl::os::crypto_params const *const crypto = mpss::impl::os::utils::get_crypto_params(algorithm);
@@ -217,7 +252,7 @@ NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name_to_use, std::string_
         return 0;
     }
 
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name_to_use);
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name);
     if (0 == provider_handle)
     {
         return 0;
@@ -408,6 +443,21 @@ TryOpenKeyResult try_open_key(std::string_view name)
             ::NCryptFreeObject(key_handle);
         }
     });
+
+    // The key store is shared, so a name can be held by a key this backend did not create. MPSS
+    // prohibits private key export on every key it creates, and a key that permits it cannot offer
+    // the guarantee this backend exists to provide: its private material may already be held
+    // somewhere else. Creation sets the policy; opening is where it is checked.
+    const ExportPolicy export_policy = GetExportPolicy(key_handle);
+    if (ExportPolicy::indeterminate == export_policy)
+    {
+        return {.status = operational_error, .value = nullptr};
+    }
+    if (ExportPolicy::allowed == export_policy)
+    {
+        mpss::utils::log_and_set_error("Key '{}' permits private key export.", name);
+        return {.status = operational_error, .value = nullptr};
+    }
 
     // Get the algorithm name to deduce SignatureAlgorithm.
     algorithm = GetAlgorithmFromName(key_handle);

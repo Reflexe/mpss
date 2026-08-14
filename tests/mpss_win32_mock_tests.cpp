@@ -197,18 +197,19 @@ class WindowsKeyCreation : public ::testing::Test
         read_fails
     };
 
-    // Answers the property queries a reopen makes: algorithm, key length, and VBS isolation.
-    // Answers the property queries a reopen makes: algorithm, key length and VBS isolation. The
-    // algorithm and length default to a key this backend can classify; tests that need a key put
-    // there by other software override them.
-    static void AnswerKeyProperties(Isolation isolation, std::wstring algorithm_name = NCRYPT_ECDSA_P256_ALGORITHM,
+    // Answers the property queries a reopen makes: algorithm, key length, VBS isolation and export
+    // policy. The export policy defaults to what a key MPSS created reports, which is that export is
+    // prohibited, and the algorithm and length default to a key this backend can classify. Tests
+    // that need a key from other software override the last two.
+    static void AnswerKeyProperties(Isolation isolation, SECURITY_STATUS export_status = ERROR_SUCCESS,
+                                    DWORD export_policy = 0, std::wstring algorithm_name = NCRYPT_ECDSA_P256_ALGORITHM,
                                     DWORD key_bits = 256)
     {
         EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly([isolation, algorithm_name = std::move(algorithm_name), key_bits](
-                                NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
-                                DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([isolation, export_status, export_policy, algorithm_name = std::move(algorithm_name),
+                             key_bits](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
+                                       DWORD) -> SECURITY_STATUS {
                 if (nullptr == property || nullptr == written)
                 {
                     return status_failure;
@@ -256,6 +257,21 @@ class WindowsKeyCreation : public ::testing::Test
                         return status_failure;
                     }
                     *reinterpret_cast<DWORD *>(out) = Isolation::isolated == isolation ? 1 : 0;
+                    *written = sizeof(DWORD);
+                    return ERROR_SUCCESS;
+                }
+
+                if (0 == wcscmp(property, NCRYPT_EXPORT_POLICY_PROPERTY))
+                {
+                    if (ERROR_SUCCESS != export_status)
+                    {
+                        return export_status;
+                    }
+                    if (nullptr == out || sizeof(DWORD) > size)
+                    {
+                        return status_failure;
+                    }
+                    *reinterpret_cast<DWORD *>(out) = export_policy;
                     *written = sizeof(DWORD);
                     return ERROR_SUCCESS;
                 }
@@ -591,7 +607,7 @@ TEST_F(WindowsKeyCreation, CreateRefusesWhenTheExistenceProbeCouldNotReadTheStor
 TEST_F(WindowsKeyCreation, AKeyWithAnUnsupportedAlgorithmIsNotReportedAsAbsent)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(Isolation::not_isolated, NCRYPT_RSA_ALGORITHM, 2048);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, NCRYPT_RSA_ALGORITHM, 2048);
 
     std::unique_ptr<mpss::KeyPair> opened = OpenOsKey();
     EXPECT_EQ(nullptr, opened);
@@ -609,12 +625,106 @@ TEST_F(WindowsKeyCreation, AKeyWithAnUnsupportedAlgorithmIsNotReportedAsAbsent)
 TEST_F(WindowsKeyCreation, AnUnrecognizedAlgorithmNameIsResolvedByKeySize)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(Isolation::not_isolated, L"SomeUnknownAlgorithm", 256);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, L"SomeUnknownAlgorithm", 256);
 
     std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ(mpss::Algorithm::ecdsa_secp256r1_sha256, key->algorithm());
+}
+
+// Scenario: the name is held by a key that permits its private key to be exported, which is not
+// something this backend creates.
+// Expected behavior: the open is refused. A key whose private material can be taken elsewhere cannot
+// offer the protection the caller asked for.
+TEST_F(WindowsKeyCreation, AnExportableKeyIsRefusedOnOpen)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, NCRYPT_ALLOW_EXPORT_FLAG);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_THAT(mpss::get_error(), HasSubstr("export"));
+}
+
+// Scenario: the same, for a key that permits export of the private key in the clear.
+// Expected behavior: refused for the same reason.
+TEST_F(WindowsKeyCreation, APlaintextExportableKeyIsRefusedOnOpen)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated, ERROR_SUCCESS, NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the name is held by a key whose policy allows its private key to be archived, which
+// permits export once.
+// Expected behavior: refused. One export is enough to put the private material somewhere else.
+TEST_F(WindowsKeyCreation, AnArchivableKeyIsRefusedOnOpen)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated, ERROR_SUCCESS, NCRYPT_ALLOW_ARCHIVING_FLAG);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the same, for a policy that allows the private key to be archived in the clear.
+// Expected behavior: refused for the same reason.
+TEST_F(WindowsKeyCreation, APlaintextArchivableKeyIsRefusedOnOpen)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated, ERROR_SUCCESS, NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the export policy of an opened key cannot be read.
+// Expected behavior: the open fails rather than using a key whose protection could not be
+// established.
+TEST_F(WindowsKeyCreation, AKeyWhoseExportPolicyCannotBeReadIsRefused)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated, status_failure, 0);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: creation is asked for a name already held by an exportable key.
+// Expected behavior: creation refuses. The name is taken, and the probe must not read a key it
+// rejected as a free name.
+TEST_F(WindowsKeyCreation, CreateRefusesWhenTheNameIsHeldByAnExportableKey)
+{
+    int create_attempts = 0;
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, NCRYPT_ALLOW_EXPORT_FLAG);
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([&create_attempts](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
+                                           DWORD) -> SECURITY_STATUS {
+            ++create_attempts;
+            *out = fake_key_handle;
+            return ERROR_SUCCESS;
+        });
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_EQ(0, create_attempts);
+    EXPECT_TRUE(mpss::has_error());
 }
 
 } // namespace
