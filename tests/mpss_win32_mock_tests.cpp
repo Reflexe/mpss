@@ -198,12 +198,17 @@ class WindowsKeyCreation : public ::testing::Test
     };
 
     // Answers the property queries a reopen makes: algorithm, key length, and VBS isolation.
-    static void AnswerKeyProperties(Isolation isolation)
+    // Answers the property queries a reopen makes: algorithm, key length and VBS isolation. The
+    // algorithm and length default to a key this backend can classify; tests that need a key put
+    // there by other software override them.
+    static void AnswerKeyProperties(Isolation isolation, std::wstring algorithm_name = NCRYPT_ECDSA_P256_ALGORITHM,
+                                    DWORD key_bits = 256)
     {
         EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
             .Times(AnyNumber())
-            .WillRepeatedly([isolation](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
-                                        DWORD) -> SECURITY_STATUS {
+            .WillRepeatedly([isolation, algorithm_name = std::move(algorithm_name), key_bits](
+                                NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
+                                DWORD) -> SECURITY_STATUS {
                 if (nullptr == property || nullptr == written)
                 {
                     return status_failure;
@@ -211,8 +216,7 @@ class WindowsKeyCreation : public ::testing::Test
 
                 if (0 == wcscmp(property, NCRYPT_ALGORITHM_PROPERTY))
                 {
-                    const std::wstring algorithm = NCRYPT_ECDSA_P256_ALGORITHM;
-                    const DWORD bytes = static_cast<DWORD>((algorithm.size() + 1) * sizeof(wchar_t));
+                    const DWORD bytes = static_cast<DWORD>((algorithm_name.size() + 1) * sizeof(wchar_t));
                     *written = bytes;
                     if (nullptr == out)
                     {
@@ -222,7 +226,7 @@ class WindowsKeyCreation : public ::testing::Test
                     {
                         return status_failure;
                     }
-                    std::memcpy(out, algorithm.c_str(), bytes);
+                    std::memcpy(out, algorithm_name.c_str(), bytes);
                     return ERROR_SUCCESS;
                 }
 
@@ -232,7 +236,7 @@ class WindowsKeyCreation : public ::testing::Test
                     {
                         return status_failure;
                     }
-                    *reinterpret_cast<DWORD *>(out) = 256;
+                    *reinterpret_cast<DWORD *>(out) = key_bits;
                     *written = sizeof(DWORD);
                     return ERROR_SUCCESS;
                 }
@@ -512,6 +516,105 @@ TEST_F(WindowsKeyCreation, VbsCreationWithUnreadableIsolationDeletesTheKeyAndFai
 
     EXPECT_EQ(nullptr, key);
     EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: a provider cannot say whether it holds the key, because opening the key failed for a
+// reason other than the key being absent.
+// Expected behavior: the open reports the failure rather than reporting the key as absent. Absence
+// and "could not tell" are different answers, and only one of them makes a name safe to create over.
+TEST_F(WindowsKeyCreation, OpenReportsFailureWhenAProviderCouldNotBeRead)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _).Times(AnyNumber()).WillRepeatedly(Return(status_failure));
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: every provider reports that it does not hold the key.
+// Expected behavior: the open reports a clean negative -- no key and no error -- so the caller can
+// tell a name that is free from one that could not be checked.
+TEST_F(WindowsKeyCreation, OpenOfAnAbsentKeyReportsNoError)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _).Times(AnyNumber()).WillRepeatedly(Return(status_not_found));
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_FALSE(mpss::has_error());
+}
+
+// Scenario: the platform provider cannot be opened at all, and the software KSP reports that it does
+// not hold the key. This is what a machine with no usable TPM looks like.
+// Expected behavior: a clean negative. One rung failing to open does not make the whole lookup an
+// operational failure when the remaining rung answered.
+TEST_F(WindowsKeyCreation, OpenOfAnAbsentKeyWithNoTpmStillReportsNoError)
+{
+    FailTpmProvider();
+    EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _).Times(AnyNumber()).WillRepeatedly(Return(status_not_found));
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_FALSE(mpss::has_error());
+}
+
+// Scenario: creation is asked for a name whose store could not be read. Creation itself would
+// succeed if it were attempted.
+// Expected behavior: creation refuses without attempting to create. The name was never established
+// to be free, so writing a key there could overwrite one that already exists.
+TEST_F(WindowsKeyCreation, CreateRefusesWhenTheExistenceProbeCouldNotReadTheStore)
+{
+    int create_attempts = 0;
+    EXPECT_MODULE_FUNC_CALL(NCryptOpenKey, _, _, _, _, _).Times(AnyNumber()).WillRepeatedly(Return(status_failure));
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([&create_attempts](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
+                                           DWORD) -> SECURITY_STATUS {
+            ++create_attempts;
+            *out = fake_key_handle;
+            return ERROR_SUCCESS;
+        });
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_EQ(0, create_attempts);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the name is held by a key this backend cannot classify, such as an RSA key put there by
+// other software.
+// Expected behavior: the open reports a failure and creation refuses. The name is taken, even though
+// the key that holds it is unusable here.
+TEST_F(WindowsKeyCreation, AKeyWithAnUnsupportedAlgorithmIsNotReportedAsAbsent)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, NCRYPT_RSA_ALGORITHM, 2048);
+
+    std::unique_ptr<mpss::KeyPair> opened = OpenOsKey();
+    EXPECT_EQ(nullptr, opened);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_NE(std::string::npos, mpss::get_error().find("algorithm is not supported"));
+
+    std::unique_ptr<mpss::KeyPair> created = CreateOsKey();
+    EXPECT_EQ(nullptr, created);
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the name is held by a key whose algorithm name this backend does not recognize, but whose
+// key size matches one it supports.
+// Expected behavior: the size resolves the algorithm and the open succeeds.
+TEST_F(WindowsKeyCreation, AnUnrecognizedAlgorithmNameIsResolvedByKeySize)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, L"SomeUnknownAlgorithm", 256);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::Algorithm::ecdsa_secp256r1_sha256, key->algorithm());
 }
 
 } // namespace

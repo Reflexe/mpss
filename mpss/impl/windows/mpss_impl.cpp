@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
+#include "mpss/impl/key_probe.h"
 #include "mpss/impl/windows/win_keypair.h"
 #include "mpss/impl/windows/win_utils.h"
 #include "mpss/utils/scope_guard.h"
@@ -10,6 +11,7 @@
 #include <codecvt>
 #include <cwchar>
 #include <locale>
+#include <memory>
 #include <ncrypt.h>
 #include <string>
 
@@ -69,12 +71,20 @@ NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name)
     return provider_handle;
 }
 
-NCRYPT_KEY_HANDLE OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_view name)
+// The three-outcome result of looking for a key in one provider. A handle-or-zero answer cannot
+// distinguish a provider that holds no such key from one that could not be read, and creating a key
+// on the strength of the second is what overwrites a key that is already there.
+using OpenKeyResult = mpss::impl::KeyProbeResult<NCRYPT_KEY_HANDLE>;
+
+OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_view name)
 {
     NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name_to_use);
     if (0 == provider_handle)
     {
-        return 0;
+        // A provider that cannot be opened holds no key that anything can reach, including this
+        // backend's own creation path, so it does not make the name indeterminate. This is what a
+        // machine without a TPM looks like, and creation has to keep working there.
+        return {.status = mpss::impl::KeyProbeStatus::not_found, .value = 0};
     }
 
     SCOPE_GUARD(::NCryptFreeObject(provider_handle));
@@ -84,24 +94,30 @@ NCRYPT_KEY_HANDLE OpenKeyInProvider(LPCWSTR provider_name_to_use, std::string_vi
     SECURITY_STATUS status = ::NCryptOpenKey(provider_handle, &key_handle, wname.c_str(), key_spec, key_open_mode);
     if (ERROR_SUCCESS != status)
     {
-        if (static_cast<SECURITY_STATUS>(NTE_BAD_KEYSET) != status)
+        // The provider answered, so only a status that positively confirms absence may be reported
+        // as absence. Measured on Windows: a name held by neither provider gives NTE_BAD_KEYSET,
+        // while a malformed name gives NTE_INVALID_PARAMETER, which says nothing about whether a key
+        // of that name exists.
+        if (static_cast<SECURITY_STATUS>(NTE_BAD_KEYSET) == status)
         {
-            mpss::utils::log_and_set_error("NCryptOpenKey failed with error code {}.", mpss::utils::to_hex(status));
+            return {.status = mpss::impl::KeyProbeStatus::not_found, .value = 0};
         }
-        return 0;
+
+        mpss::utils::log_and_set_error("NCryptOpenKey failed with error code {}.", mpss::utils::to_hex(status));
+        return {.status = mpss::impl::KeyProbeStatus::operational_error, .value = 0};
     }
 
     // An earlier provider that did not hold the key left an error; clear it.
     mpss::utils::clear_error();
-    return key_handle;
+    return {.status = mpss::impl::KeyProbeStatus::found, .value = key_handle};
 }
 
-NCRYPT_KEY_HANDLE OpenKeyTpm(std::string_view name)
+OpenKeyResult OpenKeyTpm(std::string_view name)
 {
     return OpenKeyInProvider(tpm_provider_name, name);
 }
 
-NCRYPT_KEY_HANDLE OpenKeySoftwareKsp(std::string_view name)
+OpenKeyResult OpenKeySoftwareKsp(std::string_view name)
 {
     return OpenKeyInProvider(software_ksp_name, name);
 }
@@ -143,27 +159,35 @@ VirtualIsolation GetVirtualIsolation(NCRYPT_KEY_HANDLE key_handle)
     return VirtualIsolation::indeterminate;
 }
 
-NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
+OpenKeyResult GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
 {
+    using enum mpss::impl::KeyProbeStatus;
+
     *storage_description = nullptr;
     *hardware_backed = false;
 
-    NCRYPT_KEY_HANDLE key_handle = OpenKeyTpm(name);
-    if (0 != key_handle)
+    // Absence is only concluded when every provider positively confirmed it. A rung that could not
+    // answer makes the verdict for the whole ladder indeterminate, even if a later rung is sure the
+    // key is not there: the key may be sitting in the provider that could not be read.
+    bool any_indeterminate = false;
+
+    OpenKeyResult tpm_key = OpenKeyTpm(name);
+    if (found == tpm_key.status)
     {
         *storage_description = tpm_description;
         *hardware_backed = true;
-        return key_handle;
+        return tpm_key;
     }
+    any_indeterminate = operational_error == tpm_key.status;
 
-    key_handle = OpenKeySoftwareKsp(name);
-    if (0 != key_handle)
+    OpenKeyResult ksp_key = OpenKeySoftwareKsp(name);
+    if (found == ksp_key.status)
     {
-        const VirtualIsolation isolation = GetVirtualIsolation(key_handle);
+        const VirtualIsolation isolation = GetVirtualIsolation(ksp_key.value);
         if (VirtualIsolation::indeterminate == isolation)
         {
-            ::NCryptFreeObject(key_handle);
-            return 0;
+            ::NCryptFreeObject(ksp_key.value);
+            return {.status = operational_error, .value = 0};
         }
 
         if (VirtualIsolation::isolated == isolation)
@@ -176,10 +200,11 @@ NCRYPT_KEY_HANDLE GetKey(std::string_view name, const char **storage_description
             *storage_description = software_description;
             *hardware_backed = false;
         }
-        return key_handle;
+        return ksp_key;
     }
+    any_indeterminate = any_indeterminate || operational_error == ksp_key.status;
 
-    return 0;
+    return {.status = any_indeterminate ? operational_error : not_found, .value = 0};
 }
 
 NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name_to_use, std::string_view name, mpss::Algorithm algorithm,
@@ -351,13 +376,11 @@ namespace mpss::impl::os
 {
 using enum Algorithm;
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+using TryOpenKeyResult = mpss::impl::KeyProbeResult<std::unique_ptr<KeyPair>>;
+
+TryOpenKeyResult try_open_key(std::string_view name)
 {
-    if (name.empty())
-    {
-        mpss::utils::log_and_set_error("Key name cannot be empty.");
-        return {};
-    }
+    using enum mpss::impl::KeyProbeStatus;
 
     mpss::utils::log_trace("Attempting to open key '{}' on Windows backend.", name);
 
@@ -365,13 +388,19 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
 
     const char *storage_description = nullptr;
     bool hardware_backed = false;
-    NCRYPT_KEY_HANDLE key_handle = GetKey(name, &storage_description, &hardware_backed);
-    if (0 == key_handle)
+    OpenKeyResult found_key = GetKey(name, &storage_description, &hardware_backed);
+    if (found != found_key.status)
     {
-        mpss::utils::log_debug("Key '{}' not found.", name);
-        return nullptr;
+        if (not_found == found_key.status)
+        {
+            // A clean negative carries no error: the ladder read every provider and none held the
+            // key. GetProvider may have set one on a rung that failed before a later rung answered.
+            mpss::utils::clear_error();
+        }
+        return {.status = found_key.status, .value = nullptr};
     }
 
+    NCRYPT_KEY_HANDLE key_handle = found_key.value;
     SCOPE_GUARD({
         // Release if algorithm is not set, which means there was an error opening the key.
         if (unsupported == algorithm)
@@ -388,12 +417,34 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
         algorithm = GuessAlgorithmFromKeyBits(GetKeyLength(key_handle));
         if (unsupported == algorithm)
         {
-            return nullptr;
+            // The key store holds this name; it just holds something this backend cannot use. That
+            // is not the same as the name being free, and reporting it as free would let creation
+            // write a second key of the same name into another provider.
+            mpss::utils::log_and_set_error("Key '{}' exists but its algorithm is not supported.", name);
+            return {.status = operational_error, .value = nullptr};
         }
     }
 
     mpss::utils::log_trace("Key '{}' opened with {} storage.", name, storage_description);
-    return std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description);
+    return {.status = found,
+            .value = std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description)};
+}
+
+std::unique_ptr<KeyPair> open_key(std::string_view name)
+{
+    if (name.empty())
+    {
+        mpss::utils::log_and_set_error("Key name cannot be empty.");
+        return {};
+    }
+
+    TryOpenKeyResult result = try_open_key(name);
+    if (mpss::impl::KeyProbeStatus::not_found == result.status)
+    {
+        mpss::utils::log_debug("Key '{}' not found.", name);
+    }
+
+    return std::move(result.value);
 }
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
@@ -418,8 +469,14 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     // Fail if the key already exists or is already open.
-    std::unique_ptr<KeyPair> existing_key = open_key(name);
-    if (nullptr != existing_key)
+    TryOpenKeyResult existing_key = try_open_key(name);
+    if (mpss::impl::KeyProbeStatus::operational_error == existing_key.status)
+    {
+        // The store could not be read, so the name was never established to be free. Creating here
+        // could write over a key that is already present.
+        return nullptr;
+    }
+    if (mpss::impl::KeyProbeStatus::found == existing_key.status)
     {
         mpss::utils::log_and_set_error("Key '{}' already exists.", name);
         return nullptr;
