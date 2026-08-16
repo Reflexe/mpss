@@ -22,6 +22,35 @@ namespace mpss::impl::os::utils
 
 using enum mpss::Algorithm;
 
+std::string wide_to_utf8(std::wstring_view value)
+{
+    if (value.empty())
+    {
+        return {};
+    }
+
+    const int value_size = mpss::utils::narrow_or_error<int>(value.size());
+    if (0 == value_size)
+    {
+        return {};
+    }
+
+    const int utf8_size =
+        ::WideCharToMultiByte(CP_UTF8, 0, value.data(), value_size, nullptr, 0, nullptr, nullptr);
+    if (0 >= utf8_size)
+    {
+        return {};
+    }
+
+    std::string utf8(static_cast<std::size_t>(utf8_size), '\0');
+    if (0 >= ::WideCharToMultiByte(CP_UTF8, 0, value.data(), value_size, utf8.data(), utf8_size, nullptr, nullptr))
+    {
+        return {};
+    }
+
+    return utf8;
+}
+
 crypto_params const *get_crypto_params(Algorithm algorithm) noexcept
 {
     switch (algorithm)

@@ -53,6 +53,10 @@ constexpr SECURITY_STATUS status_not_found = static_cast<SECURITY_STATUS>(NTE_BA
 constexpr SECURITY_STATUS status_failure = static_cast<SECURITY_STATUS>(NTE_FAIL);
 constexpr SECURITY_STATUS status_not_supported = static_cast<SECURITY_STATUS>(NTE_NOT_SUPPORTED);
 
+// What a key without a named group reports when asked for one. Measured on Windows: a key created
+// through a suffixed algorithm identifier answers NTE_NOT_FOUND, not NTE_NOT_SUPPORTED.
+constexpr SECURITY_STATUS status_property_absent = static_cast<SECURITY_STATUS>(NTE_NOT_FOUND);
+
 // Mirrors the backend's own fallback so the tests build against older SDKs.
 #ifdef NCRYPT_REQUIRE_VBS_FLAG
 constexpr DWORD require_vbs_flag = NCRYPT_REQUIRE_VBS_FLAG;
@@ -197,27 +201,30 @@ class WindowsKeyCreation : public ::testing::Test
         read_fails
     };
 
-    // Answers the property queries a reopen makes: algorithm, key length, VBS isolation and export
+    // Answers the property queries a reopen makes: algorithm, named group, VBS isolation and export
     // policy. The export policy defaults to what a key MPSS created reports, which is that export is
-    // prohibited, and the algorithm and length default to a key this backend can classify. Tests
-    // that need a key from other software override the last two.
+    // prohibited, and the algorithm defaults to one this backend can classify. Tests that need a key
+    // put there by other software override the algorithm, and a key created through the generic
+    // ECDSA identifier also supplies a named group.
     static void AnswerKeyProperties(Isolation isolation, SECURITY_STATUS export_status = ERROR_SUCCESS,
                                     DWORD export_policy = 0, std::wstring algorithm_name = NCRYPT_ECDSA_P256_ALGORITHM,
-                                    DWORD key_bits = 256)
+                                    std::wstring group_name = {})
     {
         EXPECT_MODULE_FUNC_CALL(NCryptGetProperty, _, _, _, _, _, _)
             .Times(AnyNumber())
             .WillRepeatedly([isolation, export_status, export_policy, algorithm_name = std::move(algorithm_name),
-                             key_bits](NCRYPT_HANDLE, LPCWSTR property, PBYTE out, DWORD size, DWORD *written,
-                                       DWORD) -> SECURITY_STATUS {
+                             group_name = std::move(group_name)](NCRYPT_HANDLE, LPCWSTR property, PBYTE out,
+                                                                 DWORD size, DWORD *written,
+                                                                 DWORD) -> SECURITY_STATUS {
                 if (nullptr == property || nullptr == written)
                 {
                     return status_failure;
                 }
 
-                if (0 == wcscmp(property, NCRYPT_ALGORITHM_PROPERTY))
-                {
-                    const DWORD bytes = static_cast<DWORD>((algorithm_name.size() + 1) * sizeof(wchar_t));
+                // Both string properties follow the same two-call protocol: a sizing call with a
+                // null buffer, then the real read.
+                auto answer_string = [out, size, written](const std::wstring &value) -> SECURITY_STATUS {
+                    const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
                     *written = bytes;
                     if (nullptr == out)
                     {
@@ -227,19 +234,22 @@ class WindowsKeyCreation : public ::testing::Test
                     {
                         return status_failure;
                     }
-                    std::memcpy(out, algorithm_name.c_str(), bytes);
+                    std::memcpy(out, value.c_str(), bytes);
                     return ERROR_SUCCESS;
+                };
+
+                if (0 == wcscmp(property, NCRYPT_ALGORITHM_PROPERTY))
+                {
+                    return answer_string(algorithm_name);
                 }
 
-                if (0 == wcscmp(property, NCRYPT_LENGTH_PROPERTY))
+                if (0 == wcscmp(property, NCRYPT_ECC_CURVE_NAME_PROPERTY))
                 {
-                    if (nullptr == out || sizeof(DWORD) > size)
+                    if (group_name.empty())
                     {
-                        return status_failure;
+                        return status_property_absent;
                     }
-                    *reinterpret_cast<DWORD *>(out) = key_bits;
-                    *written = sizeof(DWORD);
-                    return ERROR_SUCCESS;
+                    return answer_string(group_name);
                 }
 
                 if (0 == wcscmp(property, NCRYPT_USE_VIRTUAL_ISOLATION_PROPERTY))
@@ -607,30 +617,87 @@ TEST_F(WindowsKeyCreation, CreateRefusesWhenTheExistenceProbeCouldNotReadTheStor
 TEST_F(WindowsKeyCreation, AKeyWithAnUnsupportedAlgorithmIsNotReportedAsAbsent)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, NCRYPT_RSA_ALGORITHM, 2048);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, NCRYPT_RSA_ALGORITHM);
 
     std::unique_ptr<mpss::KeyPair> opened = OpenOsKey();
     EXPECT_EQ(nullptr, opened);
     EXPECT_TRUE(mpss::has_error());
-    EXPECT_NE(std::string::npos, mpss::get_error().find("algorithm is not supported"));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("RSA"));
 
     std::unique_ptr<mpss::KeyPair> created = CreateOsKey();
     EXPECT_EQ(nullptr, created);
     EXPECT_TRUE(mpss::has_error());
 }
 
-// Scenario: the name is held by a key whose algorithm name this backend does not recognize, but whose
-// key size matches one it supports.
-// Expected behavior: the size resolves the algorithm and the open succeeds.
-TEST_F(WindowsKeyCreation, AnUnrecognizedAlgorithmNameIsResolvedByKeySize)
+// Scenario: the name is held by an ECDH key agreement key.
+// Expected behavior: the open is refused. The algorithm decides what a key may be used for, and a
+// key agreement key cannot stand in for a signing key.
+TEST_F(WindowsKeyCreation, AnEcdhKeyIsRefused)
 {
     KeyLivesIn(ksp_provider_handle);
-    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, L"SomeUnknownAlgorithm", 256);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, NCRYPT_ECDH_P256_ALGORITHM);
+
+    std::unique_ptr<mpss::KeyPair> opened = OpenOsKey();
+
+    EXPECT_EQ(nullptr, opened);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_NE(std::string::npos, mpss::get_error().find("ECDH_P256"));
+}
+
+// Scenario: the key was created through the generic ECDSA identifier, which carries the named group
+// in a separate property instead of in the algorithm name.
+// Expected behavior: the group resolves the algorithm and the open succeeds. This is an ordinary
+// signing key and must keep working.
+TEST_F(WindowsKeyCreation, AGenericEcdsaKeyIsResolvedByItsNamedGroup)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_NISTP256);
 
     std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ(mpss::Algorithm::ecdsa_secp256r1_sha256, key->algorithm());
+}
+
+TEST_F(WindowsKeyCreation, AGenericEcdsaKeyOnP384IsResolvedByItsNamedGroup)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECC_CURVE_NISTP384);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::Algorithm::ecdsa_secp384r1_sha384, key->algorithm());
+}
+
+// Scenario: a generic ECDSA key that carries no readable named group, which is what a key created
+// from explicit group parameters looks like.
+// Expected behavior: refused. The algorithm is a signature algorithm, but which one it is cannot be
+// established, and the key size must not be used to fill that gap.
+TEST_F(WindowsKeyCreation, AGenericEcdsaKeyWhoseNamedGroupCannotBeReadIsRefused)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, BCRYPT_ECDSA_ALGORITHM);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_NE(std::string::npos, mpss::get_error().find("named group could not be read"));
+}
+
+// Scenario: a generic ECDSA key whose named group this backend does not support.
+// Expected behavior: refused, and the error names the group.
+TEST_F(WindowsKeyCreation, AGenericEcdsaKeyOnAnUnsupportedGroupIsRefused)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated, ERROR_SUCCESS, 0, BCRYPT_ECDSA_ALGORITHM, L"brainpoolP256r1");
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_NE(std::string::npos, mpss::get_error().find("brainpoolP256r1"));
 }
 
 // Scenario: the name is held by a key that permits its private key to be exported, which is not

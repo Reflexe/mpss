@@ -8,11 +8,10 @@
 #include "mpss/utils/utilities.h"
 #include <Windows.h>
 #include <algorithm>
-#include <codecvt>
 #include <cwchar>
-#include <locale>
 #include <memory>
 #include <ncrypt.h>
+#include <optional>
 #include <string>
 
 namespace
@@ -324,86 +323,100 @@ NCRYPT_KEY_HANDLE CreateKeySoftware(std::string_view name, mpss::Algorithm algor
     return CreateKeyInProvider(software_ksp_name, name, algorithm, /* create_flags */ 0);
 }
 
-mpss::Algorithm GetAlgorithmFromName(NCRYPT_KEY_HANDLE key_handle)
+// Reads a wide-string key property. Returns nullopt when the property cannot be read.
+std::optional<std::wstring> GetWideStringProperty(NCRYPT_KEY_HANDLE key_handle, LPCWSTR property)
 {
-    DWORD dwOutputSize = 0;
-
-    SECURITY_STATUS status = ::NCryptGetProperty(key_handle, NCRYPT_ALGORITHM_PROPERTY,
+    DWORD byte_size = 0;
+    SECURITY_STATUS status = ::NCryptGetProperty(key_handle, property,
                                                  /* pbOutput */ nullptr,
-                                                 /* cbOutput */ 0, &dwOutputSize,
+                                                 /* cbOutput */ 0, &byte_size,
                                                  /* dwFlags */ 0);
-    if (ERROR_SUCCESS != status)
+    if (ERROR_SUCCESS != status || 0 == byte_size)
     {
-        mpss::utils::log_and_set_error("NCryptGetProperty (algorithm) failed with error code {}.",
-                                       mpss::utils::to_hex(status));
-        return unsupported;
+        return std::nullopt;
     }
 
-    std::wstring algorithm_name(dwOutputSize, '\0');
-    const DWORD algorithm_name_size = mpss::utils::narrow_or_error<DWORD>(algorithm_name.size());
-    if (0 == algorithm_name_size)
+    // The sizing call reports a count of bytes and std::wstring is sized in wchar_t, so convert by
+    // dividing up rather than down: the buffer is then never smaller than the size CNG asked for.
+    std::wstring value((byte_size + sizeof(wchar_t) - 1) / sizeof(wchar_t), L'\0');
+    const DWORD capacity = mpss::utils::narrow_or_error<DWORD>(value.size() * sizeof(wchar_t));
+    if (0 == capacity)
     {
-        return unsupported;
+        return std::nullopt;
     }
 
-    status = ::NCryptGetProperty(key_handle, NCRYPT_ALGORITHM_PROPERTY, reinterpret_cast<PBYTE>(&algorithm_name[0]),
-                                 algorithm_name_size, &dwOutputSize,
+    status = ::NCryptGetProperty(key_handle, property, reinterpret_cast<PBYTE>(value.data()), capacity, &byte_size,
                                  /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
-        mpss::utils::log_and_set_error("NCryptGetProperty failed with error code {}.", mpss::utils::to_hex(status));
+        return std::nullopt;
+    }
+
+    // CNG returns a NUL-terminated string and counts the terminator in the size, so the buffer has
+    // to hold it. Trim there, leaving just the value.
+    value.resize(std::wcslen(value.c_str()));
+    return value;
+}
+
+mpss::Algorithm GetAlgorithmFromName(NCRYPT_KEY_HANDLE key_handle)
+{
+    const std::optional<std::wstring> algorithm_name = GetWideStringProperty(key_handle, NCRYPT_ALGORITHM_PROPERTY);
+    if (!algorithm_name.has_value())
+    {
+        mpss::utils::log_and_set_error("NCryptGetProperty (algorithm) failed.");
         return unsupported;
     }
 
-    if (algorithm_name.starts_with(NCRYPT_ECDSA_P256_ALGORITHM))
+    // The identifier names the algorithm and its group together.
+    if (NCRYPT_ECDSA_P256_ALGORITHM == *algorithm_name)
     {
         return ecdsa_secp256r1_sha256;
     }
-    if (algorithm_name.starts_with(NCRYPT_ECDSA_P384_ALGORITHM))
+    if (NCRYPT_ECDSA_P384_ALGORITHM == *algorithm_name)
     {
         return ecdsa_secp384r1_sha384;
     }
-    if (algorithm_name.starts_with(NCRYPT_ECDSA_P521_ALGORITHM))
+    if (NCRYPT_ECDSA_P521_ALGORITHM == *algorithm_name)
     {
         return ecdsa_secp521r1_sha512;
     }
 
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    const std::string alg_name = converter.to_bytes(algorithm_name);
+    // The identifier names only the algorithm; the group is carried in a separate property. Keys
+    // created this way are ordinary signing keys and must keep working.
+    if (BCRYPT_ECDSA_ALGORITHM == *algorithm_name)
+    {
+        const std::optional<std::wstring> group_name =
+            GetWideStringProperty(key_handle, NCRYPT_ECC_CURVE_NAME_PROPERTY);
+        if (!group_name.has_value())
+        {
+            mpss::utils::log_and_set_error("Key uses ECDSA but its named group could not be read.");
+            return unsupported;
+        }
+
+        if (BCRYPT_ECC_CURVE_NISTP256 == *group_name)
+        {
+            return ecdsa_secp256r1_sha256;
+        }
+        if (BCRYPT_ECC_CURVE_NISTP384 == *group_name)
+        {
+            return ecdsa_secp384r1_sha384;
+        }
+        if (BCRYPT_ECC_CURVE_NISTP521 == *group_name)
+        {
+            return ecdsa_secp521r1_sha512;
+        }
+
+        mpss::utils::log_and_set_error("Key uses ECDSA with unsupported named group '{}'.",
+                                       mpss::impl::os::utils::wide_to_utf8(*group_name));
+        return unsupported;
+    }
+
+    // Everything else is refused, and the key size is deliberately not consulted. A size says
+    // nothing about what a key may be used for: an ECDH key agreement key of the same size would
+    // otherwise be accepted here and then used to sign.
+    mpss::utils::log_and_set_error("Key algorithm '{}' is not supported.",
+                                   mpss::impl::os::utils::wide_to_utf8(*algorithm_name));
     return unsupported;
-}
-
-std::size_t GetKeyLength(NCRYPT_KEY_HANDLE key_handle)
-{
-    DWORD dwKeyLength = 0;
-    DWORD dwOutputSize = 0;
-
-    SECURITY_STATUS status = ::NCryptGetProperty(key_handle, NCRYPT_LENGTH_PROPERTY,
-                                                 reinterpret_cast<PBYTE>(&dwKeyLength), sizeof(DWORD), &dwOutputSize,
-                                                 /* dwFlags */ 0);
-    if (ERROR_SUCCESS != status)
-    {
-        mpss::utils::log_and_set_error("NCryptGetProperty (length) failed with error code {}.",
-                                       mpss::utils::to_hex(status));
-        return 0;
-    }
-
-    return static_cast<std::size_t>(dwKeyLength);
-}
-
-mpss::Algorithm GuessAlgorithmFromKeyBits(std::size_t key_bits)
-{
-    switch (key_bits)
-    {
-    case 256:
-        return ecdsa_secp256r1_sha256;
-    case 384:
-        return ecdsa_secp384r1_sha384;
-    case 521:
-        return ecdsa_secp521r1_sha512;
-    default:
-        return unsupported;
-    }
 }
 } // namespace
 
@@ -459,20 +472,17 @@ TryOpenKeyResult try_open_key(std::string_view name)
         return {.status = operational_error, .value = nullptr};
     }
 
-    // Get the algorithm name to deduce SignatureAlgorithm.
     algorithm = GetAlgorithmFromName(key_handle);
     if (unsupported == algorithm)
     {
-        // Try directly with the key size.
-        algorithm = GuessAlgorithmFromKeyBits(GetKeyLength(key_handle));
-        if (unsupported == algorithm)
-        {
-            // The key store holds this name; it just holds something this backend cannot use. That
-            // is not the same as the name being free, and reporting it as free would let creation
-            // write a second key of the same name into another provider.
-            mpss::utils::log_and_set_error("Key '{}' exists but its algorithm is not supported.", name);
-            return {.status = operational_error, .value = nullptr};
-        }
+        // The key store holds this name; it just holds something this backend cannot use. That is
+        // not the same as the name being free, and reporting it as free would let creation write a
+        // second key of the same name into another provider. GetAlgorithmFromName has already
+        // described what it found, which is the part that makes this diagnosable, so keep it and
+        // add the key it applies to.
+        const std::string reason{mpss::get_error()};
+        mpss::utils::log_and_set_error("Key '{}' exists but cannot be used: {}", name, reason);
+        return {.status = operational_error, .value = nullptr};
     }
 
     mpss::utils::log_trace("Key '{}' opened with {} storage.", name, storage_description);
