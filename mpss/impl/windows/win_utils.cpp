@@ -22,6 +22,21 @@ namespace mpss::impl::os::utils
 
 using enum mpss::Algorithm;
 
+crypto_params const *get_crypto_params(Algorithm algorithm) noexcept
+{
+    switch (algorithm)
+    {
+    case ecdsa_secp256r1_sha256:
+        return &ecdsa_p256;
+    case ecdsa_secp384r1_sha384:
+        return &ecdsa_p384;
+    case ecdsa_secp521r1_sha512:
+        return &ecdsa_p521;
+    default:
+        return nullptr;
+    }
+}
+
 std::string wide_to_utf8(std::wstring_view value)
 {
     if (value.empty())
@@ -49,21 +64,6 @@ std::string wide_to_utf8(std::wstring_view value)
     }
 
     return utf8;
-}
-
-crypto_params const *get_crypto_params(Algorithm algorithm) noexcept
-{
-    switch (algorithm)
-    {
-    case ecdsa_secp256r1_sha256:
-        return &ecdsa_p256;
-    case ecdsa_secp384r1_sha384:
-        return &ecdsa_p384;
-    case ecdsa_secp521r1_sha512:
-        return &ecdsa_p521;
-    default:
-        return nullptr;
-    }
 }
 
 std::size_t decode_raw_signature(std::span<const std::byte> der_sig, Algorithm algorithm,
