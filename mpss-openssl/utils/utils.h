@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <memory>
 #include <mpss/mpss.h>
+#include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/types.h>
 #include <span>
 #include <string_view>
@@ -16,6 +18,24 @@ namespace mpss_openssl::utils
 {
 
 using byte_vector = std::vector<std::byte>;
+
+struct bio_deleter
+{
+    void operator()(BIO *bio) const noexcept
+    {
+        BIO_free(bio);
+    }
+};
+using bio_ptr = std::unique_ptr<BIO, bio_deleter>;
+
+struct openssl_free_deleter
+{
+    void operator()(void *ptr) const noexcept
+    {
+        OPENSSL_free(ptr);
+    }
+};
+template <typename T> using openssl_ptr = std::unique_ptr<T, openssl_free_deleter>;
 
 template <typename T, typename... Args>
 [[nodiscard]]

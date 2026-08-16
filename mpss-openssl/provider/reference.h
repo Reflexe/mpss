@@ -11,6 +11,9 @@
 namespace mpss_openssl::provider
 {
 
+// A key reference is a load reference PEM-wrapped under this label.
+inline constexpr const char *mpss_key_reference_pem_label = "MPSS KEY REFERENCE";
+
 // The "load reference" is the opaque byte blob handed to mpss_keymgmt_load via
 // OSSL_OBJECT_PARAM_REFERENCE. It packs the target backend and key name as "<backend>\0<key_name>";
 // an empty backend selects the default backend. The single NUL separates the two fields, which is
