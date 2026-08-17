@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
+#include "openssl_raii.h"
 #include "tests/test_key_names.h"
 #include <algorithm>
 #include <gtest/gtest.h>
@@ -66,6 +67,7 @@ int add_ca_extensions(X509 *cert)
 namespace mpss_openssl::tests
 {
 using mpss::tests::test_key_name;
+using mpss_openssl::testing::bio_ptr;
 
 class CertificateChainSerializationTest : public ::testing::TestWithParam<const char *>
 {
@@ -261,32 +263,29 @@ TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
     // -------------------------------------------------------------------------
     // 5. Serialize both certificates and the CA public key in PEM format.
     // -------------------------------------------------------------------------
-    BIO *ca_bio = BIO_new(BIO_s_mem());
+    bio_ptr ca_bio(BIO_new(BIO_s_mem()));
     ASSERT_NE(nullptr, ca_bio);
-    ASSERT_EQ(1, PEM_write_bio_X509(ca_bio, ca_cert));
+    ASSERT_EQ(1, PEM_write_bio_X509(ca_bio.get(), ca_cert));
 
-    BIO *end_bio = BIO_new(BIO_s_mem());
+    bio_ptr end_bio(BIO_new(BIO_s_mem()));
     ASSERT_NE(nullptr, end_bio);
-    ASSERT_EQ(1, PEM_write_bio_X509(end_bio, end_cert));
+    ASSERT_EQ(1, PEM_write_bio_X509(end_bio.get(), end_cert));
 
-    BIO *pubkey_bio = BIO_new(BIO_s_mem());
+    bio_ptr pubkey_bio(BIO_new(BIO_s_mem()));
     ASSERT_NE(nullptr, pubkey_bio);
-    ASSERT_EQ(1, PEM_write_bio_PUBKEY_ex(pubkey_bio, ca_pkey, mpss_libctx, "provider=mpss"));
+    ASSERT_EQ(1, PEM_write_bio_PUBKEY_ex(pubkey_bio.get(), ca_pkey, mpss_libctx, "provider=mpss"));
 
     // -------------------------------------------------------------------------
     // 6. Load all three objects back into the OpenSSL default provider.
     // -------------------------------------------------------------------------
-    X509 *loaded_ca_cert = PEM_read_bio_X509(ca_bio, nullptr, nullptr, nullptr);
+    X509 *loaded_ca_cert = PEM_read_bio_X509(ca_bio.get(), nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_ca_cert);
-    BIO_free(ca_bio);
 
-    X509 *loaded_end_cert = PEM_read_bio_X509(end_bio, nullptr, nullptr, nullptr);
+    X509 *loaded_end_cert = PEM_read_bio_X509(end_bio.get(), nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_end_cert);
-    BIO_free(end_bio);
 
-    EVP_PKEY *loaded_pubkey = PEM_read_bio_PUBKEY(pubkey_bio, nullptr, nullptr, nullptr);
+    EVP_PKEY *loaded_pubkey = PEM_read_bio_PUBKEY(pubkey_bio.get(), nullptr, nullptr, nullptr);
     ASSERT_NE(nullptr, loaded_pubkey);
-    BIO_free(pubkey_bio);
 
     // -------------------------------------------------------------------------
     // 7. Check that the cert chain verifies with the OpenSSL default provider.

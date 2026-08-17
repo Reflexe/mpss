@@ -6,6 +6,7 @@
 #include "mpss-openssl/provider/keymgmt.h"
 #include "mpss-openssl/provider/provider.h"
 #include "mpss-openssl/utils/names.h"
+#include "mpss-openssl/utils/ossl_ptr.h"
 #include "mpss-openssl/utils/utils.h"
 #include <algorithm>
 #include <cstddef>
@@ -24,6 +25,9 @@ namespace
 using namespace ::mpss_openssl::provider;
 using namespace ::mpss_openssl::utils;
 using enum digest_state;
+
+using asn1_object_ptr = ossl_ptr<ASN1_OBJECT, ASN1_OBJECT_free>;
+using x509_algor_ptr = ossl_ptr<X509_ALGOR, X509_ALGOR_free>;
 
 struct mpss_signature_ctx
 {
@@ -128,54 +132,38 @@ extern "C" int mpss_signature_get_ctx_params(void *ctx, OSSL_PARAM params[])
 
     // Get the algorithm ID from the name string we constructed above.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guaranteed by has_valid_key() check above.
-    ASN1_OBJECT *obj = OBJ_txt2obj(sctx->pkey->alg_name->c_str(), 0);
-    X509_ALGOR *alg = nullptr;
-    unsigned char *alg_der = nullptr;
-    int result = 0;
-
-    do
+    asn1_object_ptr obj(OBJ_txt2obj(sctx->pkey->alg_name->c_str(), 0));
+    if (nullptr == obj)
     {
-        if (nullptr == obj)
-        {
-            break;
-        }
+        return 0;
+    }
 
-        alg = X509_ALGOR_new();
-        if (nullptr == alg)
-        {
-            break;
-        }
+    const x509_algor_ptr alg(X509_ALGOR_new());
+    if (nullptr == alg)
+    {
+        return 0;
+    }
 
-        // RFC 5758 3.2: the ecdsa-with-SHA* AlgorithmIdentifier parameters field MUST be absent.
-        // V_ASN1_UNDEF leaves alg->parameter null so i2d_X509_ALGOR omits it (canonical SEQUENCE { OID }),
-        // matching OpenSSL's own default provider; V_ASN1_NULL would emit a non-conformant explicit NULL.
-        if (1 != X509_ALGOR_set0(alg, obj, V_ASN1_UNDEF, nullptr))
-        {
-            break;
-        }
-        obj = nullptr; // Ownership transferred to alg.
+    // RFC 5758 3.2: the ecdsa-with-SHA* AlgorithmIdentifier parameters field MUST be absent.
+    // V_ASN1_UNDEF leaves alg->parameter null so i2d_X509_ALGOR omits it (canonical SEQUENCE { OID }),
+    // matching OpenSSL's own default provider; V_ASN1_NULL would emit a non-conformant explicit NULL.
+    if (1 != X509_ALGOR_set0(alg.get(), obj.get(), V_ASN1_UNDEF, nullptr))
+    {
+        return 0;
+    }
+    // Ownership transferred to alg, which happens only on success.
+    static_cast<void>(obj.release());
 
-        // Get and set the algorithm ID to output parameters.
-        int aid_size = i2d_X509_ALGOR(alg, &alg_der);
-        if (aid_size < 0)
-        {
-            break;
-        }
+    // Get and set the algorithm ID to output parameters.
+    unsigned char *alg_der_raw = nullptr;
+    const int aid_size = i2d_X509_ALGOR(alg.get(), &alg_der_raw);
+    const openssl_ptr<unsigned char> alg_der(alg_der_raw);
+    if (aid_size < 0)
+    {
+        return 0;
+    }
 
-        std::size_t aid_size_sz = static_cast<std::size_t>(aid_size);
-        if (1 != OSSL_PARAM_set_octet_string(p, alg_der, aid_size_sz))
-        {
-            break;
-        }
-
-        result = 1;
-    } while (false);
-
-    OPENSSL_free(alg_der);
-    X509_ALGOR_free(alg);
-    ASN1_OBJECT_free(obj); // No-op if ownership was transferred (obj == nullptr).
-
-    return result;
+    return (1 == OSSL_PARAM_set_octet_string(p, alg_der_raw, static_cast<std::size_t>(aid_size))) ? 1 : 0;
 }
 
 extern "C" int mpss_signature_sign_init(void *ctx, void *provkey, [[maybe_unused]] const OSSL_PARAM params[])

@@ -7,6 +7,7 @@
 #include "mpss/impl/yubikey/yk_piv.h"
 #endif
 #include "mpss/key_policy.h"
+#include "mpss/mpss.h"
 #include "mpss/utils/scope_guard.h"
 #include "openssl_raii.h"
 #include "tests/test_key_names.h"
@@ -24,9 +25,11 @@
 #include <openssl/core_names.h>
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/pem.h>
+#include <openssl/proverr.h>
 #include <openssl/provider.h>
 #include <openssl/store.h>
 #include <openssl/x509.h>
@@ -145,7 +148,13 @@ using mpss_openssl::testing::encoder_ctx_ptr;
 using mpss_openssl::testing::evp_pkey_ctx_ptr;
 using mpss_openssl::testing::evp_pkey_ptr;
 
-constexpr const char *mpss_reference_fixture_key_name = "mpss_reference_pem_fixture";
+// Process-unique, like every other key name in this suite, so that two test binaries running at the
+// same time cannot delete each other's fixture key. A function rather than a namespace-scope string
+// to keep it out of static initialization and destruction.
+std::string reference_fixture_key_name()
+{
+    return mpss::tests::test_key_name("mpss_reference_pem_fixture");
+}
 
 // A load reference is "<backend>\0<key_name>"; an empty backend selects the default one. Built here
 // rather than with the provider's builder, so the expected bytes independently pin the wire format.
@@ -167,17 +176,16 @@ std::string Base64(std::string_view raw)
     }
 
     BIO_set_flags(encoder.get(), BIO_FLAGS_BASE64_NO_NL);
-    BIO *chain = BIO_push(encoder.release(), sink.release());
-    const bio_ptr owner(chain);
+    const bio_ptr chain(BIO_push(encoder.release(), sink.release()));
 
-    if (static_cast<int>(raw.size()) != BIO_write(chain, raw.data(), static_cast<int>(raw.size())) ||
-        1 != BIO_flush(chain))
+    if (static_cast<int>(raw.size()) != BIO_write(chain.get(), raw.data(), static_cast<int>(raw.size())) ||
+        1 != BIO_flush(chain.get()))
     {
         return {};
     }
 
     BUF_MEM *mem = nullptr;
-    BIO_get_mem_ptr(chain, &mem);
+    BIO_get_mem_ptr(chain.get(), &mem);
     if (nullptr == mem)
     {
         return {};
@@ -245,7 +253,10 @@ evp_pkey_ptr DecodeReferencePem(OSSL_LIB_CTX *libctx, const std::string &pem)
 std::string EncodeReferencePem(EVP_PKEY *key, int selection = EVP_PKEY_PRIVATE_KEY)
 {
     encoder_ctx_ptr encoder(OSSL_ENCODER_CTX_new_for_pkey(key, selection, "PEM", "MpssKeyReference", "provider=mpss"));
-    if (nullptr == encoder || 0 >= OSSL_ENCODER_CTX_get_num_encoders(encoder.get()))
+    // The encoder count is not a usable signal: OpenSSL collects candidates before filtering by
+    // structure, so it is non-zero even for a selection nothing can encode. Whether this key can be
+    // encoded is decided by OSSL_ENCODER_to_bio below.
+    if (nullptr == encoder)
     {
         return {};
     }
@@ -1240,7 +1251,7 @@ TEST_F(MPSSStore, ReferencePemDecoderReopensKeyByName)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const std::string key_name = mpss_reference_fixture_key_name;
+    const std::string key_name = reference_fixture_key_name();
     mpss_delete_key(key_name.c_str());
     SCOPE_GUARD(mpss_delete_key(key_name.c_str()));
 
@@ -1293,6 +1304,30 @@ TEST_F(MPSSStore, ReferencePemDecoderRejectsNonBase64Body)
     EXPECT_EQ(nullptr, DecodeReferencePem(libctx, ReferencePem("!!!not-base64!!!")).get());
 }
 
+// Scenario: a PEM carries our label but a body the decoder cannot use, which aborts the decoder
+// chain rather than deferring to another decoder.
+// Expected behavior: the reason reaches the OpenSSL error queue. OpenSSL reports a generic decode
+// failure on its own, which does not distinguish a file that is not ours from one that is ours and
+// malformed; the specific reason is what makes that diagnosable.
+TEST_F(MPSSStore, ReferencePemDecoderReportsWhyItRejectedOurOwnLabel)
+{
+    ERR_clear_error();
+    EXPECT_EQ(nullptr, DecodeReferencePem(libctx, ReferencePem(Base64("no-separator"sv))).get());
+
+    // The queue also carries OpenSSL's own decode errors, and their order is not ours to rely on,
+    // so search it rather than inspecting only the last entry.
+    bool found = false;
+    for (unsigned long e = ERR_get_error(); 0 != e; e = ERR_get_error())
+    {
+        if (ERR_LIB_PROV == ERR_GET_LIB(e) && PROV_R_BAD_ENCODING == ERR_GET_REASON(e))
+        {
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found) << "the decoder aborted the chain without reporting why";
+    ERR_clear_error();
+}
+
 // Scenario: a PEM that is not ours is offered to the decoder chain.
 // Expected behavior: it decodes to no MPSS key.
 TEST_F(MPSSStore, ReferencePemDecoderRejectsForeignPem)
@@ -1313,7 +1348,7 @@ TEST_F(MPSSStore, ReferencePemEncoderCarriesNameAndRoundTrips)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const std::string key_name = mpss_reference_fixture_key_name;
+    const std::string key_name = reference_fixture_key_name();
     mpss_delete_key(key_name.c_str());
     SCOPE_GUARD(mpss_delete_key(key_name.c_str()));
 
@@ -1323,8 +1358,11 @@ TEST_F(MPSSStore, ReferencePemEncoderCarriesNameAndRoundTrips)
         GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
     }
 
+    // The reference pins the backend the key was opened on, even though the caller never named one,
+    // so it cannot later resolve through a different default.
     const std::string pem = EncodeReferencePem(key.get());
-    EXPECT_EQ(ReferencePemFor("", key_name), pem);
+    EXPECT_EQ(ReferencePemFor(mpss::get_default_backend_name(), key_name), pem);
+    EXPECT_NE(ReferencePemFor("", key_name), pem);
     EXPECT_EQ(std::string::npos, pem.find("PRIVATE KEY"));
 
     // The encoder advertises only the private-key selection, keeping public-key material out of the
@@ -1339,6 +1377,39 @@ TEST_F(MPSSStore, ReferencePemEncoderCarriesNameAndRoundTrips)
     EXPECT_EQ(pem, EncodeReferencePem(decoded.get()));
 }
 
+// Scenario: a reference PEM is offered to a caller that asked for a public key.
+// Expected behavior: nothing is produced. Decoding a reference opens the key it names, so the
+// result can sign; a caller that asked for public material must not receive that.
+TEST_F(MPSSStore, ReferencePemIsNotDecodedForAPublicKeyRequest)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = reference_fixture_key_name();
+    mpss_delete_key(key_name.c_str());
+    SCOPE_GUARD(mpss_delete_key(key_name.c_str()));
+
+    evp_pkey_ptr key = GenerateKey(libctx, key_name);
+    if (nullptr == key)
+    {
+        GTEST_SKIP() << "MPSS provider key generation failed: " << mpss_get_error();
+    }
+
+    const std::string pem = EncodeReferencePem(key.get());
+    key.reset();
+
+    // The same reference still loads through the private-key path.
+    ASSERT_NE(nullptr, DecodeReferencePem(libctx, pem).get());
+
+    bio_ptr in(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+    ASSERT_NE(nullptr, in.get());
+    const evp_pkey_ptr as_public(PEM_read_bio_PUBKEY_ex(in.get(), nullptr, nullptr, nullptr, libctx, nullptr));
+    EXPECT_EQ(nullptr, as_public.get());
+    ERR_clear_error();
+}
+
 // Scenario: a key created on an explicitly named backend is serialized to a reference PEM.
 // Expected behavior: the reference carries that backend, so the decoder reopens the key where it
 // lives instead of resolving a same-named key on the default one.
@@ -1349,7 +1420,7 @@ TEST_F(MPSSStore, ReferencePemCarriesExplicitBackend)
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
 
-    const std::string key_name = mpss_reference_fixture_key_name;
+    const std::string key_name = reference_fixture_key_name();
     mpss_delete_key_from_backend(key_name.c_str(), "os");
     SCOPE_GUARD(mpss_delete_key_from_backend(key_name.c_str(), "os"));
 

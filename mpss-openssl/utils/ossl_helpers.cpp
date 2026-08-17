@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/utils/names.h"
+#include "mpss-openssl/utils/ossl_ptr.h"
 #include "mpss-openssl/utils/utils.h"
 #include <algorithm>
 #include <cstddef>
@@ -94,42 +95,36 @@ byte_vector mpss_vk_params_to_spki(OSSL_LIB_CTX *libctx, const OSSL_PARAM *param
     OSSL_PARAM params_clone[3]{*group, *pub, OSSL_PARAM_END};
 
     // Create a new EVP_PKEY from the parameters.
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=default");
+    evp_pkey_ctx_ptr ctx(EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=default"));
     if (nullptr == ctx)
     {
         return {};
     }
 
-    EVP_PKEY *pkey = nullptr;
-    unsigned char *der_buf = nullptr;
-    byte_vector der_data;
-
-    do
+    if (1 != EVP_PKEY_fromdata_init(ctx.get()))
     {
-        if (1 != EVP_PKEY_fromdata_init(ctx))
-        {
-            break;
-        }
-        if (1 != EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params_clone))
-        {
-            break;
-        }
+        return {};
+    }
 
-        // Encode pkey to DER using i2d_PUBKEY.
-        int der_size = i2d_PUBKEY(pkey, &der_buf);
-        if (der_size <= 0)
-        {
-            break;
-        }
+    EVP_PKEY *pkey_raw = nullptr;
+    if (1 != EVP_PKEY_fromdata(ctx.get(), &pkey_raw, EVP_PKEY_PUBLIC_KEY, params_clone))
+    {
+        return {};
+    }
+    const evp_pkey_ptr pkey(pkey_raw);
 
-        der_data.resize(static_cast<std::size_t>(der_size));
-        std::transform(der_buf, der_buf + der_size, der_data.begin(),
-                       [](unsigned char c) { return static_cast<std::byte>(c); });
-    } while (false);
+    // Encode pkey to DER using i2d_PUBKEY.
+    unsigned char *der_raw = nullptr;
+    const int der_size = i2d_PUBKEY(pkey.get(), &der_raw);
+    const openssl_ptr<unsigned char> der_buf(der_raw);
+    if (der_size <= 0)
+    {
+        return {};
+    }
 
-    OPENSSL_free(der_buf);
-    EVP_PKEY_free(pkey);
-    EVP_PKEY_CTX_free(ctx);
+    byte_vector der_data(static_cast<std::size_t>(der_size));
+    std::transform(der_raw, der_raw + der_size, der_data.begin(),
+                   [](unsigned char c) { return static_cast<std::byte>(c); });
 
     return der_data;
 }

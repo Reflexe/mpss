@@ -586,6 +586,58 @@ After `delete_key()` succeeds, all `KeyPair` objects referring to that key must 
 and must not be used. Their subsequent behavior is backend-dependent and is not part of the MPSS API
 contract.
 
+### Key Policies
+
+`KeyPair::Create` takes an optional [`KeyPolicy`](mpss/key_policy.h) that constrains how the key may
+later be used. A policy is baked into the key when it is created and cannot be changed afterwards;
+keys that already exist are unaffected by policies chosen later.
+
+`KeyPolicy` is a bitmask of packed fields, one per policy aspect:
+
+| Bits | Field | Backend |
+| --- | --- | --- |
+| 0-3 | PIN policy | YubiKey |
+| 4-7 | Touch policy | YubiKey |
+| 8 | User presence | Apple Secure Enclave |
+| 9-63 | Reserved | |
+
+Within a field, zero means "unset": the backend falls back to its environment variable, if it has
+one, and otherwise to its own default. `KeyPolicy::none` leaves every field unset and so preserves
+default behavior.
+
+**A backend rejects any non-zero policy field it cannot enforce, and creation fails.** This is
+deliberate. A policy is a security requirement, so failing is better than returning a key that
+silently does not honor it.
+
+```cpp
+#include "mpss/key_policy.h"
+
+// Require system user authentication whenever this key signs.
+auto key = mpss::KeyPair::Create("user-present-key", mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+    mpss::KeyPolicy::apple_secure_enclave_user_presence);
+
+// Fields combine with '|'; unset fields fall back to environment variables and defaults.
+auto yk_key = mpss::KeyPair::Create("my-key", mpss::Algorithm::ecdsa_secp256r1_sha256,
+    mpss::KeyPolicy::yubikey_pin_once | mpss::KeyPolicy::yubikey_touch_cached);
+
+// No policy: every field falls back to environment variables and defaults.
+auto default_key = mpss::KeyPair::Create("my-key2", mpss::Algorithm::ecdsa_secp256r1_sha256);
+```
+
+The YubiKey enumerators are compiled only when the YubiKey backend is enabled
+(`MPSS_BACKEND_YUBIKEY`).
+
+**Apple Secure Enclave user presence.** `KeyPolicy::apple_secure_enclave_user_presence` requires
+system user authentication when the key signs. It is enforced by the Secure Enclave access control
+attached when the key is created, and the operating system chooses an available authentication
+mechanism, such as Touch ID, Face ID, or the device passcode. Creation fails rather than silently
+using a software key if the requested algorithm or an available Secure Enclave cannot satisfy the
+policy.
+
+**YubiKey PIN and touch policies** can also be set through environment variables, and interact with
+several device-specific considerations. See
+[Key Policy Configuration](#key-policy-configuration) in the YubiKey chapter.
+
 ### Supported Algorithms
 
 The library supports the following ECDSA algorithms:
@@ -813,20 +865,8 @@ auto key = mpss::KeyPair::Create("my-key", mpss::Algorithm::ecdsa_secp256r1_sha2
 auto key2 = mpss::KeyPair::Create("my-key2", mpss::Algorithm::ecdsa_secp256r1_sha256);
 ```
 
-On Apple platforms, Secure Enclave keys can require system user authentication when used for signing:
-
-```cpp
-auto key = mpss::KeyPair::Create(
-    "user-present-key", mpss::Algorithm::ecdsa_secp256r1_sha256,
-    "os",
-    mpss::KeyPolicy::apple_secure_enclave_user_presence);
-```
-
-This policy is enforced by the Secure Enclave access control attached when the key is created. The operating system
-chooses an available authentication mechanism, such as Touch ID, Face ID, or the device passcode. Creation fails
-rather than silently using a software key if the requested algorithm or an available Secure Enclave cannot satisfy
-the policy. Backends reject policy flags they cannot enforce. Existing keys are unaffected, and `KeyPolicy::none`
-preserves non-interactive signing.
+`KeyPolicy` is not specific to YubiKey; see [Key Policies](#key-policies) for the full bit layout,
+the other backends' fields, and the rule that a backend rejects a policy it cannot enforce.
 
 ### Custom Interaction Handlers
 
@@ -955,6 +995,9 @@ The OpenSSL provider consists of several key components:
 - **Signature Operations ([provider/signature.h](mpss-openssl/provider/signature.h) and [.cpp](mpss-openssl/provider/signature.cpp))** - Implements ECDSA and X.509 certificate signing using MPSS keys
 - **Digest Operations ([provider/digest.h](mpss-openssl/provider/digest.h) and [.cpp](mpss-openssl/provider/digest.cpp))** - Wraps OpenSSL hash algorithm implementations
 - **Encoder ([provider/encoder.h](mpss-openssl/provider/encoder.h) and [.cpp](mpss-openssl/provider/encoder.cpp))** - Handles key encoding and serialization for interoperability
+- **Decoder ([provider/decoder.h](mpss-openssl/provider/decoder.h) and [.cpp](mpss-openssl/provider/decoder.cpp))** - Recognizes a key reference PEM and turns it back into a provider key, so a persisted key can be reloaded by name through OpenSSL's standard decode path
+- **Store ([provider/store.h](mpss-openssl/provider/store.h) and [.cpp](mpss-openssl/provider/store.cpp))** - Implements the `mpss:<key_name>` URI used to open and delete existing keys through `OSSL_STORE`
+- **Key References ([provider/reference.h](mpss-openssl/provider/reference.h) and [.cpp](mpss-openssl/provider/reference.cpp))** - Builds and parses the `<backend>\0<key_name>` blob that both the store loader and the decoder hand to key management
 - **Core API ([api.h](mpss-openssl/api.h) and [.cpp](mpss-openssl/api.cpp))** - Declaration of the `OSSL_provider_init` function, as well as C APIs for a few key management operations that are outside the purview of OpenSSL
 - **Interaction Handler ([interaction_handler.h](mpss-openssl/interaction_handler.h) and [.cpp](mpss-openssl/interaction_handler.cpp))** - C API for installing custom PIN-request and touch-notification callbacks when using the YubiKey backend
 - **Logging API ([log.h](mpss-openssl/log.h))** - A compatibility header that forwards to [mpss/log_c.h](mpss/log_c.h), where the `mpss_log_*` C logging API is declared. The implementation lives in the core library ([mpss/log.cpp](mpss/log.cpp)), so there is no separate `mpss-openssl` logging source file
@@ -1160,6 +1203,66 @@ There is no way to bring back deleted secret keys.
 - Existing certificates remain valid when a secret key is deleted and can still be verified using the public key.
 - It may not be easy to list existing keys (or rather, their "names") in the secure environment.
 MPSS does not provide such functionality, but individual OS backends might have APIs for enumerating the storage content identifiers.
+
+#### 7. Loading a Key from a Key Reference PEM
+
+Sections 1 and 2 above address a key by name from inside the application. Many OpenSSL-based
+programs instead expect to be pointed at a *file* containing a private key, and cannot be changed to
+call MPSS or `OSSL_STORE` directly. An MPSS key has no private material that could be written to such
+a file.
+
+A **key reference PEM** bridges that gap. It carries the key's *name*, not the key:
+
+```
+-----BEGIN MPSS KEY REFERENCE-----
+b3MAbXkta2V5
+-----END MPSS KEY REFERENCE-----
+```
+
+The body is the backend name, a single NUL, and the key name (`os\0my-key` in the example above),
+base64-encoded. It holds no secret, and the label is deliberately not `PRIVATE KEY` so the file
+cannot be mistaken for PKCS#8.
+
+**Writing a reference.** The reference is produced through the standard encoder API, selecting the
+`MpssKeyReference` output structure:
+
+```cpp
+// key is an EVP_PKEY previously created or opened through the MPSS provider.
+OSSL_ENCODER_CTX *ectx =
+    OSSL_ENCODER_CTX_new_for_pkey(key, EVP_PKEY_PRIVATE_KEY, "PEM", "MpssKeyReference", "provider=mpss");
+BIO *out = BIO_new_file("my-key.pem", "w");
+OSSL_ENCODER_to_bio(ectx, out);
+BIO_free(out);
+OSSL_ENCODER_CTX_free(ectx);
+```
+
+The reference records the backend the key was actually opened on, so a key created on a specific
+backend cannot later be resolved to a different, same-named key on the default one.
+
+**Reading a reference.** No special API is needed, and unlike the `OSSL_STORE` path in section 2, no
+property query is required either: the reference itself identifies the provider that must materialize
+the key. It is enough that the MPSS provider is loaded in the library context. An application that
+knows nothing about MPSS, and simply reads what it believes is a private key file, reopens the
+hardware-backed key:
+
+```cpp
+BIO *in = BIO_new_file("my-key.pem", "r");
+EVP_PKEY *key = PEM_read_bio_PrivateKey_ex(in, nullptr, nullptr, nullptr, libctx, nullptr);
+BIO_free(in);
+
+// key now signs in the secure environment; no private material was ever in the file.
+// ... use key, then free it.
+EVP_PKEY_free(key);
+```
+
+**Notes:**
+- `PEM_write_bio_PrivateKey` does *not* produce a reference. It requests the PKCS#8 `PrivateKeyInfo`
+structure, which is defined to contain the private key, so no encoder can satisfy it for a key whose
+private material cannot leave the secure environment. The call fails rather than writing anything.
+- A reference is a pointer to a key, not the key. Anyone able to replace the file can change which
+key an application uses, and which backend it is opened from. Protect it as you would a
+configuration file that selects a credential.
+- Reading a reference for a key that no longer exists fails; the reference is not a cached copy.
 
 ### Building mpss-openssl 
 

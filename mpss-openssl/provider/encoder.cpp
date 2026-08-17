@@ -6,6 +6,7 @@
 #include "mpss-openssl/provider/provider.h"
 #include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/utils/names.h"
+#include "mpss-openssl/utils/ossl_ptr.h"
 #include "mpss-openssl/utils/utils.h"
 #include <openssl/bio.h>
 #include <openssl/core_dispatch.h>
@@ -133,26 +134,19 @@ extern "C" int mpss_encoder_encode([[maybe_unused]] void *ctx, OSSL_CORE_BIO *co
         return 0;
     }
 
-    BIO *out = BIO_new_from_core_bio(ectx->libctx, cout);
+    bio_ptr out(BIO_new_from_core_bio(ectx->libctx, cout));
     if (nullptr == out)
     {
         return 0;
     }
 
-    int result = 0;
-    do
+    if (!std::in_range<int>(cb_data.spki.size()))
     {
-        if (!std::in_range<int>(cb_data.spki.size()))
-        {
-            break;
-        }
-        const int spki_size = static_cast<int>(cb_data.spki.size());
-        const int write_size = BIO_write(out, cb_data.spki.data(), spki_size);
-        result = (write_size == spki_size) ? 1 : 0;
-    } while (false);
+        return 0;
+    }
 
-    BIO_free(out);
-    return result;
+    const int spki_size = static_cast<int>(cb_data.spki.size());
+    return (BIO_write(out.get(), cb_data.spki.data(), spki_size) == spki_size) ? 1 : 0;
 }
 
 extern "C" int mpss_reference_encoder_does_selection([[maybe_unused]] void *provctx, int selection)
@@ -177,14 +171,15 @@ extern "C" int mpss_reference_pem_encoder_encode(void *ctx, OSSL_CORE_BIO *cout,
     {
         return 0;
     }
-    if (!(selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
+    if (0 == (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
     {
         return 0;
     }
 
-    // Persist the backend: otherwise a key created on an explicit backend reloads from the default
-    // one and could resolve a different same-named key.
-    const std::string_view backend = pkey->mpss_backend ? *pkey->mpss_backend : std::string_view{};
+    // Persist the backend the key was actually opened on, not the one the caller happened to name.
+    // Leaving it empty makes the reference resolve through whatever the default backend is at load
+    // time, which can differ later and reach a different key of the same name.
+    const std::string_view backend{pkey->key_pair->backend_name()};
     byte_vector body;
     if (!mpss_build_key_load_reference(backend, *pkey->name, body))
     {

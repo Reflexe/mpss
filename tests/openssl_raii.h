@@ -3,43 +3,16 @@
 
 #pragma once
 
-#include "mpss-openssl/utils/utils.h"
-#include <memory>
-#include <openssl/bio.h>
+#include "mpss-openssl/utils/ossl_ptr.h"
 #include <openssl/encoder.h>
-#include <openssl/evp.h>
 
 namespace mpss_openssl::testing
 {
 
-struct evp_pkey_deleter
-{
-    void operator()(EVP_PKEY *key) const noexcept
-    {
-        EVP_PKEY_free(key);
-    }
-};
-
-struct evp_pkey_ctx_deleter
-{
-    void operator()(EVP_PKEY_CTX *ctx) const noexcept
-    {
-        EVP_PKEY_CTX_free(ctx);
-    }
-};
-
-struct encoder_ctx_deleter
-{
-    void operator()(OSSL_ENCODER_CTX *ctx) const noexcept
-    {
-        OSSL_ENCODER_CTX_free(ctx);
-    }
-};
-
-using evp_pkey_ptr = std::unique_ptr<EVP_PKEY, evp_pkey_deleter>;
-using evp_pkey_ctx_ptr = std::unique_ptr<EVP_PKEY_CTX, evp_pkey_ctx_deleter>;
-// Reuse the provider's BIO deleter rather than defining a second one.
+// Reuse the provider's smart pointers rather than defining a second set.
 using bio_ptr = utils::bio_ptr;
-using encoder_ctx_ptr = std::unique_ptr<OSSL_ENCODER_CTX, encoder_ctx_deleter>;
+using evp_pkey_ptr = utils::evp_pkey_ptr;
+using evp_pkey_ctx_ptr = utils::evp_pkey_ctx_ptr;
+using encoder_ctx_ptr = utils::ossl_ptr<OSSL_ENCODER_CTX, OSSL_ENCODER_CTX_free>;
 
 } // namespace mpss_openssl::testing

@@ -6,6 +6,7 @@
 #include "mpss-openssl/provider/provider.h"
 #include "mpss-openssl/provider/reference.h"
 #include "mpss-openssl/utils/names.h"
+#include "mpss-openssl/utils/ossl_ptr.h"
 #include "mpss-openssl/utils/utils.h"
 #include <cstddef>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <openssl/err.h>
 #include <openssl/params.h>
 #include <openssl/pem.h>
+#include <openssl/proverr.h>
 #include <span>
 #include <string>
 
@@ -77,7 +79,10 @@ extern "C" int mpss_decoder_does_selection([[maybe_unused]] void *provctx, int s
         return 1;
     }
 
-    return (selection & (OSSL_KEYMGMT_SELECT_PRIVATE_KEY | OSSL_KEYMGMT_SELECT_PUBLIC_KEY)) ? 1 : 0;
+    // Decoding a reference opens the key it names, so the result can sign. Answering a public-key
+    // request would hand that to a caller asking for public material only; the public key comes from
+    // encoding an already opened key, or from its certificate.
+    return (0 != (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)) ? 1 : 0;
 }
 
 reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO *cin, byte_vector &load_reference)
@@ -123,6 +128,11 @@ reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO
     std::string key_name;
     if (!mpss_parse_key_load_reference(body, backend, key_name))
     {
+        // This aborts the whole decoder chain, so it must leave the caller something to report.
+        // Nothing below raises on its own, and the mark was cleared just above.
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_BAD_ENCODING,
+                       "PEM label \"%s\" does not carry a usable key load reference",
+                       mpss_key_reference_pem_label);
         return reference_parse_status::invalid_mpss_reference;
     }
 
@@ -138,6 +148,7 @@ extern "C" int mpss_decoder_decode(void *ctx, OSSL_CORE_BIO *cin, [[maybe_unused
     mpss_decoder_ctx *dctx = static_cast<mpss_decoder_ctx *>(ctx);
     if (nullptr == dctx || nullptr == object_cb)
     {
+        ERR_raise(ERR_LIB_PROV, ERR_R_PASSED_NULL_PARAMETER);
         return decoder_hard_error;
     }
 

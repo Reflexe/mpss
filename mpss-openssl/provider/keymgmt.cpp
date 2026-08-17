@@ -125,7 +125,7 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
     }
 
     // Fail early on any selection requesting the private key.
-    if (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
     {
         return 0;
     }
@@ -143,14 +143,14 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
     byte_vector vk;
 
     // For a parameter export, we just return the group type string.
-    if (selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS))
     {
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guaranteed by has_valid_key() check above.
         char *group_name = pkey->group_name->data();
         *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, group_name, 0);
     }
 
-    if (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY))
     {
         const std::size_t key_size = pkey->key_pair->extract_key_size();
         if (0 == key_size)
@@ -195,17 +195,17 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
     static const OSSL_PARAM *types_array[] = {no_types, param_types, key_types, all_types};
 
     // Private key selection is not supported. Return early.
-    if (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
     {
         return types_array[0];
     }
 
     std::size_t types_idx = 0;
-    if (selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS))
     {
         types_idx += 1;
     }
-    if (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY)
+    if (0 != (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY))
     {
         types_idx += 2;
     }
