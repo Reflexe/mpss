@@ -133,6 +133,7 @@ mpss_log_level_t to_c_level(mpss::LogLevel level)
 } // namespace
 
 mpss_log_level_t mpss_log_get_level(void)
+try
 {
     auto logger = mpss::GetLogger();
     if (nullptr == logger)
@@ -141,8 +142,13 @@ mpss_log_level_t mpss_log_get_level(void)
     }
     return to_c_level(logger->get_level());
 }
+catch (...)
+{
+    return MPSS_LOG_LEVEL_SUPPRESS;
+}
 
 void mpss_log_set_level(mpss_log_level_t level)
+try
 {
     auto logger = mpss::GetLogger();
     if (nullptr != logger)
@@ -150,8 +156,12 @@ void mpss_log_set_level(mpss_log_level_t level)
         logger->set_level(to_cpp_level(level));
     }
 }
+catch (...) // NOLINT(bugprone-empty-catch) - dropped; see mpss_log. The level is left unchanged.
+{
+}
 
 void mpss_log(mpss_log_level_t level, const char *message)
+try
 {
     if (nullptr == message)
     {
@@ -163,7 +173,11 @@ void mpss_log(mpss_log_level_t level, const char *message)
         logger->log(to_cpp_level(level), std::string{message});
     }
 }
+catch (...) // NOLINT(bugprone-empty-catch) - dropped: logging must not disturb the last error.
+{
+}
 
+// No handler needed on these: they do nothing but call mpss_log, which catches everything.
 void mpss_log_trace(const char *message)
 {
     mpss_log(MPSS_LOG_LEVEL_TRACE, message);
@@ -190,6 +204,7 @@ void mpss_log_error(const char *message)
 }
 
 void mpss_log_flush(void)
+try
 {
     auto logger = mpss::GetLogger();
     if (nullptr != logger)
@@ -197,8 +212,12 @@ void mpss_log_flush(void)
         logger->flush();
     }
 }
+catch (...) // NOLINT(bugprone-empty-catch) - dropped; see mpss_log.
+{
+}
 
 void mpss_log_close(void)
+try
 {
     auto logger = mpss::GetLogger();
     if (nullptr != logger)
@@ -206,10 +225,14 @@ void mpss_log_close(void)
         logger->close();
     }
 }
+catch (...) // NOLINT(bugprone-empty-catch) - dropped; see mpss_log.
+{
+}
 
 void mpss_log_set_custom_logger(mpss_log_handler_t log_handlers[MPSS_LOG_LEVEL_COUNT],
                                 mpss_flush_handler_t flush_handlers[MPSS_LOG_LEVEL_COUNT],
                                 mpss_close_handler_t close_handlers[MPSS_LOG_LEVEL_COUNT])
+try
 {
     std::array<mpss::log_handler_t, mpss::log_level_count> cpp_log{};
     std::array<mpss::flush_handler_t, mpss::log_level_count> cpp_flush{};
@@ -237,8 +260,15 @@ void mpss_log_set_custom_logger(mpss_log_handler_t log_handlers[MPSS_LOG_LEVEL_C
     auto logger = mpss::Logger::Create(std::move(cpp_log), std::move(cpp_flush), std::move(cpp_close));
     mpss::GetOrSetLogger(std::move(logger));
 }
+catch (...) // NOLINT(bugprone-empty-catch) - dropped; see mpss_log. The previous logger stays.
+{
+}
 
 void mpss_log_reset_default(void)
+try
 {
     mpss::GetOrSetLogger(mpss::NewDefaultLogger());
+}
+catch (...) // NOLINT(bugprone-empty-catch) - dropped; see mpss_log. The previous logger stays.
+{
 }

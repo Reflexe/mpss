@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/interaction_handler.h"
+#include "mpss-openssl/utils/internal_error.h"
 
 #ifdef MPSS_BACKEND_YUBIKEY
 
@@ -91,15 +92,26 @@ void mpss_set_interaction_handler(mpss_request_pin_handler_t request_pin,
                                   mpss_notify_pin_result_handler_t notify_pin_result,
                                   mpss_notify_touch_handler_t notify_touch_needed,
                                   mpss_notify_touch_complete_handler_t notify_touch_complete)
+try
 {
     auto handler = std::make_shared<CInteractionHandler>(request_pin, notify_pin_result, notify_touch_needed,
                                                          notify_touch_complete);
     mpss::GetOrSetInteractionHandler(std::move(handler));
 }
+catch (...)
+{
+    // The previously installed handler is left in place.
+    mpss_openssl::utils::set_internal_error();
+}
 
 void mpss_reset_default_interaction_handler(void)
+try
 {
     mpss::ResetDefaultInteractionHandler();
+}
+catch (...)
+{
+    mpss_openssl::utils::set_internal_error();
 }
 
 #endif // MPSS_BACKEND_YUBIKEY

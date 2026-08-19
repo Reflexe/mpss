@@ -23,6 +23,7 @@ using namespace ::mpss_openssl::provider;
 using namespace ::mpss_openssl::utils;
 
 extern "C" void *mpss_encoder_newctx(void *provctx)
+try
 {
     mpss_provider_ctx *pctx = static_cast<mpss_provider_ctx *>(provctx);
     if (nullptr == pctx)
@@ -43,6 +44,10 @@ extern "C" void *mpss_encoder_newctx(void *provctx)
 
     return ectx;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" void mpss_encoder_freectx(void *ctx)
 {
@@ -51,14 +56,20 @@ extern "C" void mpss_encoder_freectx(void *ctx)
 }
 
 extern "C" const OSSL_PARAM *mpss_encoder_gettable_params([[maybe_unused]] void *provctx)
+try
 {
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("output", nullptr, 0),
                                      OSSL_PARAM_utf8_string("structure", nullptr, 0), OSSL_PARAM_END};
 
     return ret;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_encoder_get_params(OSSL_PARAM params[])
+try
 {
     if (nullptr == params)
     {
@@ -77,8 +88,13 @@ extern "C" int mpss_encoder_get_params(OSSL_PARAM params[])
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_encoder_does_selection([[maybe_unused]] void *provctx, int selection)
+try
 {
     // We only support encoding the public key.
     if (EVP_PKEY_PUBLIC_KEY == selection)
@@ -88,10 +104,15 @@ extern "C" int mpss_encoder_does_selection([[maybe_unused]] void *provctx, int s
 
     return 0;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_encoder_encode([[maybe_unused]] void *ctx, OSSL_CORE_BIO *cout, const void *obj_raw,
                                    [[maybe_unused]] const OSSL_PARAM obj_abstract[], int selection,
                                    [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *cb, [[maybe_unused]] void *cbarg)
+try
 {
     mpss_encoder_ctx *ectx = static_cast<mpss_encoder_ctx *>(ctx);
     if (nullptr == ectx)
@@ -148,10 +169,19 @@ extern "C" int mpss_encoder_encode([[maybe_unused]] void *ctx, OSSL_CORE_BIO *co
     const int spki_size = static_cast<int>(cb_data.spki.size());
     return (BIO_write(out.get(), cb_data.spki.data(), spki_size) == spki_size) ? 1 : 0;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_reference_encoder_does_selection([[maybe_unused]] void *provctx, int selection)
+try
 {
     return (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) ? 1 : 0;
+}
+catch (...)
+{
+    return 0;
 }
 
 int write_reference_pem(BIO *out, const byte_vector &body)
@@ -164,6 +194,7 @@ extern "C" int mpss_reference_pem_encoder_encode(void *ctx, OSSL_CORE_BIO *cout,
                                                  [[maybe_unused]] const OSSL_PARAM obj_abstract[], int selection,
                                                  [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *cb,
                                                  [[maybe_unused]] void *cbarg)
+try
 {
     mpss_encoder_ctx *ectx = static_cast<mpss_encoder_ctx *>(ctx);
     const mpss_key *pkey = static_cast<const mpss_key *>(obj_raw);
@@ -193,6 +224,10 @@ extern "C" int mpss_reference_pem_encoder_encode(void *ctx, OSSL_CORE_BIO *cout,
     }
 
     return write_reference_pem(out.get(), body);
+}
+catch (...)
+{
+    return 0;
 }
 
 const OSSL_DISPATCH mpss_ec_reference_pem_encoder_functions[] = {

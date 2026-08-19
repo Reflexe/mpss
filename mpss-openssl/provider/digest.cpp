@@ -5,6 +5,7 @@
 #include "mpss-openssl/provider/provider.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
+#include "mpss/utils/scope_guard.h"
 #include <algorithm>
 #include <cstddef>
 #include <openssl/core_names.h>
@@ -60,6 +61,7 @@ using enum digest_state;
 
 #define MPSS_MAKE_DIGEST_NEWCTX(digest)                                                                                \
     extern "C" void *mpss_digest_newctx_##digest(void *provctx)                                                        \
+    try                                                                                                                \
     {                                                                                                                  \
         mpss_provider_ctx *pctx = static_cast<mpss_provider_ctx *>(provctx);                                           \
         if (!pctx)                                                                                                     \
@@ -70,6 +72,10 @@ using enum digest_state;
         dctx->libctx = pctx->libctx;                                                                                   \
         dctx->md_name = #digest;                                                                                       \
         return dctx;                                                                                                   \
+    }                                                                                                                  \
+    catch (...)                                                                                                        \
+    {                                                                                                                  \
+        return nullptr;                                                                                                \
     }
 
 MPSS_MAKE_DIGEST_NEWCTX(SHA256)
@@ -83,6 +89,7 @@ extern "C" void mpss_digest_freectx(void *ctx)
 }
 
 extern "C" void *mpss_digest_dupctx(void *ctx)
+try
 {
     mpss_digest_ctx *dctx = static_cast<mpss_digest_ctx *>(ctx);
     if (nullptr == dctx)
@@ -94,8 +101,13 @@ extern "C" void *mpss_digest_dupctx(void *ctx)
     mpss_digest_ctx *new_dctx = mpss_new<mpss_digest_ctx>(*dctx);
     return new_dctx;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_digest_init(void *ctx, [[maybe_unused]] const OSSL_PARAM params[])
+try
 {
     mpss_digest_ctx *dctx = static_cast<mpss_digest_ctx *>(ctx);
     if (nullptr == dctx)
@@ -159,8 +171,13 @@ extern "C" int mpss_digest_init(void *ctx, [[maybe_unused]] const OSSL_PARAM par
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_digest_update(void *ctx, const unsigned char *in, ::size_t inl)
+try
 {
     mpss_digest_ctx *dctx = static_cast<mpss_digest_ctx *>(ctx);
 
@@ -185,8 +202,13 @@ extern "C" int mpss_digest_update(void *ctx, const unsigned char *in, ::size_t i
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_digest_final(void *ctx, unsigned char *out, ::size_t *outl, ::size_t outsz)
+try
 {
     mpss_digest_ctx *dctx = static_cast<mpss_digest_ctx *>(ctx);
     if (nullptr == dctx)
@@ -239,6 +261,10 @@ extern "C" int mpss_digest_final(void *ctx, unsigned char *out, ::size_t *outl, 
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 int mpss_digest_digest_internal(void *ctx, const unsigned char *in, ::size_t inl, unsigned char *out, ::size_t *outl,
                                 ::size_t outsz)
@@ -255,14 +281,18 @@ int mpss_digest_digest_internal(void *ctx, const unsigned char *in, ::size_t inl
 #define MPSS_MAKE_DIGEST_DIGEST(digest)                                                                                \
     extern "C" int mpss_digest_digest_##digest(void *provctx, const unsigned char *in, ::size_t inl,                   \
                                                unsigned char *out, ::size_t *outl, ::size_t outsz)                     \
+    try                                                                                                                \
     {                                                                                                                  \
         void *ctx = mpss_digest_newctx_##digest(provctx);                                                              \
-        const int result = mpss_digest_digest_internal(ctx, in, inl, out, outl, outsz);                                \
         /* The one-shot entry owns the context it just allocated -- the caller never sees the pointer, so it     */    \
-        /* must be freed here or every invocation leaks the struct plus the EVP_MD/EVP_MD_CTX owned by its       */    \
-        /* destructor. mpss_digest_freectx tolerates a null ctx (null provctx path allocates nothing).           */    \
-        mpss_digest_freectx(ctx);                                                                                      \
-        return result;                                                                                                 \
+        /* must be freed on every exit path or each invocation leaks the struct plus the EVP_MD/EVP_MD_CTX owned */    \
+        /* by its destructor. mpss_digest_freectx tolerates a null ctx (null provctx path allocates nothing).    */    \
+        SCOPE_GUARD(mpss_digest_freectx(ctx));                                                                         \
+        return mpss_digest_digest_internal(ctx, in, inl, out, outl, outsz);                                            \
+    }                                                                                                                  \
+    catch (...)                                                                                                        \
+    {                                                                                                                  \
+        return 0;                                                                                                      \
     }
 
 MPSS_MAKE_DIGEST_DIGEST(SHA256)
@@ -270,15 +300,21 @@ MPSS_MAKE_DIGEST_DIGEST(SHA384)
 MPSS_MAKE_DIGEST_DIGEST(SHA512)
 
 extern "C" const OSSL_PARAM *mpss_digest_gettable_params([[maybe_unused]] void *ctx)
+try
 {
     static const OSSL_PARAM ret[] = {OSSL_PARAM_size_t(OSSL_DIGEST_PARAM_BLOCK_SIZE, nullptr),
                                      OSSL_PARAM_size_t(OSSL_DIGEST_PARAM_SIZE, nullptr), OSSL_PARAM_END};
 
     return ret;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 #define MPSS_MAKE_DIGEST_GET_PARAMS(digest, digestsz, blocksz)                                                         \
     extern "C" int mpss_digest_get_params_##digest(OSSL_PARAM params[])                                                \
+    try                                                                                                                \
     {                                                                                                                  \
         OSSL_PARAM *p;                                                                                                 \
         if ((p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_BLOCK_SIZE)) && !OSSL_PARAM_set_size_t(p, blocksz / 8))   \
@@ -290,6 +326,10 @@ extern "C" const OSSL_PARAM *mpss_digest_gettable_params([[maybe_unused]] void *
             return 0;                                                                                                  \
         }                                                                                                              \
         return 1;                                                                                                      \
+    }                                                                                                                  \
+    catch (...)                                                                                                        \
+    {                                                                                                                  \
+        return 0;                                                                                                      \
     }
 
 MPSS_MAKE_DIGEST_GET_PARAMS(SHA256, 256, 512)

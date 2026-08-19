@@ -29,6 +29,23 @@ template <typename T> inline void mpss_delete(T *obj)
     delete obj; // NOLINT(cppcoreguidelines-owning-memory)
 }
 
+/** @brief Releases a provider struct with @ref mpss_delete, pairing it with @ref mpss_new. */
+template <typename T> struct mpss_deleter
+{
+    void operator()(T *obj) const noexcept
+    {
+        mpss_delete(obj);
+    }
+};
+
+/**
+ * @brief Owns a provider struct until OpenSSL takes it.
+ *
+ * Call `release()` where ownership passes to the caller; anything else releases with
+ * @ref mpss_delete.
+ */
+template <typename T> using mpss_ptr = std::unique_ptr<T, mpss_deleter<T>>;
+
 std::size_t mpss_sign_as_der(const std::unique_ptr<mpss::KeyPair> &key_pair, std::span<const std::byte> hash_tbs,
                              std::span<std::byte> out);
 

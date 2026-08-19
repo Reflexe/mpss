@@ -34,6 +34,7 @@
 #include <openssl/store.h>
 #include <openssl/x509.h>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1488,5 +1489,33 @@ INSTANTIATE_TEST_SUITE_P(MPSSCreateDelete, CreateAndDeleteKeyTest,
                              std::ranges::replace_if(name, [](char c) { return !std::isalnum(c); }, '_');
                              return name;
                          });
+
+} // namespace mpss_openssl::tests
+
+// Pins the compiler behaviour the guards rely on: under MSVC's /EHsc an extern "C" function is
+// assumed not to throw, so a handler outside one does not run and the process dies. Every guarded
+// function therefore puts its handler inside the frame, as here.
+extern "C" int mpss_test_guarded_entry(int should_throw)
+try
+{
+    if (0 != should_throw)
+    {
+        throw std::runtime_error("exception at a C boundary");
+    }
+    return 42;
+}
+catch (...)
+{
+    return 0;
+}
+
+namespace mpss_openssl::tests
+{
+
+TEST(MPSSEntryGuard, AnExceptionAtACBoundaryReturnsFailureInsteadOfTerminating)
+{
+    EXPECT_EQ(42, mpss_test_guarded_entry(0));
+    EXPECT_EQ(0, mpss_test_guarded_entry(1));
+}
 
 } // namespace mpss_openssl::tests

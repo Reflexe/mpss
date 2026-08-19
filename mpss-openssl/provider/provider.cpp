@@ -26,6 +26,7 @@ extern "C" void mpss_provider_teardown(void *provctx)
 
 extern "C" const OSSL_ALGORITHM *mpss_provider_query_operation([[maybe_unused]] void *provctx, int operation_id,
                                                                int *no_store)
+try
 {
     // The function arrays can be stored by the core.
     if (nullptr == no_store)
@@ -52,6 +53,10 @@ extern "C" const OSSL_ALGORITHM *mpss_provider_query_operation([[maybe_unused]] 
         return nullptr;
     }
 }
+catch (...)
+{
+    return nullptr;
+}
 
 const OSSL_DISPATCH mpss_provider_functions[] = {
     {OSSL_FUNC_PROVIDER_TEARDOWN, reinterpret_cast<void (*)(void)>(mpss_provider_teardown)},
@@ -62,6 +67,7 @@ const OSSL_DISPATCH mpss_provider_functions[] = {
 
 extern "C" int OSSL_provider_init(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *in, const OSSL_DISPATCH **out,
                                   void **provctx)
+try
 {
     using namespace ::mpss_openssl::provider;
     using namespace ::mpss_openssl::utils;
@@ -81,4 +87,8 @@ extern "C" int OSSL_provider_init(const OSSL_CORE_HANDLE *handle, const OSSL_DIS
     *out = mpss_provider_functions;
 
     return 1;
+}
+catch (...)
+{
+    return 0;
 }

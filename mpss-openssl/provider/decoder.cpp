@@ -49,6 +49,7 @@ struct mpss_decoder_ctx
 };
 
 extern "C" void *mpss_decoder_newctx(void *provctx)
+try
 {
     mpss_provider_ctx *pctx = static_cast<mpss_provider_ctx *>(provctx);
     if (nullptr == pctx)
@@ -66,6 +67,10 @@ extern "C" void *mpss_decoder_newctx(void *provctx)
     dctx->libctx = pctx->libctx;
     return dctx;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" void mpss_decoder_freectx(void *ctx)
 {
@@ -73,6 +78,7 @@ extern "C" void mpss_decoder_freectx(void *ctx)
 }
 
 extern "C" int mpss_decoder_does_selection([[maybe_unused]] void *provctx, int selection)
+try
 {
     if (0 == selection)
     {
@@ -83,6 +89,10 @@ extern "C" int mpss_decoder_does_selection([[maybe_unused]] void *provctx, int s
     // request would hand that to a caller asking for public material only; the public key comes from
     // encoding an already opened key, or from its certificate.
     return (0 != (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY)) ? 1 : 0;
+}
+catch (...)
+{
+    return 0;
 }
 
 reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO *cin, byte_vector &load_reference)
@@ -130,8 +140,7 @@ reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO
     {
         // This aborts the whole decoder chain, so it must leave the caller something to report.
         // Nothing below raises on its own, and the mark was cleared just above.
-        ERR_raise_data(ERR_LIB_PROV, PROV_R_BAD_ENCODING,
-                       "PEM label \"%s\" does not carry a usable key load reference",
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_BAD_ENCODING, "PEM label \"%s\" does not carry a usable key load reference",
                        mpss_key_reference_pem_label);
         return reference_parse_status::invalid_mpss_reference;
     }
@@ -144,6 +153,7 @@ reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO
 extern "C" int mpss_decoder_decode(void *ctx, OSSL_CORE_BIO *cin, [[maybe_unused]] int selection,
                                    OSSL_CALLBACK *object_cb, void *object_cbarg,
                                    [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *pw_cb, [[maybe_unused]] void *pw_cbarg)
+try
 {
     mpss_decoder_ctx *dctx = static_cast<mpss_decoder_ctx *>(ctx);
     if (nullptr == dctx || nullptr == object_cb)
@@ -172,6 +182,10 @@ extern "C" int mpss_decoder_decode(void *ctx, OSSL_CORE_BIO *cin, [[maybe_unused
         OSSL_PARAM_END};
     // object_cb consumes the reference synchronously, so the local outlives the call.
     return object_cb(params, object_cbarg);
+}
+catch (...)
+{
+    return decoder_hard_error;
 }
 
 const OSSL_DISPATCH mpss_decoder_functions[] = {

@@ -40,6 +40,7 @@ using namespace ::mpss_openssl::utils;
 constexpr std::string_view mpss_store_scheme = "mpss:";
 
 extern "C" void *mpss_store_open([[maybe_unused]] void *provctx, const char *uri)
+try
 {
     if (nullptr == uri)
     {
@@ -58,18 +59,20 @@ extern "C" void *mpss_store_open([[maybe_unused]] void *provctx, const char *uri
         return nullptr;
     }
 
-    mpss_store_ctx *ctx = mpss_new<mpss_store_ctx>();
-    if (nullptr == ctx)
-    {
-        return nullptr;
-    }
-    ctx->key_name = key_name;
+    // Assigning the name allocates: a raw pointer would leak the context if that throws.
+    mpss_ptr<mpss_store_ctx> ctx{mpss_new<mpss_store_ctx>()};
+    ctx->key_name.assign(key_name);
 
-    return ctx;
+    return ctx.release();
+}
+catch (...)
+{
+    return nullptr;
 }
 
 extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *object_cbarg,
                                [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *pw_cb, [[maybe_unused]] void *pw_cbarg)
+try
 {
     mpss_store_ctx *ctx = static_cast<mpss_store_ctx *>(loaderctx);
     if (nullptr == ctx || nullptr == object_cb)
@@ -118,15 +121,25 @@ extern "C" int mpss_store_load(void *loaderctx, OSSL_CALLBACK *object_cb, void *
 
     return object_cb(params, object_cbarg);
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" const OSSL_PARAM *mpss_store_settable_ctx_params([[maybe_unused]] void *provctx)
+try
 {
     static const OSSL_PARAM settable[] = {OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, nullptr),
                                           OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0), OSSL_PARAM_END};
     return settable;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_store_set_ctx_params(void *loaderctx, const OSSL_PARAM params[])
+try
 {
     mpss_store_ctx *ctx = static_cast<mpss_store_ctx *>(loaderctx);
     if (nullptr == ctx)
@@ -167,8 +180,13 @@ extern "C" int mpss_store_set_ctx_params(void *loaderctx, const OSSL_PARAM param
     // it is accepted and ignored here.
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_store_eof(void *loaderctx)
+try
 {
     const mpss_store_ctx *ctx = static_cast<const mpss_store_ctx *>(loaderctx);
 
@@ -180,15 +198,25 @@ extern "C" int mpss_store_eof(void *loaderctx)
 
     return ctx->loaded ? 1 : 0;
 }
+catch (...)
+{
+    return 1;
+}
 
 extern "C" int mpss_store_close(void *loaderctx)
+try
 {
     mpss_delete(static_cast<mpss_store_ctx *>(loaderctx));
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" int mpss_store_delete([[maybe_unused]] void *provctx, const char *uri, const OSSL_PARAM params[],
                                  [[maybe_unused]] OSSL_PASSPHRASE_CALLBACK *pw_cb, [[maybe_unused]] void *pw_cbarg)
+try
 {
     // Delete is a standalone operation: it receives the URI and parameters directly (no store_open),
     // so it parses the "mpss:<key_name>" URI the same way store_open does.
@@ -226,6 +254,10 @@ extern "C" int mpss_store_delete([[maybe_unused]] void *provctx, const char *uri
     // deletion reports failure.
     const bool deleted = backend.empty() ? delete_key(key_name) : delete_key(key_name, backend);
     return deleted ? 1 : 0;
+}
+catch (...)
+{
+    return 0;
 }
 
 const OSSL_DISPATCH mpss_store_functions[] = {

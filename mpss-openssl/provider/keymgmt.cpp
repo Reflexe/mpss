@@ -116,6 +116,7 @@ using namespace ::mpss_openssl::provider;
 using namespace ::mpss_openssl::utils;
 
 extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *param_cb, void *cbarg)
+try
 {
     // Ensure that key data is supplied and holds a key.
     mpss_key *pkey = static_cast<mpss_key *>(keydata);
@@ -177,8 +178,13 @@ extern "C" int mpss_keymgmt_export(void *keydata, int selection, OSSL_CALLBACK *
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
+try
 {
     static const OSSL_PARAM no_types[] = {OSSL_PARAM_END};
 
@@ -212,9 +218,14 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_export_types(int selection)
 
     return types_array[types_idx];
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] void *genctx,
                                                               [[maybe_unused]] void *provctx)
+try
 {
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
@@ -223,8 +234,13 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] v
 
     return ret;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_keymgmt_gen_set_params(void *genctx, const OSSL_PARAM params[])
+try
 {
     mpss_keymgmt_gen_ctx *ctx = static_cast<mpss_keymgmt_gen_ctx *>(genctx);
 
@@ -284,8 +300,13 @@ extern "C" int mpss_keymgmt_gen_set_params(void *genctx, const OSSL_PARAM params
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" const OSSL_PARAM *mpss_keymgmt_gettable_params([[maybe_unused]] void *genctx, [[maybe_unused]] void *provctx)
+try
 {
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
@@ -301,8 +322,13 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gettable_params([[maybe_unused]] void 
 
     return ret;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
+try
 {
     mpss_key *key = static_cast<mpss_key *>(pkey);
 
@@ -389,6 +415,10 @@ extern "C" int mpss_keymgmt_get_params(void *pkey, OSSL_PARAM params[])
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" void mpss_keymgmt_gen_cleanup(void *genctx)
 {
@@ -397,24 +427,24 @@ extern "C" void mpss_keymgmt_gen_cleanup(void *genctx)
 }
 
 extern "C" void *mpss_keymgmt_gen_init([[maybe_unused]] void *provctx, int selection, const OSSL_PARAM params[])
+try
 {
     // NOTE: We must allow params to be nullptr here.
 
-    mpss_keymgmt_gen_ctx *genctx = mpss_new<mpss_keymgmt_gen_ctx>();
-    if (nullptr == genctx)
+    // Setting the parameters allocates: a raw pointer would leak the context if that throws.
+    mpss_ptr<mpss_keymgmt_gen_ctx> genctx{mpss_new<mpss_keymgmt_gen_ctx>()};
+    genctx->selection = selection;
+
+    if (1 != mpss_keymgmt_gen_set_params(genctx.get(), params))
     {
         return nullptr;
     }
 
-    genctx->selection = selection;
-
-    if (1 != mpss_keymgmt_gen_set_params(genctx, params))
-    {
-        mpss_keymgmt_gen_cleanup(genctx);
-        genctx = nullptr;
-    }
-
-    return genctx;
+    return genctx.release();
+}
+catch (...)
+{
+    return nullptr;
 }
 
 extern "C" void mpss_keymgmt_free(void *provkey)
@@ -424,6 +454,7 @@ extern "C" void mpss_keymgmt_free(void *provkey)
 }
 
 extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *cb, [[maybe_unused]] void *cbarg)
+try
 {
     using namespace mpss;
 
@@ -462,8 +493,13 @@ extern "C" void *mpss_keymgmt_gen(void *genctx, [[maybe_unused]] OSSL_CALLBACK *
 
     return pkey;
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" int mpss_keymgmt_has(const void *provkey, int selection)
+try
 {
     const mpss_key *pkey = static_cast<const mpss_key *>(provkey);
     if (nullptr == pkey)
@@ -482,8 +518,13 @@ extern "C" int mpss_keymgmt_has(const void *provkey, int selection)
 
     return 1;
 }
+catch (...)
+{
+    return 0;
+}
 
 extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
+try
 {
     switch (operation_id)
     {
@@ -493,8 +534,13 @@ extern "C" const char *mpss_keymgmt_query_operation_name(int operation_id)
         return nullptr;
     }
 }
+catch (...)
+{
+    return nullptr;
+}
 
 extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_sz)
+try
 {
     // The store loader delivers a load reference (not key material). We parse it for a backend name
     // (empty means default) and the key name, and reopen the existing key.
@@ -505,8 +551,8 @@ extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_
     std::string backend_name;
     std::string key_name;
     if (!mpss_parse_key_load_reference(
-            std::span<const unsigned char>(static_cast<const unsigned char *>(reference), reference_sz),
-            backend_name, key_name))
+            std::span<const unsigned char>(static_cast<const unsigned char *>(reference), reference_sz), backend_name,
+            key_name))
     {
         return nullptr;
     }
@@ -526,6 +572,10 @@ extern "C" void *mpss_keymgmt_load(const void *reference, std::size_t reference_
     }
 
     return pkey;
+}
+catch (...)
+{
+    return nullptr;
 }
 
 const OSSL_DISPATCH mpss_ec_keymgmt_functions[] = {
