@@ -9,6 +9,7 @@
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/core_object.h>
+#include <openssl/err.h>
 #include <openssl/params.h>
 #include <openssl/store.h>
 #include <string>
@@ -67,6 +68,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -123,6 +125,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -135,6 +138,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -182,6 +186,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -200,6 +205,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 1;
 }
 
@@ -211,6 +217,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -257,6 +264,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 

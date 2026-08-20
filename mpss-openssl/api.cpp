@@ -2,11 +2,11 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/api.h"
-#include "mpss-openssl/utils/internal_error.h"
 #include "mpss-openssl/utils/names.h"
 #include "mpss-openssl/utils/utils.h"
 #include <mpss/mpss.h>
 #include <mutex>
+#include <openssl/err.h>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +24,9 @@ constexpr std::string_view as_view(const char *str) noexcept
 // The name-list functions are documented to return a null-terminated array, so a failure still has
 // to hand back a valid, empty one.
 const char *empty_name_list[] = {nullptr};
+
+// Reported when the last-error buffer itself could not be updated.
+constexpr const char *internal_error_message = "Internal error.";
 } // namespace
 
 bool mpss_delete_key(const char *key_name)
@@ -33,7 +36,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return false;
 }
 
@@ -44,7 +47,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return false;
 }
 
@@ -55,7 +58,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return false;
 }
 
@@ -67,7 +70,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return false;
 }
 
@@ -88,7 +91,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return empty_name_list;
 }
 
@@ -105,7 +108,7 @@ catch (...)
 {
     // The buffer could not be updated, so the message is returned directly. This function is
     // documented never to return nullptr.
-    return mpss_openssl::utils::internal_error_message;
+    return internal_error_message;
 }
 
 bool mpss_has_error()
@@ -133,7 +136,7 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return empty_name_list;
 }
 
@@ -144,6 +147,6 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return "";
 }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <openssl/core_names.h>
+#include <openssl/err.h>
 #include <string_view>
 #include <utility>
 
@@ -75,6 +76,7 @@ using enum digest_state;
     }                                                                                                                  \
     catch (...)                                                                                                        \
     {                                                                                                                  \
+        ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);                                                                 \
         return nullptr;                                                                                                \
     }
 
@@ -103,6 +105,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -173,6 +176,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -204,6 +208,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -263,6 +268,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -292,6 +298,7 @@ int mpss_digest_digest_internal(void *ctx, const unsigned char *in, ::size_t inl
     }                                                                                                                  \
     catch (...)                                                                                                        \
     {                                                                                                                  \
+        ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);                                                                 \
         return 0;                                                                                                      \
     }
 
@@ -309,6 +316,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -329,6 +337,7 @@ catch (...)
     }                                                                                                                  \
     catch (...)                                                                                                        \
     {                                                                                                                  \
+        ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);                                                                 \
         return 0;                                                                                                      \
     }
 

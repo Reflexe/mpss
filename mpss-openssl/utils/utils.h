@@ -17,6 +17,20 @@ namespace mpss_openssl::utils
 
 using byte_vector = std::vector<std::byte>;
 
+/**
+ * @brief Deleter that releases an object with a compile-time known function.
+ *
+ * @p Fn is a template parameter rather than a stored function pointer, so the deleter is an empty
+ * class and a `std::unique_ptr` using it stays the size of a raw pointer.
+ */
+template <auto Fn> struct fn_deleter
+{
+    template <typename T> void operator()(T *ptr) const noexcept
+    {
+        Fn(ptr);
+    }
+};
+
 template <typename T, typename... Args>
 [[nodiscard]]
 inline T *mpss_new(Args &&...args)
@@ -29,22 +43,13 @@ template <typename T> inline void mpss_delete(T *obj)
     delete obj; // NOLINT(cppcoreguidelines-owning-memory)
 }
 
-/** @brief Releases a provider struct with @ref mpss_delete, pairing it with @ref mpss_new. */
-template <typename T> struct mpss_deleter
-{
-    void operator()(T *obj) const noexcept
-    {
-        mpss_delete(obj);
-    }
-};
-
 /**
  * @brief Owns a provider struct until OpenSSL takes it.
  *
  * Call `release()` where ownership passes to the caller; anything else releases with
  * @ref mpss_delete.
  */
-template <typename T> using mpss_ptr = std::unique_ptr<T, mpss_deleter<T>>;
+template <typename T> using mpss_ptr = std::unique_ptr<T, fn_deleter<mpss_delete<T>>>;
 
 std::size_t mpss_sign_as_der(const std::unique_ptr<mpss::KeyPair> &key_pair, std::span<const std::byte> hash_tbs,
                              std::span<std::byte> out);

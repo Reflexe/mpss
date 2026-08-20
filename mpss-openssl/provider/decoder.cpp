@@ -69,6 +69,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -92,6 +93,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -118,9 +120,9 @@ reference_parse_status parse_reference_input(OSSL_LIB_CTX *libctx, OSSL_CORE_BIO
     }
 
     // PEM_read_bio allocates all three on success, including the header we never read.
-    const openssl_ptr<char> pem_name_owner(pem_name);
-    const openssl_ptr<char> pem_header_owner(pem_header);
-    const openssl_ptr<unsigned char> pem_data_owner(pem_data);
+    const openssl_buf_ptr<char> pem_name_owner(pem_name);
+    const openssl_buf_ptr<char> pem_header_owner(pem_header);
+    const openssl_buf_ptr<unsigned char> pem_data_owner(pem_data);
 
     const bool is_mpss_reference =
         nullptr != pem_name && 0 == std::strcmp(pem_name, mpss_key_reference_pem_label) && pem_data_len >= 0;
@@ -185,6 +187,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return decoder_hard_error;
 }
 

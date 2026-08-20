@@ -10,7 +10,9 @@
 #include "mpss-openssl/utils/utils.h"
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <openssl/core_names.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/objects.h>
 #include <openssl/params.h>
@@ -26,8 +28,8 @@ using namespace ::mpss_openssl::provider;
 using namespace ::mpss_openssl::utils;
 using enum digest_state;
 
-using asn1_object_ptr = ossl_ptr<ASN1_OBJECT, ASN1_OBJECT_free>;
-using x509_algor_ptr = ossl_ptr<X509_ALGOR, X509_ALGOR_free>;
+using asn1_object_ptr = std::unique_ptr<ASN1_OBJECT, fn_deleter<ASN1_OBJECT_free>>;
+using x509_algor_ptr = std::unique_ptr<X509_ALGOR, fn_deleter<X509_ALGOR_free>>;
 
 struct mpss_signature_ctx
 {
@@ -66,6 +68,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -86,8 +89,15 @@ try
     // Duplicating the digest context allocates: a raw pointer would leak this one if that throws.
     mpss_ptr<mpss_signature_ctx> new_sctx{mpss_new<mpss_signature_ctx>()};
 
-    // Make a clone of the digest context.
-    new_sctx->dctx = static_cast<mpss_digest_ctx *>(mpss_digest_dupctx(sctx->dctx));
+    // Make a clone of the digest context. A null result is a failure only when there was one to clone.
+    if (nullptr != sctx->dctx)
+    {
+        new_sctx->dctx = static_cast<mpss_digest_ctx *>(mpss_digest_dupctx(sctx->dctx));
+        if (nullptr == new_sctx->dctx)
+        {
+            return nullptr;
+        }
+    }
 
     // Copy over the key and provider contexts.
     new_sctx->provctx = sctx->provctx;
@@ -97,6 +107,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -118,6 +129,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -169,7 +181,7 @@ try
     // Get and set the algorithm ID to output parameters.
     unsigned char *alg_der_raw = nullptr;
     const int aid_size = i2d_X509_ALGOR(alg.get(), &alg_der_raw);
-    const openssl_ptr<unsigned char> alg_der(alg_der_raw);
+    const openssl_buf_ptr<unsigned char> alg_der(alg_der_raw);
     if (aid_size < 0)
     {
         return 0;
@@ -179,6 +191,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -204,6 +217,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -271,6 +285,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -295,6 +310,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -318,6 +334,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -387,6 +404,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -408,6 +426,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -433,6 +452,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -463,6 +483,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -475,6 +496,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -486,6 +508,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -553,6 +576,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -573,6 +597,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 

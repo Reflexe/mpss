@@ -4,6 +4,7 @@
 #pragma once
 
 #include "mpss-openssl/utils/ossl_ptr.h"
+#include <memory>
 #include <openssl/encoder.h>
 
 namespace mpss_openssl::testing
@@ -13,6 +14,6 @@ namespace mpss_openssl::testing
 using bio_ptr = utils::bio_ptr;
 using evp_pkey_ptr = utils::evp_pkey_ptr;
 using evp_pkey_ctx_ptr = utils::evp_pkey_ctx_ptr;
-using encoder_ctx_ptr = utils::ossl_ptr<OSSL_ENCODER_CTX, OSSL_ENCODER_CTX_free>;
+using encoder_ctx_ptr = std::unique_ptr<OSSL_ENCODER_CTX, utils::fn_deleter<OSSL_ENCODER_CTX_free>>;
 
 } // namespace mpss_openssl::testing

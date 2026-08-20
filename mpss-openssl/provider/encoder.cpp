@@ -10,6 +10,7 @@
 #include "mpss-openssl/utils/utils.h"
 #include <openssl/bio.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/pem.h>
@@ -46,6 +47,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -65,6 +67,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return nullptr;
 }
 
@@ -90,6 +93,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -106,6 +110,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -171,6 +176,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -181,6 +187,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 
@@ -227,6 +234,7 @@ try
 }
 catch (...)
 {
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
     return 0;
 }
 

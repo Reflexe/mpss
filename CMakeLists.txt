@@ -145,9 +145,60 @@ endif()
 # propagate to downstream consumers via the install/export interface.
 if(MPSS_ENABLE_HARDENING)
     if(MSVC)
+        include(CheckCXXCompilerFlag)
+        include(CheckCXXSourceCompiles)
+
         # Control Flow Guard.
         add_compile_options(/guard:cf)
         add_link_options(/guard:cf)
+
+        # Spectre variant 1 mitigations.
+        check_cxx_compiler_flag(/Qspectre MPSS_HAS_QSPECTRE)
+        if(MPSS_HAS_QSPECTRE)
+            add_compile_options(/Qspectre)
+        endif()
+
+        # These two need the compiler's own target macros: the generator platform
+        # variables are not reliably set under every generator, and
+        # check_linker_flag accepts any flag on MSVC, so neither can gate them.
+        # Each probe states the targets it wants and fails everything else, so the
+        # condition reads the same way round as the comment above it.
+
+        # EH continuation metadata is supported for 64-bit targets, x64 and ARM64 alike.
+        check_cxx_source_compiles("
+            #if defined(_M_X64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+            int main() { return 0; }
+            #else
+            #error Not a 64-bit target.
+            #endif
+            " MPSS_MSVC_TARGET_IS_64BIT)
+
+        if(MPSS_MSVC_TARGET_IS_64BIT)
+            # Protects the exception-handling continuation targets, of which the C
+            # boundary has many.
+            check_cxx_compiler_flag(/guard:ehcont MPSS_HAS_GUARD_EHCONT)
+            if(MPSS_HAS_GUARD_EHCONT)
+                add_compile_options(/guard:ehcont)
+                add_link_options(/guard:ehcont)
+            endif()
+        endif()
+
+        # The shadow stack marking applies to x64 only. ARM64EC has to be excluded
+        # by name because it defines _M_X64 too, being x64-compatible by design.
+        check_cxx_source_compiles("
+            #if defined(_M_X64) && !defined(_M_ARM64EC)
+            int main() { return 0; }
+            #else
+            #error Not an x64 target.
+            #endif
+            " MPSS_MSVC_TARGET_IS_X64)
+
+        if(MPSS_MSVC_TARGET_IS_X64)
+            add_link_options(/CETCOMPAT)
+        endif()
+
+        # Do not add /DEPENDENTLOADFLAG here: it breaks loading the app-local
+        # OpenSSL and libykpiv DLLs that the shared and YubiKey builds rely on.
     else()
         # Gate compile flags to clang/gcc-driven languages so they don't leak
         # into Swift's compile/link driver on Apple targets.

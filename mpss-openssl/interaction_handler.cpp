@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 #include "mpss-openssl/interaction_handler.h"
-#include "mpss-openssl/utils/internal_error.h"
 
 #ifdef MPSS_BACKEND_YUBIKEY
 
@@ -11,6 +10,7 @@
 #include <mpss/interaction_handler.h>
 #include <mpss/utils/scope_guard.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 #include <string>
 
 namespace
@@ -101,7 +101,7 @@ try
 catch (...)
 {
     // The previously installed handler is left in place.
-    mpss_openssl::utils::set_internal_error();
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
 }
 
 void mpss_reset_default_interaction_handler(void)
@@ -111,7 +111,8 @@ try
 }
 catch (...)
 {
-    mpss_openssl::utils::set_internal_error();
+    // The installed handler is left in place.
+    ERR_raise(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
 }
 
 #endif // MPSS_BACKEND_YUBIKEY

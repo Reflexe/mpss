@@ -735,6 +735,59 @@ backend name, or no backend registered. So a `false` result with an empty error 
 available", while a `false` result with a non-empty error means "could not determine" — the same
 rule 2 / rule 3 distinction that applies everywhere else.
 
+##### Internal errors and the OpenSSL error queue
+
+`mpss-openssl` adds one case the four rules above do not cover. Its functions are reachable from C —
+the provider callbacks through OpenSSL's dispatch tables, the rest as a plain C API — and a C++
+exception must not cross that boundary, so each one catches internally and returns its failure
+value. Allocation failure is the realistic cause.
+
+Such a failure leaves **no MPSS diagnostic**: the operation cleared the last error on entry (rule 1)
+and never reached the point where it would set one, so `mpss_has_error()` is normally `false`. Read
+through rules 2 and 3 alone, an internal error is therefore indistinguishable from a clean negative
+— "the key did not exist" rather than "the delete never ran".
+
+So these functions additionally raise on **OpenSSL's error queue**, as `ERR_LIB_PROV` with reason
+`ERR_R_INTERNAL_ERROR`, which prints as:
+
+```
+error:1C8C0103:Provider routines::internal error
+```
+
+**If you use MPSS through OpenSSL** — `EVP_PKEY_sign`, `OSSL_DECODER`, `OSSL_STORE` and so on —
+nothing changes. Inspect the error queue after a failure exactly as with any other provider; these
+entries simply make it more specific.
+
+**If you call the C API directly**, keep using the documented pattern: the return value plus
+`mpss_has_error()`. The queue is worth consulting only when a failure makes no sense — a delete that
+reports nothing to delete for a key you are confident exists, say — which is precisely when
+"internal error" and "clean negative" need telling apart:
+
+```c
+if (!mpss_delete_key(name)) {
+    if (mpss_has_error()) {
+        fprintf(stderr, "delete failed: %s\n", mpss_get_error());   // rule 2
+    } else {
+        /* Rule 3, or an internal error. Drain the queue to tell them apart: look for
+           ERR_LIB_PROV with reason ERR_R_INTERNAL_ERROR. */
+        unsigned long err;
+        while ((err = ERR_get_error()) != 0) {
+            fprintf(stderr, "  %s\n", ERR_error_string(err, NULL));
+        }
+    }
+}
+```
+
+Checking the queue on every call is not expected, and the two channels are independent: MPSS's last
+error is thread-local to MPSS, while the queue is OpenSSL's own per-thread queue.
+
+Note that a non-empty queue does **not** by itself mean MPSS failed internally. OpenSSL leaves its
+own entries there for its own reasons, and when the YubiKey backend is built, core MPSS calls
+OpenSSL too — so the queue may carry entries from a step MPSS recovered from. Core MPSS itself never
+raises; only `mpss-openssl` does. Match on `ERR_LIB_PROV` with `ERR_R_INTERNAL_ERROR` rather than on
+the queue being non-empty, and clear it (`ERR_clear_error()`) before an operation whose queue state
+you intend to inspect afterwards.
+
 ### Logging
 
 MPSS provides a simple logging API (see [mpss/log.h](mpss/log.h)) that can be adapted to work with almost any logging system.

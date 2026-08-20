@@ -5,13 +5,23 @@
 #include "mpss/impl/android/android_utils.h"
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void * /*reserved*/)
+try
 {
     return mpss::impl::os::JNIHelper::init(vm) ? JNI_VERSION_1_6 : JNI_ERR;
 }
+catch (...)
+{
+    // An exception must not reach the JVM. Reporting failure here fails the library load.
+    return JNI_ERR;
+}
 
 extern "C" JNIEXPORT void JNI_OnUnload(JavaVM *vm, void * /*reserved*/)
+try
 {
     mpss::impl::os::JNIHelper::uninit(vm);
+}
+catch (...) // NOLINT(bugprone-empty-catch) - the JVM is unloading; there is nothing to report to.
+{
 }
 
 JavaVM *mpss::impl::os::JNIHelper::java_vm_ = nullptr;

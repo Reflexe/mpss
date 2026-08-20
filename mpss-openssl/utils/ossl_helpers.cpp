@@ -116,7 +116,7 @@ byte_vector mpss_vk_params_to_spki(OSSL_LIB_CTX *libctx, const OSSL_PARAM *param
     // Encode pkey to DER using i2d_PUBKEY.
     unsigned char *der_raw = nullptr;
     const int der_size = i2d_PUBKEY(pkey.get(), &der_raw);
-    const openssl_ptr<unsigned char> der_buf(der_raw);
+    const openssl_buf_ptr<unsigned char> der_buf(der_raw);
     if (der_size <= 0)
     {
         return {};
