@@ -103,11 +103,11 @@ class LogcatEventListener : public ::testing::EmptyTestEventListener
 #endif
 
 /**
- * @brief Global test environment that auto-selects a YubiKey when multiple are present.
+ * @brief Global test environment that pins a YubiKey for the duration of the run.
  *
- * When multiple YubiKeys are connected and MPSS_YUBIKEY_SERIAL is not set, this picks
- * the first available device so that the multi-device guard does not block key creation.
- * The original env var state is restored after all tests complete.
+ * When MPSS_YUBIKEY_SERIAL is not already set, this pins the first available device so that the
+ * backend's multi-device guard does not block key creation. The original env var state is restored
+ * after all tests complete.
  */
 class YubiKeyEnvironment : public ::testing::Environment
 {
@@ -122,13 +122,18 @@ class YubiKeyEnvironment : public ::testing::Environment
             return;
         }
 
+        // Pin whenever a device is visible, not only when several are. This is one sample of
+        // removable hardware, while the backend guard re-enumerates on every call: a device that
+        // is briefly unreachable here makes the machine look single-device, so nothing is pinned,
+        // and every later operation is then refused once that device answers again.
         const auto serials = mpss::impl::yubikey::YubiKeyPIV::available_serials();
-        if (serials.size() > 1)
+        if (!serials.empty())
         {
             auto_selected_ = true;
             const std::string serial_str = std::to_string(serials.front());
             setenv("MPSS_YUBIKEY_SERIAL", serial_str.c_str(), 1); // NOLINT(concurrency-mt-unsafe)
-            mpss::GetLogger()->info("Multiple YubiKeys detected; auto-selected serial {} for tests.", serials.front());
+            mpss::GetLogger()->info("Pinned YubiKey serial {} for tests ({} detected).", serials.front(),
+                                    serials.size());
         }
 #endif
     }

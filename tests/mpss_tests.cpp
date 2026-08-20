@@ -1674,16 +1674,19 @@ class MultiYubiKeyTest : public ::testing::Test
     void SetUp() override
     {
         serials_ = mpss::impl::yubikey::YubiKeyPIV::available_serials();
-        if (serials_.size() < 2)
-        {
-            GTEST_SKIP() << "Multi-device tests require at least two YubiKeys.";
-        }
 
-        // Save any existing MPSS_YUBIKEY_SERIAL env var so we can restore it in TearDown.
+        // Read the pin before the skip below. GTEST_SKIP returns from SetUp but TearDown still
+        // runs, so a value saved after it would be missed and the restore would clear a variable
+        // this fixture never read.
         const char *existing = std::getenv("MPSS_YUBIKEY_SERIAL"); // NOLINT(concurrency-mt-unsafe)
         if (nullptr != existing)
         {
             saved_serial_env_ = existing;
+        }
+
+        if (serials_.size() < 2)
+        {
+            GTEST_SKIP() << "Multi-device tests require at least two YubiKeys.";
         }
     }
 
