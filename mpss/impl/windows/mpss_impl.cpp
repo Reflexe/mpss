@@ -47,7 +47,24 @@ constexpr DWORD require_vbs = 0x00020000;
 // Setting this to 0 opens the key for the current user.
 constexpr DWORD key_open_mode = 0;
 
-NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name)
+// A provider that a walk merely tried is not a failure of the operation the caller asked for, so its
+// reason is kept for the caller's summary rather than announced. Only the caller knows whether a
+// later provider answered. A caller that needs one particular provider passes speculative = false.
+template <typename... Args>
+void report_provider_failure(bool speculative, std::format_string<Args...> fmt, Args &&...args)
+{
+    if (!speculative)
+    {
+        mpss::utils::log_and_set_error(fmt, std::forward<Args>(args)...);
+        return;
+    }
+
+    std::string message = std::format(fmt, std::forward<Args>(args)...);
+    mpss::utils::log_debug(message);
+    mpss::utils::set_error(std::move(message));
+}
+
+NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name, bool speculative)
 {
     NCRYPT_PROV_HANDLE provider_handle = 0;
 
@@ -57,13 +74,14 @@ NCRYPT_PROV_HANDLE GetProvider(LPCWSTR provider_name)
     SECURITY_STATUS status = ::NCryptOpenStorageProvider(&provider_handle, provider_name, flags);
     if (ERROR_SUCCESS != status)
     {
-        mpss::utils::log_and_set_error("NCryptOpenStorageProvider failed with error code {}.",
-                                       mpss::utils::to_hex(status));
+        report_provider_failure(speculative, "NCryptOpenStorageProvider failed with error code {}.",
+                                mpss::utils::to_hex(status));
         return 0;
     }
 
     if (0 == provider_handle)
     {
+        // Success without a handle is the provider breaking its own contract, whoever asked.
         mpss::utils::log_and_set_error("Provider handle is null.");
         return 0;
     }
@@ -80,7 +98,7 @@ OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name, std::string_view name)
 {
     using enum mpss::impl::KeyProbeStatus;
 
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name);
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name, /* speculative */ true);
     if (0 == provider_handle)
     {
         // A provider that cannot be opened holds no key that anything can reach, including this
@@ -263,16 +281,6 @@ struct CreateKeyResult
     NCRYPT_KEY_HANDLE value;
 };
 
-// A provider that cannot make the key is a step towards one that can, so its reason is kept for the
-// caller's summary rather than announced as a failure. Only the caller knows whether a later
-// provider succeeded, and so whether these reasons add up to anything.
-template <typename... Args> void record_provider_failure(std::format_string<Args...> fmt, Args &&...args)
-{
-    std::string message = std::format(fmt, std::forward<Args>(args)...);
-    mpss::utils::log_debug(message);
-    mpss::utils::set_error(std::move(message));
-}
-
 // Only the calls that address the name can find it taken. Measured on this platform: the create
 // reports the collision, but a provider that defers the commit could report it at finalize instead.
 CreateOutcome OutcomeFromStatus(SECURITY_STATUS status)
@@ -286,11 +294,12 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
     mpss::impl::os::crypto_params const *const crypto = mpss::impl::os::utils::get_crypto_params(algorithm);
     if (nullptr == crypto)
     {
-        record_provider_failure("Unsupported algorithm '{}'.", mpss::get_algorithm_info(algorithm).type_str);
+        report_provider_failure(/* speculative */ true, "Unsupported algorithm '{}'.",
+                                mpss::get_algorithm_info(algorithm).type_str);
         return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
 
-    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name);
+    NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name, /* speculative */ true);
     if (0 == provider_handle)
     {
         return {.outcome = CreateOutcome::unavailable, .value = 0};
@@ -304,7 +313,8 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
                                                         wname.c_str(), key_spec, key_open_mode | create_flags);
     if (ERROR_SUCCESS != status)
     {
-        record_provider_failure("NCryptCreatePersistedKey failed with error code {}.", mpss::utils::to_hex(status));
+        report_provider_failure(/* speculative */ true, "NCryptCreatePersistedKey failed with error code {}.",
+                                mpss::utils::to_hex(status));
         return {.outcome = OutcomeFromStatus(status), .value = 0};
     }
 
@@ -325,7 +335,7 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
                                  sizeof(export_policy), /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
-        record_provider_failure("NCryptSetProperty (export policy) failed with error code {}.",
+        report_provider_failure(/* speculative */ true, "NCryptSetProperty (export policy) failed with error code {}.",
                                 mpss::utils::to_hex(status));
 
         // This call addresses a handle that is already ours, so it cannot be the one to discover
@@ -336,7 +346,8 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
     status = ::NCryptFinalizeKey(key_handle, /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
-        record_provider_failure("NCryptFinalizeKey failed with error code {}.", mpss::utils::to_hex(status));
+        report_provider_failure(/* speculative */ true, "NCryptFinalizeKey failed with error code {}.",
+                                mpss::utils::to_hex(status));
         return {.outcome = OutcomeFromStatus(status), .value = 0};
     }
 
@@ -719,7 +730,7 @@ bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_k
                    [](auto in) { return static_cast<BYTE>(in); });
 
     // Verification only needs the public key, so the software KSP is enough.
-    NCRYPT_PROV_HANDLE provider = GetProvider(software_ksp_name);
+    NCRYPT_PROV_HANDLE provider = GetProvider(software_ksp_name, /* speculative */ false);
     if (0 == provider)
     {
         return false;
