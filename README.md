@@ -10,13 +10,21 @@ MPSS uses the following technologies on the different supported platforms:
 
 | Platform | API |
 |----------|-----|
-| Windows | [VBS](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs) if available; TPM-backed [MS_PLATFORM_CRYPTO_PROVIDER](https://learn.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptopenstorageprovider) otherwise |
+| Windows | TPM-backed [MS_PLATFORM_KEY_STORAGE_PROVIDER](https://learn.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptopenstorageprovider) if available; [VBS](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs) otherwise; software-protected storage if neither |
 | macOS / iOS | [SecureEnclave](https://developer.apple.com/documentation/cryptokit/secureenclave) if available; [Keychain](https://developer.apple.com/documentation/security/storing-keys-in-the-keychain) otherwise |
 | Android | [StrongBox](https://developer.android.com/privacy-and-security/keystore) if available; [Trusted Execution Environment](https://source.android.com/docs/security/features/trusty) otherwise |
 | Linux | [YubiKey PIV](https://developers.yubico.com/PIV/) (default, see below) |
 | YubiKey (optional) | [YubiKey PIV](https://developers.yubico.com/PIV/) (cross-platform: Windows, macOS, Linux only) |
 
 **Note**: The YubiKey PIV backend is an optional cross-platform backend for **desktop platforms** (Windows, macOS, Linux) that can be enabled by setting `MPSS_BACKEND_YUBIKEY=ON` during CMake configuration. On Linux, it serves as the only available backend. The YubiKey backend is **not supported on iOS or Android**.
+
+**Note**: On Windows the three options above are tried in order and the first that succeeds is
+used, so the tier is a property of each key rather than of the machine. A TPM that does not
+implement a requested algorithm, for example, yields a VBS key on the very host where another
+algorithm yields a TPM key. Creation reports success and sets no error in all three cases, so read
+`key_info().is_hardware_backed` and `key_info().storage_description` (`"TPM Protection"`,
+`"Virtualization Based Security"`, or `"Software Protection"`) to find out what a key actually got.
+Only the last of the three is outside hardware.
 
 ## Compiling for different platforms
 

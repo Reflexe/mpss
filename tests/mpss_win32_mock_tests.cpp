@@ -52,6 +52,7 @@ constexpr NCRYPT_KEY_HANDLE fake_key_handle = 0x2001;
 constexpr SECURITY_STATUS status_not_found = static_cast<SECURITY_STATUS>(NTE_BAD_KEYSET);
 constexpr SECURITY_STATUS status_failure = static_cast<SECURITY_STATUS>(NTE_FAIL);
 constexpr SECURITY_STATUS status_not_supported = static_cast<SECURITY_STATUS>(NTE_NOT_SUPPORTED);
+constexpr SECURITY_STATUS status_exists = static_cast<SECURITY_STATUS>(NTE_EXISTS);
 
 // What a key without a named group reports when asked for one. Measured on Windows: a key created
 // through a suffixed algorithm identifier answers NTE_NOT_FOUND, not NTE_NOT_SUPPORTED.
@@ -792,6 +793,57 @@ TEST_F(WindowsKeyCreation, CreateRefusesWhenTheNameIsHeldByAnExportableKey)
     EXPECT_EQ(nullptr, key);
     EXPECT_EQ(0, create_attempts);
     EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: the name is free when the existence check runs, and the TPM provider reports it taken
+// when the create itself lands -- the window the check cannot close.
+// Expected behavior: creation refuses instead of moving to the next provider. The providers keep
+// separate namespaces, so creating there would leave two of them holding the name, and a later open
+// resolves to whichever the search reaches first -- not necessarily the key this call made.
+TEST_F(WindowsKeyCreation, ANameTakenInOneProviderIsNotCreatedInAnother)
+{
+    int create_attempts = 0;
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([&create_attempts](NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
+                                           DWORD) -> SECURITY_STATUS {
+            ++create_attempts;
+            if (tpm_provider_handle == provider)
+            {
+                return status_exists;
+            }
+            *out = fake_key_handle;
+            return ERROR_SUCCESS;
+        });
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_EQ(1, create_attempts) << "a name collision was retried in another provider";
+    EXPECT_THAT(mpss::get_error(), HasSubstr("already exists"));
+}
+
+// Scenario: no TPM, and the name is taken in the shared provider when the VBS-flagged create lands.
+// Expected behavior: creation refuses. VBS and software are the same provider, so the name is taken
+// for both of them, and the unflagged retry would address the very key that reported the collision.
+TEST_F(WindowsKeyCreation, ANameTakenWithTheVbsFlagIsNotRetriedWithoutIt)
+{
+    FailTpmProvider();
+
+    int create_attempts = 0;
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([&create_attempts](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, LPCWSTR, LPCWSTR, DWORD,
+                                           DWORD) -> SECURITY_STATUS {
+            ++create_attempts;
+            return status_exists;
+        });
+
+    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
+
+    EXPECT_EQ(nullptr, key);
+    EXPECT_EQ(1, create_attempts) << "a name collision was retried in the same provider";
+    EXPECT_THAT(mpss::get_error(), HasSubstr("already exists"));
 }
 
 } // namespace

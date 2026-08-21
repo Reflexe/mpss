@@ -44,7 +44,7 @@ extern "C"
      * @param retries_remaining PIN retries remaining on the device, or -1 if unknown.
      * @param pin_buf Buffer to write the null-terminated PIN into.
      * @param pin_buf_size Size of pin_buf in bytes (always @ref MPSS_PIN_BUF_SIZE).
-     * @return true if the PIN was provided, false if the user cancelled.
+     * @return true if the PIN was provided, false if the user canceled.
      * @warning Implementations must never log or persist the PIN.
      */
     typedef bool (*mpss_request_pin_handler_t)(const char *context, int last_status, int retries_remaining,

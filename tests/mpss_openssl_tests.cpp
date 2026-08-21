@@ -1492,7 +1492,7 @@ INSTANTIATE_TEST_SUITE_P(MPSSCreateDelete, CreateAndDeleteKeyTest,
 
 } // namespace mpss_openssl::tests
 
-// Pins the compiler behaviour the guards rely on: under MSVC's /EHsc an extern "C" function is
+// Pins the compiler behavior the guards rely on: under MSVC's /EHsc an extern "C" function is
 // assumed not to throw, so a handler outside one does not run and the process dies. Every guarded
 // function therefore puts its handler inside the frame, as here.
 extern "C" int mpss_test_guarded_entry(int should_throw)

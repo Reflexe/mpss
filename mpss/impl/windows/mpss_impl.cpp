@@ -9,6 +9,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <cwchar>
+#include <format>
 #include <memory>
 #include <ncrypt.h>
 #include <optional>
@@ -241,20 +242,58 @@ OpenKeyResult GetKey(std::string_view name, const char **storage_description, bo
     return {.status = any_indeterminate ? operational_error : not_found, .value = 0};
 }
 
-NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name, std::string_view name, mpss::Algorithm algorithm,
-                                      DWORD create_flags)
+// Why a create attempt in one provider ended as it did, so the caller can decide whether trying the
+// next provider is sensible.
+enum class CreateOutcome
+{
+    created,
+
+    // Another key already holds this name in this provider. The providers keep separate namespaces,
+    // so the name may well be free in the next one, which is exactly why the walk has to stop.
+    name_taken,
+
+    // This provider could not make the key, but another one may: a machine with no TPM, or a TPM
+    // that lacks the algorithm, still has to reach the providers below.
+    unavailable
+};
+
+struct CreateKeyResult
+{
+    CreateOutcome outcome;
+    NCRYPT_KEY_HANDLE value;
+};
+
+// A provider that cannot make the key is a step towards one that can, so its reason is kept for the
+// caller's summary rather than announced as a failure. Only the caller knows whether a later
+// provider succeeded, and so whether these reasons add up to anything.
+template <typename... Args> void record_provider_failure(std::format_string<Args...> fmt, Args &&...args)
+{
+    std::string message = std::format(fmt, std::forward<Args>(args)...);
+    mpss::utils::log_debug(message);
+    mpss::utils::set_error(std::move(message));
+}
+
+// Only the calls that address the name can find it taken. Measured on this platform: the create
+// reports the collision, but a provider that defers the commit could report it at finalize instead.
+CreateOutcome OutcomeFromStatus(SECURITY_STATUS status)
+{
+    return static_cast<SECURITY_STATUS>(NTE_EXISTS) == status ? CreateOutcome::name_taken : CreateOutcome::unavailable;
+}
+
+CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name, mpss::Algorithm algorithm,
+                                    DWORD create_flags)
 {
     mpss::impl::os::crypto_params const *const crypto = mpss::impl::os::utils::get_crypto_params(algorithm);
     if (nullptr == crypto)
     {
-        mpss::utils::log_and_set_error("Unsupported algorithm '{}'.", mpss::get_algorithm_info(algorithm).type_str);
-        return 0;
+        record_provider_failure("Unsupported algorithm '{}'.", mpss::get_algorithm_info(algorithm).type_str);
+        return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
 
     NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name);
     if (0 == provider_handle)
     {
-        return 0;
+        return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
     SCOPE_GUARD(::NCryptFreeObject(provider_handle));
 
@@ -265,9 +304,8 @@ NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name, std::string_view na
                                                         wname.c_str(), key_spec, key_open_mode | create_flags);
     if (ERROR_SUCCESS != status)
     {
-        mpss::utils::log_and_set_error("NCryptCreatePersistedKey failed with error code {}.",
-                                       mpss::utils::to_hex(status));
-        return 0;
+        record_provider_failure("NCryptCreatePersistedKey failed with error code {}.", mpss::utils::to_hex(status));
+        return {.outcome = OutcomeFromStatus(status), .value = 0};
     }
 
     // NCryptDeleteKey frees the handle on success, so only free it explicitly if the delete fails.
@@ -287,16 +325,19 @@ NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name, std::string_view na
                                  sizeof(export_policy), /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
-        mpss::utils::log_and_set_error("NCryptSetProperty (export policy) failed with error code {}.",
-                                       mpss::utils::to_hex(status));
-        return 0;
+        record_provider_failure("NCryptSetProperty (export policy) failed with error code {}.",
+                                mpss::utils::to_hex(status));
+
+        // This call addresses a handle that is already ours, so it cannot be the one to discover
+        // that the name belongs to someone else.
+        return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
 
     status = ::NCryptFinalizeKey(key_handle, /* dwFlags */ 0);
     if (ERROR_SUCCESS != status)
     {
-        mpss::utils::log_and_set_error("NCryptFinalizeKey failed with error code {}.", mpss::utils::to_hex(status));
-        return 0;
+        record_provider_failure("NCryptFinalizeKey failed with error code {}.", mpss::utils::to_hex(status));
+        return {.outcome = OutcomeFromStatus(status), .value = 0};
     }
 
     // An earlier provider left an error; clear it now that one has succeeded.
@@ -304,21 +345,21 @@ NCRYPT_KEY_HANDLE CreateKeyInProvider(LPCWSTR provider_name, std::string_view na
 
     const NCRYPT_KEY_HANDLE result = key_handle;
     key_handle = 0; // Disarm the cleanup guard: ownership passes to the caller.
-    return result;
+    return {.outcome = CreateOutcome::created, .value = result};
 }
 
 // VBS and software share a CNG provider and differ only by the require_vbs flag.
-NCRYPT_KEY_HANDLE CreateKeyTpm(std::string_view name, mpss::Algorithm algorithm)
+CreateKeyResult CreateKeyTpm(std::string_view name, mpss::Algorithm algorithm)
 {
     return CreateKeyInProvider(tpm_provider_name, name, algorithm, /* create_flags */ 0);
 }
 
-NCRYPT_KEY_HANDLE CreateKeyVbs(std::string_view name, mpss::Algorithm algorithm)
+CreateKeyResult CreateKeyVbs(std::string_view name, mpss::Algorithm algorithm)
 {
     return CreateKeyInProvider(software_ksp_name, name, algorithm, require_vbs);
 }
 
-NCRYPT_KEY_HANDLE CreateKeySoftware(std::string_view name, mpss::Algorithm algorithm)
+CreateKeyResult CreateKeySoftware(std::string_view name, mpss::Algorithm algorithm)
 {
     return CreateKeyInProvider(software_ksp_name, name, algorithm, /* create_flags */ 0);
 }
@@ -544,7 +585,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 
     struct key_storage_provider
     {
-        NCRYPT_KEY_HANDLE (*create_key)(std::string_view, mpss::Algorithm);
+        CreateKeyResult (*create_key)(std::string_view, mpss::Algorithm);
         const char *storage_description;
         bool is_hardware_backed;
 
@@ -568,7 +609,8 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     for (const key_storage_provider &provider : create_providers)
     {
         mpss::utils::log_trace("Creating key '{}' with {} provider.", name, provider.storage_description);
-        const NCRYPT_KEY_HANDLE key_handle = provider.create_key(name, algorithm);
+        const CreateKeyResult created = provider.create_key(name, algorithm);
+        const NCRYPT_KEY_HANDLE key_handle = created.value;
         if (0 != key_handle)
         {
             const char *storage_description = provider.storage_description;
@@ -605,6 +647,15 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
             errors += "; ";
         }
         errors += std::string{provider.storage_description} + ": " + mpss::utils::get_error();
+
+        // The next provider's namespace may be free, and creating there plants a duplicate that a
+        // later open could resolve to instead of this key. The create is the atomic reservation, so
+        // its answer holds where the check above the walk can already be stale.
+        if (CreateOutcome::name_taken == created.outcome)
+        {
+            mpss::utils::log_and_set_error("Key '{}' already exists.", name);
+            return nullptr;
+        }
     }
 
     mpss::utils::log_and_set_error("Failed to create key '{}': {}", name, errors);
