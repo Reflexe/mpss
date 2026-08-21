@@ -13,6 +13,7 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "installDir": "${sourceDir}/out/install",
             "cacheVariables": {
+                "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
                 "MPSS_BUILD_MPSS_CORE_STATIC": "YES",
                 "MPSS_BUILD_MPSS_CORE_SHARED": "NO",
