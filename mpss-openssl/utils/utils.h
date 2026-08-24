@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include "mpss-openssl/api.h"
 #include <cstddef>
 #include <memory>
 #include <mpss/mpss.h>
 #include <openssl/types.h>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -16,6 +18,22 @@ namespace mpss_openssl::utils
 {
 
 using byte_vector = std::vector<std::byte>;
+
+[[nodiscard]]
+constexpr std::optional<mpss::IsolationLevel> parse_isolation_level(unsigned int value) noexcept
+{
+    switch (value)
+    {
+    case MPSS_ISOLATION_SOFTWARE:
+        return mpss::IsolationLevel::software;
+    case MPSS_ISOLATION_MIXED:
+        return mpss::IsolationLevel::mixed;
+    case MPSS_ISOLATION_HARDWARE:
+        return mpss::IsolationLevel::hardware;
+    default:
+        return std::nullopt;
+    }
+}
 
 /**
  * @brief Deleter that releases an object with a compile-time known function.

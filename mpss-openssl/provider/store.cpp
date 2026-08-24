@@ -11,6 +11,7 @@
 #include <openssl/core_object.h>
 #include <openssl/err.h>
 #include <openssl/params.h>
+#include <openssl/proverr.h>
 #include <openssl/store.h>
 #include <string>
 #include <string_view>
@@ -25,6 +26,7 @@ struct mpss_store_ctx
 {
     std::string key_name;
     std::string backend;
+    mpss::IsolationLevel minimum_isolation = mpss::IsolationLevel::software;
     int expected_type = 0;
     bool loaded = false;
 };
@@ -121,6 +123,7 @@ try
     params[2] = OSSL_PARAM_construct_octet_string(OSSL_OBJECT_PARAM_REFERENCE, reference.data(), reference.size());
     params[3] = OSSL_PARAM_END;
 
+    const mpss_key_load_isolation_scope isolation_scope{ctx->minimum_isolation};
     return object_cb(params, object_cbarg);
 }
 catch (...)
@@ -133,7 +136,8 @@ extern "C" const OSSL_PARAM *mpss_store_settable_ctx_params([[maybe_unused]] voi
 try
 {
     static const OSSL_PARAM settable[] = {OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, nullptr),
-                                          OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0), OSSL_PARAM_END};
+                                          OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
+                                          OSSL_PARAM_uint("mpss_minimum_isolation", nullptr), OSSL_PARAM_END};
     return settable;
 }
 catch (...)
@@ -170,6 +174,24 @@ try
             return 0;
         }
         ctx->backend = value_str;
+    }
+
+    p = OSSL_PARAM_locate_const(params, "mpss_minimum_isolation");
+    if (nullptr != p)
+    {
+        unsigned int minimum_isolation = 0;
+        if (!OSSL_PARAM_get_uint(p, &minimum_isolation))
+        {
+            return 0;
+        }
+        const auto isolation = parse_isolation_level(minimum_isolation);
+        if (!isolation)
+        {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA, "invalid mpss_minimum_isolation value %u",
+                           minimum_isolation);
+            return 0;
+        }
+        ctx->minimum_isolation = *isolation;
     }
 
     // The expected-object-type hint carries an OSSL_STORE_INFO_* value; mpss_store_load uses it to

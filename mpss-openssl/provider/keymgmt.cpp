@@ -11,6 +11,7 @@
 #include <openssl/core_names.h>
 #include <openssl/err.h>
 #include <openssl/params.h>
+#include <openssl/proverr.h>
 #include <span>
 #include <utility>
 
@@ -25,11 +26,13 @@ struct mpss_keymgmt_gen_ctx
     std::string mpss_algorithm;
     std::optional<std::string> mpss_backend = std::nullopt;
     std::uint64_t key_policy = 0;
+    mpss::IsolationLevel minimum_isolation = mpss::IsolationLevel::software;
     int selection{0};
 };
 
 mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
-                   const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy)
+                   const std::optional<std::string> &mpss_backend, mpss::KeyPolicy creation_policy,
+                   mpss::IsolationLevel minimum_isolation)
 {
     // This constructor has a dual purpose. If mpss_algorithm is empty, it tries to open the key with the given name. If
     // mpss_algorithm is not empty, it tries to create a new key with the given name and algorithm.
@@ -45,11 +48,11 @@ mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_a
         // If mpss_algorithm is empty, just try to open the key.
         if (mpss_backend)
         {
-            key_pair = mpss::KeyPair::Open(key_name, mpss_backend.value());
+            key_pair = mpss::KeyPair::Open(key_name, mpss_backend.value(), minimum_isolation);
         }
         else
         {
-            key_pair = mpss::KeyPair::Open(key_name);
+            key_pair = mpss::KeyPair::Open(key_name, minimum_isolation);
         }
         if (key_pair)
         {
@@ -74,11 +77,12 @@ mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_a
         {
             if (mpss_backend)
             {
-                key_pair = mpss::KeyPair::Create(key_name, algorithm, mpss_backend.value(), policy);
+                key_pair =
+                    mpss::KeyPair::Create(key_name, algorithm, mpss_backend.value(), creation_policy, minimum_isolation);
             }
             else
             {
-                key_pair = mpss::KeyPair::Create(key_name, algorithm, policy);
+                key_pair = mpss::KeyPair::Create(key_name, algorithm, creation_policy, minimum_isolation);
             }
             this->mpss_algorithm = mpss::get_algorithm_info(algorithm).type_str;
         }
@@ -233,7 +237,8 @@ try
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
-                                     OSSL_PARAM_uint64("mpss_key_policy", nullptr), OSSL_PARAM_END};
+                                     OSSL_PARAM_uint64("mpss_key_policy", nullptr),
+                                     OSSL_PARAM_uint("mpss_minimum_isolation", nullptr), OSSL_PARAM_END};
 
     return ret;
 }
@@ -302,6 +307,24 @@ try
         }
     }
 
+    p = OSSL_PARAM_locate_const(params, "mpss_minimum_isolation");
+    if (nullptr != p)
+    {
+        unsigned int minimum_isolation = 0;
+        if (!OSSL_PARAM_get_uint(p, &minimum_isolation))
+        {
+            return 0;
+        }
+        const auto isolation = parse_isolation_level(minimum_isolation);
+        if (!isolation)
+        {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA, "invalid mpss_minimum_isolation value %u",
+                           minimum_isolation);
+            return 0;
+        }
+        ctx->minimum_isolation = *isolation;
+    }
+
     return 1;
 }
 catch (...)
@@ -316,7 +339,7 @@ try
     static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
                                      OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
-                                     OSSL_PARAM_int("is_hardware_backed", nullptr),
+                                     OSSL_PARAM_uint("isolation_level", nullptr),
                                      OSSL_PARAM_utf8_string("storage_description", nullptr, 0),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_BITS, nullptr),
                                      OSSL_PARAM_int32(OSSL_PKEY_PARAM_SECURITY_BITS, nullptr),
@@ -385,9 +408,8 @@ try
     {
         return 0;
     }
-    if ((p = OSSL_PARAM_locate(params, "is_hardware_backed")) &&
-        !OSSL_PARAM_set_int(
-            p, mpss::IsolationLevel::software != key->key_pair->key_info().isolation_level ? 1 : 0))
+    if ((p = OSSL_PARAM_locate(params, "isolation_level")) &&
+        !OSSL_PARAM_set_uint(p, static_cast<unsigned int>(key->key_pair->key_info().isolation_level)))
     {
         return 0;
     }
@@ -488,7 +510,8 @@ try
     // Set up the new mpss_key struct with the right info.
     std::optional<std::string> mpss_algorithm = ctx->mpss_algorithm;
     const auto policy = static_cast<mpss::KeyPolicy>(ctx->key_policy);
-    mpss_key *pkey = mpss_new<mpss_key>(ctx->key_name, mpss_algorithm, ctx->mpss_backend, policy);
+    mpss_key *pkey =
+        mpss_new<mpss_key>(ctx->key_name, mpss_algorithm, ctx->mpss_backend, policy, ctx->minimum_isolation);
     if (nullptr == pkey)
     {
         return nullptr;
@@ -572,7 +595,8 @@ try
     std::optional<std::string> no_algorithm = std::nullopt;
     const std::optional<std::string> backend =
         backend_name.empty() ? std::nullopt : std::make_optional(std::move(backend_name));
-    mpss_key *pkey = mpss_new<mpss_key>(key_name, no_algorithm, backend, mpss::KeyPolicy::none);
+    mpss_key *pkey = mpss_new<mpss_key>(key_name, no_algorithm, backend, mpss::KeyPolicy::none,
+                                        mpss_key_load_minimum_isolation());
     if (nullptr == pkey)
     {
         return nullptr;
