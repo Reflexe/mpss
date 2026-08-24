@@ -784,6 +784,15 @@ TEST(MPSS_OpenSSL, DeleteKeyFromBackend)
     }
 }
 
+// Scenario: C callers use the isolation constants corresponding to the C++ enum.
+// Expected behavior: every C constant has exactly the value of its ordered C++ isolation level.
+TEST(IsolationLevelDefines, MatchCppEnum)
+{
+    static_assert(MPSS_ISOLATION_SOFTWARE == static_cast<std::uint8_t>(mpss::IsolationLevel::software));
+    static_assert(MPSS_ISOLATION_MIXED == static_cast<std::uint8_t>(mpss::IsolationLevel::mixed));
+    static_assert(MPSS_ISOLATION_HARDWARE == static_cast<std::uint8_t>(mpss::IsolationLevel::hardware));
+}
+
 // --- KeyPolicy C define / C++ enum agreement tests ---
 
 TEST(KeyPolicyDefines, NoneMatchesCppEnum)

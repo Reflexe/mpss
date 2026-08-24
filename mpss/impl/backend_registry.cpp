@@ -16,10 +16,16 @@
 #include <cstring>
 #include <mutex>
 #include <random>
+#include <set>
+#include <tuple>
 #include <unordered_map>
 
 namespace
 {
+using AvailabilityCacheKey = std::tuple<std::string, mpss::Algorithm, mpss::IsolationLevel>;
+
+std::mutex availability_cache_mutex;
+std::set<AvailabilityCacheKey> positive_availability_cache;
 
 std::string random_string(std::size_t length)
 {
@@ -271,7 +277,7 @@ class BackendRegistry
     }
 };
 
-bool is_algorithm_available(Algorithm algorithm)
+bool is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolation)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
@@ -279,10 +285,10 @@ bool is_algorithm_available(Algorithm algorithm)
         utils::log_and_set_error("No default backend available.");
         return false;
     }
-    return backend->is_algorithm_available(algorithm);
+    return is_algorithm_available(backend->name(), algorithm, minimum_isolation);
 }
 
-bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
+bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, IsolationLevel minimum_isolation)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_backend(backend_name);
     if (nullptr == backend)
@@ -290,12 +296,28 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
         utils::log_and_set_error("Backend '{}' not found.", backend_name);
         return false;
     }
-    return backend->is_algorithm_available(algorithm);
+
+    const AvailabilityCacheKey cache_key{std::string{backend->name()}, algorithm, minimum_isolation};
+    {
+        std::scoped_lock lock{availability_cache_mutex};
+        if (positive_availability_cache.contains(cache_key))
+        {
+            return true;
+        }
+    }
+
+    const bool available = backend->is_algorithm_available(algorithm, minimum_isolation);
+    if (available)
+    {
+        std::scoped_lock lock{availability_cache_mutex};
+        positive_availability_cache.insert(cache_key);
+    }
+    return available;
 }
 
 // Explicit-backend functions - the real implementations.
 std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_view name, Algorithm algorithm,
-                                    KeyPolicy policy)
+                                    KeyPolicy policy, IsolationLevel minimum_isolation)
 {
     if (!is_valid_key_name(name))
     {
@@ -313,16 +335,32 @@ std::unique_ptr<KeyPair> create_key(std::string_view backend_name, std::string_v
 
     utils::log_trace("Creating key '{}' with algorithm '{}' using backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend->name());
-    auto key = backend->create_key(name, algorithm, policy);
+    auto key = backend->create_key(name, algorithm, policy, minimum_isolation);
     if (nullptr != key)
     {
+        if (!meets_minimum_isolation(key->key_info().isolation_level, minimum_isolation))
+        {
+            const bool deleted = key->delete_key();
+            if (!deleted)
+            {
+                const std::string cleanup_error = get_error();
+                utils::log_and_set_error("Backend '{}' created key '{}' below the requested minimum isolation and "
+                                         "cleanup failed: {}",
+                                         backend->name(), name, cleanup_error);
+                return nullptr;
+            }
+            utils::log_and_set_error("Backend '{}' created key '{}' below the requested minimum isolation.",
+                                     backend->name(), name);
+            return nullptr;
+        }
         utils::log_trace("Key '{}' created on backend '{}'.", name, backend->name());
         BackendNameSetter::set(*key, backend->name());
     }
     return key;
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_view name,
+                                  IsolationLevel minimum_isolation)
 {
     if (!is_valid_key_name(name))
     {
@@ -339,9 +377,16 @@ std::unique_ptr<KeyPair> open_key(std::string_view backend_name, std::string_vie
     }
 
     utils::log_trace("Opening key '{}' using backend '{}'.", name, backend->name());
-    auto key = backend->open_key(name);
+    auto key = backend->open_key(name, minimum_isolation);
     if (nullptr != key)
     {
+        if (!meets_minimum_isolation(key->key_info().isolation_level, minimum_isolation))
+        {
+            key.reset();
+            utils::log_and_set_error("Key '{}' on backend '{}' does not meet the requested minimum isolation.", name,
+                                     backend->name());
+            return nullptr;
+        }
         utils::log_trace("Key '{}' opened on backend '{}'.", name, backend->name());
         BackendNameSetter::set(*key, backend->name());
     }
@@ -363,7 +408,8 @@ bool verify(std::string_view backend_name, std::span<const std::byte> hash, std:
 }
 
 // Default-backend functions - delegate to the explicit-backend overloads.
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    IsolationLevel minimum_isolation)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
@@ -371,10 +417,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         utils::log_and_set_error("No default backend available for creating key '{}'.", name);
         return nullptr;
     }
-    return create_key(backend->name(), name, algorithm, policy);
+    return create_key(backend->name(), name, algorithm, policy, minimum_isolation);
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_isolation)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
     if (nullptr == backend)
@@ -382,7 +428,7 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
         utils::log_and_set_error("No default backend available for opening key '{}'.", name);
         return nullptr;
     }
-    return open_key(backend->name(), name);
+    return open_key(backend->name(), name, minimum_isolation);
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
@@ -418,7 +464,7 @@ const char *get_default_backend_name()
     return "";
 }
 
-bool Backend::is_algorithm_available(Algorithm algorithm) const
+bool Backend::is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolation) const
 {
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
@@ -435,7 +481,7 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
     // error. They remain in the log. Registered before the deletion guard so that it runs last.
     SCOPE_GUARD({ utils::clear_error(); });
 
-    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none);
+    std::unique_ptr<KeyPair> key = create_key(random_key, algorithm, KeyPolicy::none, minimum_isolation);
 
     // Could we even create a key?
     if (nullptr == key)
@@ -450,6 +496,12 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
             utils::log_and_set_error("Created key '{}' could not be deleted.", random_key);
         }
     });
+
+    if (!meets_minimum_isolation(key->key_info().isolation_level, minimum_isolation))
+    {
+        utils::log_and_set_error("Availability probe created a key below the requested minimum isolation.");
+        return false;
+    }
 
     // Create some data and sign.
     const std::vector<std::byte> hash(info.hash_bits / 8, static_cast<std::byte>('a'));
