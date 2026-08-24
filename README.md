@@ -22,9 +22,10 @@ MPSS uses the following technologies on the different supported platforms:
 used, so the tier is a property of each key rather than of the machine. A TPM that does not
 implement a requested algorithm, for example, yields a VBS key on the very host where another
 algorithm yields a TPM key. Creation reports success and sets no error in all three cases, so read
-`key_info().is_hardware_backed` and `key_info().storage_description` (`"TPM Protection"`,
+`key_info().isolation_level` and `key_info().storage_description` (`"TPM Protection"`,
 `"Virtualization Based Security"`, or `"Software Protection"`) to find out what a key actually got.
-Only the last of the three is outside hardware.
+Those storage options map to `IsolationLevel::hardware`, `IsolationLevel::mixed`, and
+`IsolationLevel::software`, respectively.
 
 ## Compiling for different platforms
 
@@ -338,8 +339,8 @@ Java sources and does not raise the runtime minimum. The installer reads its val
 preset rather than duplicating it here.
 
 P-256 key creation first requests StrongBox and falls back to AndroidKeyStore when StrongBox is
-unavailable. Before API level 31, hardware-backed storage is reported as `Unknown Secure`; API
-level 31 and later report the specific Android security level.
+unavailable. Before API level 31, secure storage is reported as `Unknown Secure` with mixed
+isolation; API level 31 and later report the specific Android security level.
 
 API level 28 is a compatibility floor, not a security-maintenance guarantee. Applications using
 MPSS should require devices that receive current security updates and have a current Android
@@ -594,6 +595,15 @@ After `delete_key()` succeeds, all `KeyPair` objects referring to that key must 
 and must not be used. Their subsequent behavior is backend-dependent and is not part of the MPSS API
 contract.
 
+### Minimum Key Isolation
+
+`KeyPair::Create`, `KeyPair::Open`, `is_algorithm_available`, and `get_available_algorithms` accept
+an optional minimum `IsolationLevel`. Existing calls default to `IsolationLevel::software`.
+`KeyPair::Create` places this argument after `KeyPolicy`; the policy remains creation-only.
+Open accepts a key whose concrete level equals or exceeds the minimum and releases an
+underqualified handle without deleting the persisted key. Backends whose stronger creation path
+is not enabled fail closed for mixed and hardware creation and availability requests.
+
 ### Key Policies
 
 `KeyPair::Create` takes an optional [`KeyPolicy`](mpss/key_policy.h) that constrains how the key may
@@ -734,9 +744,11 @@ return value is an *answer* rather than a success indicator. Returning `false` (
 algorithm from the list) means "this algorithm does not work here" — that is the query succeeding,
 so it leaves no error. How a backend decides is up to the backend: the operating-system backends probe
 at runtime by creating, signing with and deleting a scratch key, while the YubiKey backend answers from
-static capability and so reports availability even with no device attached. Whatever a probe's steps
-report describes the scratch key, not the question that was asked, so it is logged but never left as
-the last error.
+static capability and so reports availability even with no device attached. The default probe creates
+the scratch key with the requested minimum isolation, signs with it, and deletes it. Whatever a probe's
+steps report describes the scratch key, not the question that was asked, so it is logged but never left
+as the last error. Positive results are cached by backend, algorithm, and minimum isolation; negative
+results are not cached.
 
 An error is set only when the query cannot be answered at all: an unknown algorithm, an unknown
 backend name, or no backend registered. So a `false` result with an empty error means "not
@@ -1208,7 +1220,7 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_key_name` | UTF-8 string | The key's persistent name. |
 | `mpss_algorithm` | UTF-8 string | The key's algorithm suite (canonical form). |
 | `mpss_backend` | UTF-8 string | The backend that created or opened the key. |
-| `is_hardware_backed` | int | `1` if the key is stored in hardware (e.g., Secure Enclave, YubiKey), `0` otherwise. |
+| `is_hardware_backed` | int | Legacy provider parameter: `1` for mixed or hardware isolation, `0` for software. |
 | `storage_description` | UTF-8 string | Human-readable description of the storage location (e.g., `"Keychain"`, `"YubiKey PIV"`). |
 
 The standard OpenSSL parameters `OSSL_PKEY_PARAM_BITS`, `OSSL_PKEY_PARAM_SECURITY_BITS`, `OSSL_PKEY_PARAM_MANDATORY_DIGEST`, and `OSSL_PKEY_PARAM_DEFAULT_DIGEST` are also supported.

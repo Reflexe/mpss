@@ -23,9 +23,12 @@ constexpr const char *trusted_storage = "Trusted Environment";
 constexpr const char *strongbox_storage = "StrongBox";
 constexpr const char *unknown_secure_storage = "Unknown Secure";
 
-void get_key_properties(std::string_view name, bool &hardware_backed, const char **storage_description)
+void get_key_properties(std::string_view name, mpss::IsolationLevel &isolation_level,
+                        const char **storage_description)
 {
-    hardware_backed = false;
+    using enum mpss::IsolationLevel;
+
+    isolation_level = software;
     *storage_description = nullptr;
 
     mpss::impl::os::JNIEnvGuard guard;
@@ -80,23 +83,23 @@ void get_key_properties(std::string_view name, bool &hardware_backed, const char
     switch (result)
     {
     case 0:
-        hardware_backed = false;
+        isolation_level = software;
         *storage_description = unknown_storage;
         return;
     case 1:
-        hardware_backed = false;
+        isolation_level = software;
         *storage_description = software_storage;
         return;
     case 2:
-        hardware_backed = true;
+        isolation_level = mixed;
         *storage_description = unknown_secure_storage;
         return;
     case 3:
-        hardware_backed = true;
+        isolation_level = mixed;
         *storage_description = trusted_storage;
         return;
     case 4:
-        hardware_backed = true;
+        isolation_level = hardware;
         *storage_description = strongbox_storage;
         return;
     default:
@@ -258,9 +261,9 @@ OpenKeyResult try_open_key(std::string_view name)
         return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
-    bool hardware_backed = false;
+    IsolationLevel isolation_level = IsolationLevel::software;
     const char *storage_description = nullptr;
-    get_key_properties(name, hardware_backed, &storage_description);
+    get_key_properties(name, isolation_level, &storage_description);
 
     if (nullptr == storage_description)
     {
@@ -271,12 +274,12 @@ OpenKeyResult try_open_key(std::string_view name)
     // Finally, we can return the key.
     mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name, storage_description);
     return {.status = KeyProbeStatus::found,
-            .value = std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description)};
+            .value = std::make_unique<AndroidKeyPair>(algorithm, name, isolation_level, storage_description)};
 }
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
 {
     if (name.empty())
     {
@@ -293,7 +296,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    IsolationLevel minimum_isolation)
 {
     if (name.empty())
     {
@@ -310,6 +314,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (KeyPolicy::none != policy)
     {
         mpss::utils::log_and_set_error("Android backend does not support the requested key policy.");
+        return nullptr;
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        mpss::utils::log_and_set_error("Android backend does not yet support stronger minimum isolation.");
         return nullptr;
     }
 
@@ -436,9 +446,9 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    bool hardware_backed = false;
+    IsolationLevel isolation_level = IsolationLevel::software;
     const char *storage_description = nullptr;
-    get_key_properties(name, hardware_backed, &storage_description);
+    get_key_properties(name, isolation_level, &storage_description);
 
     if (nullptr == storage_description)
     {
@@ -447,7 +457,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, hardware_backed, storage_description);
+    return std::make_unique<AndroidKeyPair>(algorithm, name, isolation_level, storage_description);
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

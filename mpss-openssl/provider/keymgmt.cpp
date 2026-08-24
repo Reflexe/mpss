@@ -386,7 +386,8 @@ try
         return 0;
     }
     if ((p = OSSL_PARAM_locate(params, "is_hardware_backed")) &&
-        !OSSL_PARAM_set_int(p, key->key_pair->key_info().is_hardware_backed ? 1 : 0))
+        !OSSL_PARAM_set_int(
+            p, mpss::IsolationLevel::software != key->key_pair->key_info().isolation_level ? 1 : 0))
     {
         return 0;
     }

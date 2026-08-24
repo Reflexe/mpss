@@ -4,9 +4,6 @@
 #include "mpss/mpss.h"
 #include "mpss/impl/backend_registry.h"
 #include "mpss/utils/utilities.h"
-#include <array>
-#include <mutex>
-#include <optional>
 
 namespace mpss
 {
@@ -33,38 +30,40 @@ T clear_error_on_success(T result)
 }
 } // namespace
 
-std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                         IsolationLevel minimum_isolation)
 {
     clear_error();
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}'.", name,
                      get_algorithm_info(algorithm).type_str);
-    return clear_error_on_success(impl::create_key(name, algorithm, policy));
+    return clear_error_on_success(impl::create_key(name, algorithm, policy, minimum_isolation));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                         KeyPolicy policy)
+                                         KeyPolicy policy, IsolationLevel minimum_isolation)
 {
     clear_error();
     utils::log_trace("KeyPair::Create called for key '{}' with algorithm '{}' on backend '{}'.", name,
                      get_algorithm_info(algorithm).type_str, backend_name);
-    return clear_error_on_success(impl::create_key(backend_name, name, algorithm, policy));
+    return clear_error_on_success(impl::create_key(backend_name, name, algorithm, policy, minimum_isolation));
 }
 
-std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, IsolationLevel minimum_isolation)
 {
     clear_error();
     utils::log_trace("KeyPair::Open called for key '{}'.", name);
-    return clear_error_on_success(impl::open_key(name));
+    return clear_error_on_success(impl::open_key(name, minimum_isolation));
 }
 
-std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name)
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name,
+                                       IsolationLevel minimum_isolation)
 {
     clear_error();
     utils::log_trace("KeyPair::Open called for key '{}' on backend '{}'.", name, backend_name);
-    return clear_error_on_success(impl::open_key(backend_name, name));
+    return clear_error_on_success(impl::open_key(backend_name, name, minimum_isolation));
 }
 
-bool is_algorithm_available(Algorithm algorithm)
+bool is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolation)
 {
     clear_error();
     const AlgorithmInfo info = get_algorithm_info(algorithm);
@@ -74,43 +73,13 @@ bool is_algorithm_available(Algorithm algorithm)
         return false;
     }
 
-    // Cache results per algorithm to avoid repeated expensive probes.
-    static std::mutex cache_mutex;
-    static std::array<std::optional<bool>, algorithm_info.size()> cache{};
-
-    const int idx = static_cast<int>(algorithm);
-    {
-        std::scoped_lock lock{cache_mutex};
-        if (cache[idx])
-        {
-            // NOLINTBEGIN(bugprone-unchecked-optional-access) - guarded by the if above.
-            utils::log_trace("Algorithm availability for '{}' returned from cache: {}.", info.type_str,
-                             *cache[idx] ? "available" : "unavailable");
-            return *cache[idx];
-            // NOLINTEND(bugprone-unchecked-optional-access)
-        }
-    }
-
-    // Delegate to the default backend.
     utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
-    const bool available = impl::is_algorithm_available(algorithm);
-
-    // Cache positive results only. A positive is stable -- the platform genuinely supports the algorithm.
-    // A negative is the only direction that can be wrong and stick: a one-time probe can fail while the
-    // keystore is temporarily unavailable (e.g. a locked device on a long-lived process) or a probe name
-    // briefly collides, which memoizing would turn into a permanent, process-wide understatement of
-    // availability. Re-probing a genuinely unsupported algorithm is cheap (create_key bails before
-    // persisting a key), so negatives are simply not cached.
-    if (available)
-    {
-        std::scoped_lock lock{cache_mutex};
-        cache[idx] = true;
-    }
+    const bool available = impl::is_algorithm_available(algorithm, minimum_isolation);
     utils::log_trace("Algorithm '{}' is {}.", info.type_str, available ? "available" : "unavailable");
     return available;
 }
 
-bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
+bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name, IsolationLevel minimum_isolation)
 {
     clear_error();
     const AlgorithmInfo info = get_algorithm_info(algorithm);
@@ -120,10 +89,10 @@ bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
         return false;
     }
     utils::log_trace("Checking algorithm availability for '{}' on backend '{}'.", info.type_str, backend_name);
-    return impl::is_algorithm_available(backend_name, algorithm);
+    return impl::is_algorithm_available(backend_name, algorithm, minimum_isolation);
 }
 
-std::vector<Algorithm> get_available_algorithms()
+std::vector<Algorithm> get_available_algorithms(IsolationLevel minimum_isolation)
 {
     clear_error();
     std::vector<Algorithm> result;
@@ -133,7 +102,7 @@ std::vector<Algorithm> get_available_algorithms()
         {
             continue;
         }
-        if (is_algorithm_available(alg))
+        if (is_algorithm_available(alg, minimum_isolation))
         {
             result.push_back(alg);
         }
@@ -249,8 +218,8 @@ std::size_t KeyPair::extract_key(std::span<std::byte> public_key) const
     return clear_error_on_success(do_extract_key(public_key));
 }
 
-KeyPair::KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description)
-    : algorithm_{algorithm}, info_{get_algorithm_info(algorithm)}, key_info_{hardware_backed, storage_description}
+KeyPair::KeyPair(Algorithm algorithm, IsolationLevel isolation_level, const char *storage_description)
+    : algorithm_{algorithm}, info_{get_algorithm_info(algorithm)}, key_info_{isolation_level, storage_description}
 {
     if (0 == info_.key_bits)
     {

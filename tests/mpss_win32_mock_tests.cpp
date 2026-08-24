@@ -167,9 +167,10 @@ class WindowsKeyCreation : public ::testing::Test
         return mpss::KeyPair::Create("mock_win32_key", mpss::Algorithm::ecdsa_secp256r1_sha256, "os");
     }
 
-    static std::unique_ptr<mpss::KeyPair> OpenOsKey()
+    static std::unique_ptr<mpss::KeyPair> OpenOsKey(
+        mpss::IsolationLevel minimum_isolation = mpss::IsolationLevel::software)
     {
-        return mpss::KeyPair::Open("mock_win32_key", "os");
+        return mpss::KeyPair::Open("mock_win32_key", "os", minimum_isolation);
     }
 
     // Finds the key in one provider only, so a reopen resolves there.
@@ -318,18 +319,18 @@ class WindowsKeyCreation : public ::testing::Test
 };
 
 // Scenario: the TPM-backed platform provider accepts the create.
-// Expected behavior: the key reports TPM protection and is hardware-backed.
+// Expected behavior: the key reports TPM protection at hardware isolation.
 TEST_F(WindowsKeyCreation, TpmProviderReportsTpmProtection)
 {
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("TPM Protection", std::string(key->key_info().storage_description));
-    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::hardware, key->key_info().isolation_level);
 }
 
 // Scenario: the host has no TPM, so the platform provider cannot be opened, but VBS is available.
-// Expected behavior: the create falls back to VBS and reports it as hardware-backed.
+// Expected behavior: the create falls back to VBS and reports mixed isolation.
 TEST_F(WindowsKeyCreation, TpmUnavailableFallsBackToVbs)
 {
     FailTpmProvider();
@@ -338,11 +339,11 @@ TEST_F(WindowsKeyCreation, TpmUnavailableFallsBackToVbs)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Virtualization Based Security", std::string(key->key_info().storage_description));
-    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::mixed, key->key_info().isolation_level);
 }
 
 // Scenario: neither the TPM nor VBS is available.
-// Expected behavior: the create succeeds on software and reports itself as software-backed.
+// Expected behavior: the create succeeds on software and reports software isolation.
 TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
 {
     FailTpmProvider();
@@ -352,12 +353,11 @@ TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
-    EXPECT_FALSE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
 }
 
 // Scenario: a caller asks for a key on a host with no hardware-isolated provider.
-// Expected behavior: success with a software key; the caller must inspect is_hardware_backed to
-// notice the downgrade.
+// Expected behavior: success with a software key; the caller can inspect its concrete isolation level.
 TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignalingDowngrade)
 {
     FailTpmProvider();
@@ -367,7 +367,7 @@ TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignalingDowngrade)
 
     ASSERT_NE(nullptr, key);
     EXPECT_FALSE(mpss::has_error()) << "a silent downgrade left an error set: " << mpss::get_error();
-    EXPECT_FALSE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
 }
 
 // Scenario: every provider fails.
@@ -442,7 +442,7 @@ TEST_F(WindowsKeyCreation, SoftwareProviderMarksTheKeyNonExportable)
 }
 
 // Scenario: the key is reopened by name and the TPM provider holds it.
-// Expected behavior: the reopened key reports TPM protection and is hardware-backed.
+// Expected behavior: the reopened key reports TPM protection at hardware isolation.
 TEST_F(WindowsKeyCreation, ReopenFromTpmReportsTpmProtection)
 {
     KeyLivesIn(tpm_provider_handle);
@@ -452,11 +452,11 @@ TEST_F(WindowsKeyCreation, ReopenFromTpmReportsTpmProtection)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("TPM Protection", std::string(key->key_info().storage_description));
-    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::hardware, key->key_info().isolation_level);
 }
 
 // Scenario: the TPM does not hold the key, and the one in the software KSP is VBS-isolated.
-// Expected behavior: the reopened key reports VBS and is hardware-backed.
+// Expected behavior: the reopened key reports VBS at mixed isolation.
 TEST_F(WindowsKeyCreation, ReopenFromVbsReportsVirtualizationBasedSecurity)
 {
     KeyLivesIn(ksp_provider_handle);
@@ -466,7 +466,7 @@ TEST_F(WindowsKeyCreation, ReopenFromVbsReportsVirtualizationBasedSecurity)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Virtualization Based Security", std::string(key->key_info().storage_description));
-    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::mixed, key->key_info().isolation_level);
 }
 
 // Scenario: the key lives in the software KSP and is not VBS-isolated.
@@ -480,7 +480,96 @@ TEST_F(WindowsKeyCreation, ReopenFromSoftwareReportsSoftwareProtection)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
-    EXPECT_FALSE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
+}
+
+// Scenario: an existing TPM key is opened with hardware and mixed minimum isolation.
+// Expected behavior: both the equal and weaker minimum accept the hardware-isolated key.
+TEST_F(WindowsKeyCreation, OpenAcceptsEqualAndStrongerIsolation)
+{
+    KeyLivesIn(tpm_provider_handle);
+    AnswerKeyProperties(Isolation::unsupported);
+
+    std::unique_ptr<mpss::KeyPair> equal = OpenOsKey(mpss::IsolationLevel::hardware);
+    std::unique_ptr<mpss::KeyPair> stronger = OpenOsKey(mpss::IsolationLevel::mixed);
+
+    ASSERT_NE(nullptr, equal);
+    ASSERT_NE(nullptr, stronger);
+    EXPECT_EQ(mpss::IsolationLevel::hardware, equal->key_info().isolation_level);
+    EXPECT_EQ(mpss::IsolationLevel::hardware, stronger->key_info().isolation_level);
+}
+
+// Scenario: an existing VBS key is opened with mixed minimum isolation.
+// Expected behavior: the equal minimum accepts the mixed-isolation key.
+TEST_F(WindowsKeyCreation, OpenAcceptsEqualVbsIsolation)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated);
+
+    std::unique_ptr<mpss::KeyPair> key = OpenOsKey(mpss::IsolationLevel::mixed);
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::IsolationLevel::mixed, key->key_info().isolation_level);
+}
+
+// Scenario: a software key is opened with mixed minimum isolation and then reopened without a constraint.
+// Expected behavior: the constrained Open releases its handle without deleting the persisted key.
+TEST_F(WindowsKeyCreation, UnderqualifiedOpenReleasesWithoutDeleting)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated);
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(0);
+    EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, fake_key_handle).Times(2).WillRepeatedly(Return(ERROR_SUCCESS));
+
+    std::unique_ptr<mpss::KeyPair> rejected = OpenOsKey(mpss::IsolationLevel::mixed);
+    EXPECT_EQ(nullptr, rejected);
+    EXPECT_THAT(mpss::get_error(), HasSubstr("minimum isolation"));
+
+    std::unique_ptr<mpss::KeyPair> reopened = OpenOsKey();
+    ASSERT_NE(nullptr, reopened);
+    EXPECT_EQ(mpss::IsolationLevel::software, reopened->key_info().isolation_level);
+}
+
+// Scenario: creation requests mixed and hardware isolation before the Windows provider is enabled.
+// Expected behavior: both requests fail closed without attempting provider key creation.
+TEST_F(WindowsKeyCreation, StrongerCreationFailsClosed)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _).Times(0);
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create("mock_win32_mixed", mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+                                             mpss::KeyPolicy::none, mpss::IsolationLevel::mixed));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create("mock_win32_hardware", mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+                                             mpss::KeyPolicy::none, mpss::IsolationLevel::hardware));
+}
+
+// Scenario: availability requests mixed and hardware isolation before the Windows provider is enabled.
+// Expected behavior: both requests report unavailable without attempting provider key creation.
+TEST_F(WindowsKeyCreation, StrongerAvailabilityFailsClosed)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _).Times(0);
+
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+                                              mpss::IsolationLevel::mixed));
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
+                                              mpss::IsolationLevel::hardware));
+}
+
+// Scenario: a software-isolation availability probe fails on every Windows provider twice.
+// Expected behavior: the negative result is not cached, so all three providers are retried.
+TEST_F(WindowsKeyCreation, NegativeAvailabilityIsNotCached)
+{
+    int create_attempts = 0;
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(6)
+        .WillRepeatedly([&create_attempts](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, LPCWSTR, LPCWSTR, DWORD,
+                                           DWORD) -> SECURITY_STATUS {
+            ++create_attempts;
+            return status_failure;
+        });
+
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os"));
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os"));
+    EXPECT_EQ(6, create_attempts);
 }
 
 // Scenario: the key lives in the software KSP, but reading its isolation property fails outright.
@@ -511,7 +600,7 @@ TEST_F(WindowsKeyCreation, VbsCreationThatIsNotIsolatedIsReportedAsSoftware)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
-    EXPECT_FALSE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
 }
 
 // Scenario: the TPM is unavailable, the VBS creation call succeeds, and the created key reports that
@@ -526,7 +615,7 @@ TEST_F(WindowsKeyCreation, VbsCreationThatIsIsolatedIsReportedAsVbs)
 
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Virtualization Based Security", std::string(key->key_info().storage_description));
-    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    EXPECT_EQ(mpss::IsolationLevel::mixed, key->key_info().isolation_level);
 }
 
 // Scenario: the TPM is unavailable, the VBS creation call succeeds, but the isolation property of

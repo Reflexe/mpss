@@ -218,6 +218,52 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 
 } // namespace
 
+// Scenario: Android creates a key and reports one of the platform security-level descriptions.
+// Expected behavior: each Android security-level description maps to the exact approved isolation level.
+TEST(AndroidSecurityTest, MetadataMapsToExactIsolationLevel)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256))
+    {
+        GTEST_SKIP() << "Required algorithm is not supported by the Android backend.";
+    }
+
+    const std::string key_name = "test_android_isolation_metadata";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    std::unique_ptr<mpss::KeyPair> key = mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256);
+    ASSERT_NE(nullptr, key);
+
+    const std::string_view storage = key->key_info().storage_description;
+    if ("StrongBox" == storage)
+    {
+        EXPECT_EQ(hardware, key->key_info().isolation_level);
+    }
+    else if ("Trusted Environment" == storage || "Unknown Secure" == storage)
+    {
+        EXPECT_EQ(mixed, key->key_info().isolation_level);
+    }
+    else if ("Software" == storage || "Unknown" == storage)
+    {
+        EXPECT_EQ(software, key->key_info().isolation_level);
+    }
+    else
+    {
+        FAIL() << "Unexpected Android storage description: " << storage;
+    }
+}
+
 TEST(AndroidSecurityTest, StandaloneVerifyRejectsMismatchedAlgorithm)
 {
     using enum mpss::Algorithm;
