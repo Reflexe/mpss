@@ -24,8 +24,18 @@ namespace
 {
 using AvailabilityCacheKey = std::tuple<std::string, mpss::Algorithm, mpss::IsolationLevel>;
 
-std::mutex availability_cache_mutex;
-std::set<AvailabilityCacheKey> positive_availability_cache;
+struct AvailabilityCache
+{
+    std::mutex mutex;
+    std::set<AvailabilityCacheKey> positive_results;
+};
+
+AvailabilityCache &availability_cache()
+{
+    // Availability remains callable from host static destructors, just like BackendRegistry::Instance().
+    static AvailabilityCache &cache = *new AvailabilityCache(); // NOLINT(cppcoreguidelines-owning-memory)
+    return cache;
+}
 
 std::string random_string(std::size_t length)
 {
@@ -298,9 +308,10 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, 
     }
 
     const AvailabilityCacheKey cache_key{std::string{backend->name()}, algorithm, minimum_isolation};
+    AvailabilityCache &cache = availability_cache();
     {
-        std::scoped_lock lock{availability_cache_mutex};
-        if (positive_availability_cache.contains(cache_key))
+        std::scoped_lock lock{cache.mutex};
+        if (cache.positive_results.contains(cache_key))
         {
             return true;
         }
@@ -309,8 +320,8 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, 
     const bool available = backend->is_algorithm_available(algorithm, minimum_isolation);
     if (available)
     {
-        std::scoped_lock lock{availability_cache_mutex};
-        positive_availability_cache.insert(cache_key);
+        std::scoped_lock lock{cache.mutex};
+        cache.positive_results.insert(cache_key);
     }
     return available;
 }
