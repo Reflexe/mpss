@@ -1122,6 +1122,9 @@ OSSL_PARAM params[] = {
     // uint64_t policy = MPSS_KEY_POLICY_APPLE_SECURE_ENCLAVE_USER_PRESENCE;
     // uint64_t policy = MPSS_KEY_POLICY_YUBIKEY_PIN_ONCE | MPSS_KEY_POLICY_YUBIKEY_TOUCH_CACHED;
     // OSSL_PARAM_construct_uint64("mpss_key_policy", &policy),
+    // Optionally require a minimum isolation level. Undefined integer values are rejected.
+    // unsigned int minimum_isolation = MPSS_ISOLATION_HARDWARE;
+    // OSSL_PARAM_construct_uint("mpss_minimum_isolation", &minimum_isolation),
     OSSL_PARAM_END};
 EVP_PKEY_CTX_set_params(ctx, params);
 
@@ -1158,8 +1161,12 @@ no key.
 
 ```cpp
 // Open an existing MPSS key by name.
-OSSL_STORE_CTX *store =
-    OSSL_STORE_open_ex("mpss:my-openssl-key", libctx, "provider=mpss", nullptr, nullptr, nullptr, nullptr, nullptr);
+unsigned int minimum_isolation = MPSS_ISOLATION_MIXED;
+OSSL_PARAM store_params[] = {
+    OSSL_PARAM_construct_uint("mpss_minimum_isolation", &minimum_isolation),
+    OSSL_PARAM_END};
+OSSL_STORE_CTX *store = OSSL_STORE_open_ex(
+    "mpss:my-openssl-key", libctx, "provider=mpss", nullptr, nullptr, store_params, nullptr, nullptr);
 
 EVP_PKEY *existing_pkey = nullptr;
 while (OSSL_STORE_eof(store) == 0)
@@ -1226,6 +1233,10 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_algorithm` | UTF-8 string | Yes | The signature algorithm suite, e.g., `"ecdsa_secp256r1_sha256"`. (Only used for key generation; opening an existing key is done through `OSSL_STORE`, see above.) |
 | `mpss_backend` | UTF-8 string | No | The backend to use (e.g., `"os"` or `"yubikey"`). If omitted, the default backend is used. Use `mpss_get_available_backends()` to list available backends. |
 | `mpss_key_policy` | uint64 | No | Backend-specific key policy flags (e.g., Apple Secure Enclave user presence or YubiKey PIN/touch policy). Use the `MPSS_KEY_POLICY_*` constants from `mpss-openssl/api.h`. If omitted, defaults to `MPSS_KEY_POLICY_NONE` (backend defaults apply). |
+| `mpss_minimum_isolation` | unsigned int | No | Minimum acceptable isolation. Use `MPSS_ISOLATION_SOFTWARE`, `MPSS_ISOLATION_MIXED`, or `MPSS_ISOLATION_HARDWARE` from `mpss-openssl/api.h`; other integer values are rejected. If omitted, defaults to software. |
+
+`mpss_minimum_isolation` is also a settable `OSSL_STORE` context parameter when opening a key.
+`mpss_key_policy` remains creation-only and is never applied while opening.
 
 **Gettable parameters** (queried via `EVP_PKEY_get_params` on an existing key):
 
@@ -1234,10 +1245,20 @@ The MPSS OpenSSL provider exposes custom parameters through `OSSL_PARAM` for key
 | `mpss_key_name` | UTF-8 string | The key's persistent name. |
 | `mpss_algorithm` | UTF-8 string | The key's algorithm suite (canonical form). |
 | `mpss_backend` | UTF-8 string | The backend that created or opened the key. |
-| `is_hardware_backed` | int | Legacy provider parameter: `1` for mixed or hardware isolation, `0` for software. |
+| `isolation_level` | unsigned int | The key's actual core isolation level: one of the `MPSS_ISOLATION_*` constants. |
 | `storage_description` | UTF-8 string | Human-readable description of the storage location (e.g., `"Keychain"`, `"YubiKey PIV"`). |
 
 The standard OpenSSL parameters `OSSL_PKEY_PARAM_BITS`, `OSSL_PKEY_PARAM_SECURITY_BITS`, `OSSL_PKEY_PARAM_MANDATORY_DIGEST`, and `OSSL_PKEY_PARAM_DEFAULT_DIGEST` are also supported.
+
+The C availability APIs also require a minimum-isolation argument:
+`mpss_is_algorithm_available(name, minimum_isolation)`,
+`mpss_is_algorithm_available_in_backend(name, backend, minimum_isolation)`, and
+`mpss_get_available_algorithms(minimum_isolation)`. They accept only the three
+`MPSS_ISOLATION_*` constants; invalid values use the normal `mpss_get_error()` contract.
+
+Reference PEM compatibility is unchanged. The decoded body remains exactly
+`<backend>\0<key_name>`; minimum isolation is transient process state for a single store load and is
+not serialized. Decoding a reference without an explicit store minimum uses software.
 
 #### 5. Certificate Authority and Certificate Chain Creation
 

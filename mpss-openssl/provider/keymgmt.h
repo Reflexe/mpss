@@ -26,7 +26,8 @@ struct mpss_key
     std::optional<std::string> alg_name = std::nullopt;
 
     mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
-             const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy = mpss::KeyPolicy::none);
+             const std::optional<std::string> &mpss_backend, mpss::KeyPolicy creation_policy = mpss::KeyPolicy::none,
+             mpss::IsolationLevel minimum_isolation = mpss::IsolationLevel::software);
 
     ~mpss_key() = default;
 
