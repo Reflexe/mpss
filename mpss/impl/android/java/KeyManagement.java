@@ -47,10 +47,13 @@ import java.util.Arrays;
  * key storage.
  */
 public class KeyManagement {
+    private static final int CREATE_OPERATIONAL_ERROR = -1;
+    private static final int CREATE_UNAVAILABLE = 0;
+    private static final int CREATE_CREATED = 1;
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
     private static final Object _keyLock = new Object();
 
-    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox)
+    private static KeyPair GenerateKey(String keyName, Algorithm algorithm, boolean useStrongbox)
             throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
         if (null == keyName) {
             throw new IllegalArgumentException("keyName is null.");
@@ -99,8 +102,10 @@ public class KeyManagement {
                     Log.i("MPSS", "Key has security level StrongBox: " + keyName);
                     return 4;
                 default:
-                    Log.i("MPSS", "Key has unknown security level: " + keyName);
-                    return 0;
+                    String msg = "Key has unrecognized security level " + level + ": " + keyName;
+                    Log.e("MPSS", msg);
+                    SetError(msg);
+                    return -1;
             }
         }
     }
@@ -170,18 +175,23 @@ public class KeyManagement {
     }
 
     /**
-     * Create a new long-term key.
-     * Tries to create first in StrongBox when supported, then falls back to AndroidKeyStore.
+     * Attempt to create a new long-term key in exactly one requested Android store.
      * @param keyName Name of the key to create.
      * @param algorithm Algorithm for the key.
-     * @return True if key was created successfully, False otherwise.
+     * @param useStrongbox Whether StrongBox is required for this attempt.
+     * @return 1 if created, 0 if StrongBox is unavailable or unsupported, and -1 on an operational failure.
      */
-    public static Boolean CreateKey(String keyName, Algorithm algorithm) {
+    public static int CreateKey(String keyName, Algorithm algorithm, boolean useStrongbox) {
         ClearError();
         synchronized (_keyLock) {
             try {
                 if (null == keyName) throw new IllegalArgumentException("keyName is null.");
                 if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
+
+                if (useStrongbox && algorithm != Algorithm.secp256r1) {
+                    Log.w("MPSS", "StrongBox does not support the requested algorithm.");
+                    return CREATE_UNAVAILABLE;
+                }
 
                 // Fail-closed existence check. containsAlias tests presence without loading the key, so
                 // a transiently unloadable key still reports as present, and if existence cannot be
@@ -193,58 +203,43 @@ public class KeyManagement {
                         String msg = "Key with same name already exists: " + keyName;
                         Log.e("MPSS", msg);
                         SetError(msg);
-                        return false;
+                        return CREATE_OPERATIONAL_ERROR;
                     }
                 } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
                     String msg = "Could not determine whether key exists; refusing to create: " + ex.toString();
                     Log.e("MPSS", msg);
                     SetError(msg);
-                    return false;
+                    return CREATE_OPERATIONAL_ERROR;
                 }
 
-                KeyPair kp = null;
-                boolean useStrongbox = false;
-
-                // Only P-256 is supported in StrongBox.
-                if (algorithm == Algorithm.secp256r1) {
-                    useStrongbox = true;
-                }
-
+                KeyPair kp;
                 try {
-                    kp = CreateKey(keyName, algorithm, useStrongbox);
+                    kp = GenerateKey(keyName, algorithm, useStrongbox);
                 } catch (StrongBoxUnavailableException ex) {
                     Log.w("MPSS", "StrongBox is not available.");
+                    return CREATE_UNAVAILABLE;
                 }
 
-                if (!useStrongbox && null == kp) {
-                    // If we are not using StrongBox, no need to try again.
-                    String msg = "Failed to create key in TEE.";
-                    Log.w("MPSS", msg);
-                    SetError(msg);
-                    return false;
-                }
-
-                // Try again without StrongBox.
                 if (null == kp) {
-                    kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
+                    String msg = "Android key generation returned no key.";
+                    Log.e("MPSS", msg);
+                    SetError(msg);
+                    return CREATE_OPERATIONAL_ERROR;
                 }
 
-                if (null != kp) {
-                    MemKeyStore.AddKey(keyName, kp);
-                }
-
-                return true;
+                MemKeyStore.AddKey(keyName, kp);
+                return CREATE_CREATED;
             } catch (InvalidAlgorithmParameterException | NoSuchAlgorithmException |
                      NoSuchProviderException | InvalidKeySpecException ex) {
                 String msg = "Error creating key: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
-                return false;
+                return CREATE_OPERATIONAL_ERROR;
             } catch (RuntimeException ex) {
                 String msg = "Unexpected error creating key: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
-                return false;
+                return CREATE_OPERATIONAL_ERROR;
             }
         }
     }

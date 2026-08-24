@@ -338,9 +338,15 @@ API level 28 and later. `MPSS_ANDROID_COMPILE_API` selects the Android platform 
 Java sources and does not raise the runtime minimum. The installer reads its value directly from the
 preset rather than duplicating it here.
 
-P-256 key creation first requests StrongBox and falls back to AndroidKeyStore when StrongBox is
-unavailable. Before API level 31, secure storage is reported as `Unknown Secure` with mixed
-isolation; API level 31 and later report the specific Android security level.
+Android key creation uses a strongest-first ladder constrained by the requested minimum isolation.
+Hardware requests use StrongBox only. Mixed requests try StrongBox first and may fall back to the
+normal Android Keystore only when StrongBox is unavailable or unsupported; the resulting key must
+measure as Trusted Environment isolation or stronger. Software requests preserve the existing
+StrongBox-to-normal-Keystore fallback. Operational generation errors abort rather than falling back.
+Every created and opened key is measured from Android's reported security level. StrongBox maps to
+hardware, Trusted Environment and `Unknown Secure` map to mixed, and Software and `Unknown` map to
+software. Before API level 31, secure storage is reported as `Unknown Secure`; API level 31 and later
+report the specific Android security level.
 
 API level 28 is a compatibility floor, not a security-maintenance guarantee. Applications using
 MPSS should require devices that receive current security updates and have a current Android
