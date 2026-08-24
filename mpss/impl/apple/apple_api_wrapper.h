@@ -10,6 +10,7 @@
 extern "C"
 {
     std::int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize);
+    std::int32_t MPSS_GetKeyIsolation(const char *keyName, bool *hardwareBacked);
     bool MPSS_CreateKey(const char *keyName, int bitSize);
     bool MPSS_SignHash(const char *keyName, int signatureType, const std::uint8_t *hash, std::size_t hashSize,
                        std::uint8_t *signature, std::size_t *signatureSize);

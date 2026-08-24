@@ -606,8 +606,17 @@ contract.
 an optional minimum `IsolationLevel`. Existing calls default to `IsolationLevel::software`.
 `KeyPair::Create` places this argument after `KeyPolicy`; the policy remains creation-only.
 Open accepts a key whose concrete level equals or exceeds the minimum and releases an
-underqualified handle without deleting the persisted key. Backends whose stronger creation path
-is not enabled fail closed for mixed and hardware creation and availability requests.
+underqualified handle without deleting the persisted key.
+
+On Apple platforms, Secure Enclave keys are hardware isolated and Keychain keys are software
+isolated; there is no mixed Apple storage tier. Creation tries Secure Enclave first when it can
+satisfy the algorithm and minimum, and only a software minimum permits Keychain. Hardware and
+mixed requests therefore never fall back to Keychain. Created and opened keys are classified from
+their actual storage evidence, and classification failures fail closed.
+
+YubiKey PIV is hardware isolated, so the same YubiKey creation mode satisfies software, mixed, and
+hardware minimums. The minimum does not select a different YubiKey storage mode, and static
+availability reports supported algorithms consistently for all three levels.
 
 ### Key Policies
 

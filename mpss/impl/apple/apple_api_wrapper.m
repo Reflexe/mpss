@@ -82,6 +82,42 @@ int GetKeySize(SecKeyRef keyRef) {
   return bitSize;
 }
 
+static int32_t GetKeyIsolationInternal(NSString *keyLabel,
+                                       bool *hardwareBacked) {
+  SecKeyRef keyRef = CopyKey(keyLabel);
+  if (keyRef == NULL) {
+    SetThreadLocalError(@"Cannot classify a key that is not open.");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  CFDictionaryRef attributes = SecKeyCopyAttributes(keyRef);
+  CFRelease(keyRef);
+  if (attributes == NULL) {
+    SetThreadLocalError(@"Failed to retrieve key storage attributes.");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  CFTypeRef tokenID = CFDictionaryGetValue(attributes, kSecAttrTokenID);
+  if (tokenID == NULL) {
+    *hardwareBacked = false;
+    CFRelease(attributes);
+    return MPSS_APPLE_RESULT_SUCCESS;
+  }
+
+  if (CFEqual(tokenID, kSecAttrTokenIDSecureEnclave)) {
+    *hardwareBacked = true;
+    CFRelease(attributes);
+    return MPSS_APPLE_RESULT_SUCCESS;
+  }
+
+  NSString *error = [NSString
+      stringWithFormat:@"Key uses an unsupported storage token: %@.",
+                       (__bridge id)tokenID];
+  SetThreadLocalError(error);
+  CFRelease(attributes);
+  return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+}
+
 SecKeyAlgorithm GetAlgorithm(int signatureType) {
   switch (signatureType) {
   case 1: // ECDSA SHA 256
@@ -219,6 +255,20 @@ int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
   @autoreleasepool {
     NSString *keyLabel = GetKeyLabel(keyName);
     return OpenExistingKeyInternal(keyLabel, bitSize);
+  }
+}
+
+int32_t MPSS_GetKeyIsolation(const char *keyName, bool *hardwareBacked) {
+  ClearThreadLocalError();
+  if (keyName == NULL || hardwareBacked == NULL) {
+    SetThreadLocalError(
+        @"Invalid parameters (keyName or hardwareBacked is NULL).");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  @autoreleasepool {
+    NSString *keyLabel = GetKeyLabel(keyName);
+    return GetKeyIsolationInternal(keyLabel, hardwareBacked);
   }
 }
 

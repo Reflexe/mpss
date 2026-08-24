@@ -17,7 +17,7 @@ namespace mpss::impl::os
 class AppleKeychainKeyPair : public AppleKeyPairBase
 {
   public:
-    AppleKeychainKeyPair(std::string_view name, Algorithm algorithm);
+    AppleKeychainKeyPair(std::string_view name, Algorithm algorithm, bool hardware_backed);
     ~AppleKeychainKeyPair() override;
 
   protected:
