@@ -241,14 +241,15 @@ TEST(AndroidIsolationPolicyTest, MixedAcceptsStrongBoxAndTeeButRejectsSoftware)
 
     const std::optional<mpss::KeyInfo> strongbox = mpss::impl::os::android_key_info_from_security_level(4);
     const std::optional<mpss::KeyInfo> tee = mpss::impl::os::android_key_info_from_security_level(3);
-    const std::optional<mpss::KeyInfo> software = mpss::impl::os::android_key_info_from_security_level(1);
+    const std::optional<mpss::KeyInfo> software_key_info =
+        mpss::impl::os::android_key_info_from_security_level(1);
 
     ASSERT_TRUE(strongbox.has_value());
     ASSERT_TRUE(tee.has_value());
-    ASSERT_TRUE(software.has_value());
+    ASSERT_TRUE(software_key_info.has_value());
     EXPECT_TRUE(mpss::meets_minimum_isolation(strongbox->isolation_level, mixed));
     EXPECT_TRUE(mpss::meets_minimum_isolation(tee->isolation_level, mixed));
-    EXPECT_FALSE(mpss::meets_minimum_isolation(software->isolation_level, mixed));
+    EXPECT_FALSE(mpss::meets_minimum_isolation(software_key_info->isolation_level, mixed));
 }
 
 // Scenario: software isolation is requested and the StrongBox attempt is unavailable.
