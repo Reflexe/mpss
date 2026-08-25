@@ -205,6 +205,12 @@ std::string ReferencePemFor(std::string_view backend, std::string_view key_name)
     return ReferencePem(Base64(LoadReference(backend, key_name)));
 }
 
+bool GetIsolationLevel(EVP_PKEY *key, unsigned int &isolation_level)
+{
+    OSSL_PARAM params[] = {OSSL_PARAM_construct_uint("isolation_level", &isolation_level), OSSL_PARAM_END};
+    return 1 == EVP_PKEY_get_params(key, params) && OSSL_PARAM_modified(params);
+}
+
 evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, const char *backend = nullptr,
                          std::uint64_t key_policy = MPSS_KEY_POLICY_NONE,
                          std::optional<unsigned int> minimum_isolation = std::nullopt)
@@ -976,7 +982,7 @@ TEST(MPSS_OpenSSL, CreateReceivesMinimumIsolation)
     ASSERT_NE(nullptr, key.get());
 
     unsigned int isolation = MPSS_ISOLATION_SOFTWARE;
-    ASSERT_EQ(1, EVP_PKEY_get_uint_param(key.get(), "isolation_level", &isolation));
+    ASSERT_TRUE(GetIsolationLevel(key.get(), isolation));
     EXPECT_EQ(MPSS_ISOLATION_HARDWARE, isolation);
 }
 
@@ -1235,13 +1241,13 @@ TEST_F(MPSSStore, OpenReceivesMinimumIsolation)
     evp_pkey_ptr created = GenerateKey(libctx, key_name, backend);
     ASSERT_NE(nullptr, created.get());
     unsigned int actual_isolation = MPSS_ISOLATION_SOFTWARE;
-    ASSERT_EQ(1, EVP_PKEY_get_uint_param(created.get(), "isolation_level", &actual_isolation));
+    ASSERT_TRUE(GetIsolationLevel(created.get(), actual_isolation));
     created.reset();
 
     evp_pkey_ptr reopened(store_open_key(key_name, backend, actual_isolation));
     ASSERT_NE(nullptr, reopened.get());
     unsigned int reopened_isolation = MPSS_ISOLATION_SOFTWARE;
-    ASSERT_EQ(1, EVP_PKEY_get_uint_param(reopened.get(), "isolation_level", &reopened_isolation));
+    ASSERT_TRUE(GetIsolationLevel(reopened.get(), reopened_isolation));
     EXPECT_EQ(actual_isolation, reopened_isolation);
     EXPECT_EQ(ReferencePemFor(backend, key_name), EncodeReferencePem(reopened.get()));
     reopened.reset();
