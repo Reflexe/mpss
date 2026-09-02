@@ -7,6 +7,7 @@
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/impl/key_probe.h"
 #include "mpss/impl/os_backend.h"
+#include "mpss/utils/scope_guard.h"
 #include "mpss/utils/utilities.h"
 #include <optional>
 
@@ -23,19 +24,13 @@ constexpr const char *trusted_storage = "Trusted Environment";
 constexpr const char *strongbox_storage = "StrongBox";
 constexpr const char *unknown_secure_storage = "Unknown Secure";
 
-void get_key_properties(std::string_view name, mpss::IsolationLevel &isolation_level,
-                        const char **storage_description)
+std::optional<mpss::KeyInfo> get_key_properties(std::string_view name)
 {
-    using enum mpss::IsolationLevel;
-
-    isolation_level = software;
-    *storage_description = nullptr;
-
     mpss::impl::os::JNIEnvGuard guard;
     if (!guard.valid())
     {
         mpss::utils::log_and_set_error("Android JNI environment is unavailable.");
-        return;
+        return std::nullopt;
     }
     JNIEnv *const env = guard.env();
 
@@ -43,72 +38,75 @@ void get_key_properties(std::string_view name, mpss::IsolationLevel &isolation_l
     if (nullptr == key_management)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement Java class");
-        return;
+        return std::nullopt;
     }
 
     jmethodID method = env->GetStaticMethodID(key_management, "GetKeySecurityLevel", "(Ljava/lang/String;)I");
     if (mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.GetKeySecurityLevel"))
     {
-        return;
+        return std::nullopt;
     }
     if (nullptr == method)
     {
         mpss::utils::log_and_set_error("Could not get KeyManagement.GetKeySecurityLevel Java method");
-        return;
+        return std::nullopt;
     }
 
     const std::string key_name_str(name);
     jni_string key_name(env, env->NewStringUTF(key_name_str.c_str()));
     if (mpss::impl::os::utils::check_and_clear_exception(env, "converting an Android key name to a Java string"))
     {
-        return;
+        return std::nullopt;
     }
     if (key_name.is_null())
     {
         mpss::utils::log_and_set_error("Could not convert key name to Java String");
-        return;
+        return std::nullopt;
     }
 
     const jint result = env->CallStaticIntMethod(key_management, method, key_name.get());
     if (mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement.GetKeySecurityLevel"))
     {
-        return;
+        return std::nullopt;
     }
     if (-1 == result)
     {
         mpss::impl::os::utils::report_java_error(env, "KeyManagement.GetKeySecurityLevel");
-        return;
+        return std::nullopt;
     }
 
-    switch (result)
+    std::optional<mpss::KeyInfo> key_info =
+        mpss::impl::os::android_key_info_from_security_level(static_cast<std::int32_t>(result));
+    if (!key_info.has_value())
     {
-    case 0:
-        isolation_level = software;
-        *storage_description = unknown_storage;
-        return;
-    case 1:
-        isolation_level = software;
-        *storage_description = software_storage;
-        return;
-    case 2:
-        isolation_level = mixed;
-        *storage_description = unknown_secure_storage;
-        return;
-    case 3:
-        isolation_level = mixed;
-        *storage_description = trusted_storage;
-        return;
-    case 4:
-        isolation_level = hardware;
-        *storage_description = strongbox_storage;
-        return;
-    default:
         mpss::utils::log_and_set_error("Unknown result from KeyManagement.GetKeySecurityLevel");
-        return;
     }
+    return key_info;
 }
 
 } // namespace
+
+std::optional<mpss::KeyInfo>
+mpss::impl::os::android_key_info_from_security_level(std::int32_t security_level) noexcept
+{
+    using enum mpss::IsolationLevel;
+
+    switch (security_level)
+    {
+    case 0:
+        return mpss::KeyInfo{software, unknown_storage};
+    case 1:
+        return mpss::KeyInfo{software, software_storage};
+    case 2:
+        return mpss::KeyInfo{mixed, unknown_secure_storage};
+    case 3:
+        return mpss::KeyInfo{mixed, trusted_storage};
+    case 4:
+        return mpss::KeyInfo{hardware, strongbox_storage};
+    default:
+        return std::nullopt;
+    }
+}
 
 namespace mpss::impl::os
 {
@@ -181,6 +179,20 @@ OpenKeyResult try_open_key(std::string_view name)
     if (!opened.value())
     {
         return {.status = KeyProbeStatus::not_found, .value = nullptr};
+    }
+
+    bool keep_runtime_handle = false;
+    SCOPE_GUARD({
+        if (!keep_runtime_handle)
+        {
+            static_cast<void>(close_android_key(name));
+        }
+    });
+
+    const std::optional<KeyInfo> key_info = get_key_properties(name);
+    if (!key_info.has_value())
+    {
+        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
     // Now we need the Algorithm.
@@ -261,25 +273,16 @@ OpenKeyResult try_open_key(std::string_view name)
         return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
-    IsolationLevel isolation_level = IsolationLevel::software;
-    const char *storage_description = nullptr;
-    get_key_properties(name, isolation_level, &storage_description);
-
-    if (nullptr == storage_description)
-    {
-        // Error happened getting key properties. This is reported by get_key_properties, so we just return here.
-        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
-    }
-
-    // Finally, we can return the key.
-    mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name, storage_description);
+    keep_runtime_handle = true;
+    mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name, key_info->storage_description);
     return {.status = KeyProbeStatus::found,
-            .value = std::make_unique<AndroidKeyPair>(algorithm, name, isolation_level, storage_description)};
+            .value = std::make_unique<AndroidKeyPair>(algorithm, name, key_info->isolation_level,
+                                                      key_info->storage_description)};
 }
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_isolation)
 {
     if (name.empty())
     {
@@ -291,6 +294,13 @@ std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
     if (KeyProbeStatus::not_found == result.status)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
+    }
+    if (nullptr != result.value &&
+        !mpss::meets_minimum_isolation(result.value->key_info().isolation_level, minimum_isolation))
+    {
+        result.value.reset();
+        mpss::utils::log_and_set_error("Key '{}' does not meet the requested minimum isolation.", name);
+        return nullptr;
     }
 
     return std::move(result.value);
@@ -314,12 +324,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (KeyPolicy::none != policy)
     {
         mpss::utils::log_and_set_error("Android backend does not support the requested key policy.");
-        return nullptr;
-    }
-
-    if (IsolationLevel::software != minimum_isolation)
-    {
-        mpss::utils::log_and_set_error("Android backend does not yet support stronger minimum isolation.");
         return nullptr;
     }
 
@@ -355,7 +359,8 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     jmethodID method = env->GetStaticMethodID(
-        key_management, "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;)Ljava/lang/Boolean;");
+        key_management, "CreateKey",
+        "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;Z)Ljava/lang/Boolean;");
     if (utils::check_and_clear_exception(env, "resolving KeyManagement.CreateKey"))
     {
         return nullptr;
@@ -424,40 +429,96 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    jni_object result(env, env->CallStaticObjectMethod(key_management, method, key_name.get(), algorithm_value.get()));
-    if (utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
+    auto inspect_created_key = [&]() -> std::unique_ptr<KeyPair> {
+        const std::optional<KeyInfo> key_info = get_key_properties(name);
+        if (!key_info.has_value())
+        {
+            const std::string inspection_error = mpss::get_error();
+            if (!delete_android_key(name))
+            {
+                const std::string cleanup_error = mpss::get_error();
+                mpss::utils::log_and_set_error(
+                    "Failed to inspect newly created Android key '{}' and cleanup failed: {}; inspection error: {}",
+                    name, cleanup_error, inspection_error);
+            }
+            else
+            {
+                mpss::utils::set_error(inspection_error);
+            }
+            return nullptr;
+        }
+
+        if (!mpss::meets_minimum_isolation(key_info->isolation_level, minimum_isolation))
+        {
+            const IsolationLevel actual_isolation = key_info->isolation_level;
+            mpss::utils::log_and_set_error(
+                "Newly created Android key '{}' measured at isolation level {} below requested minimum {}.", name,
+                static_cast<unsigned>(actual_isolation), static_cast<unsigned>(minimum_isolation));
+            const std::string rejection_error = mpss::get_error();
+            if (!delete_android_key(name))
+            {
+                const std::string cleanup_error = mpss::get_error();
+                mpss::utils::log_and_set_error(
+                    "Newly created Android key '{}' was underqualified and cleanup failed: {}; rejection error: {}",
+                    name, cleanup_error, rejection_error);
+            }
+            return nullptr;
+        }
+
+        mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, key_info->storage_description);
+        return std::make_unique<AndroidKeyPair>(algorithm, name, key_info->isolation_level,
+                                                key_info->storage_description);
+    };
+
+    auto create_in_store = [&](bool use_strongbox) {
+        jni_object result(env, env->CallStaticObjectMethod(key_management, method, key_name.get(),
+                                                           algorithm_value.get(),
+                                                           use_strongbox ? JNI_TRUE : JNI_FALSE));
+        if (utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
+        {
+            return false;
+        }
+
+        if (result.is_null())
+        {
+            utils::report_java_error(env, "KeyManagement.CreateKey");
+            return false;
+        }
+
+        const std::optional<bool> created = utils::unbox_boolean(env, result.get());
+        if (!created.has_value())
+        {
+            return false;
+        }
+        if (!created.value())
+        {
+            utils::report_java_error(env, "KeyManagement.CreateKey");
+        }
+        return created.value();
+    };
+
+    if (create_in_store(/* use_strongbox */ true))
     {
-        return nullptr;
+        return inspect_created_key();
     }
-    if (result.is_null())
+
+    const std::string strongbox_error = mpss::get_error();
+    if (IsolationLevel::hardware == minimum_isolation)
     {
-        utils::report_java_error(env, "KeyManagement.CreateKey");
+        mpss::utils::log_and_set_error("Failed to create Android key '{}' with StrongBox: {}", name, strongbox_error);
         return nullptr;
     }
 
-    const std::optional<bool> created = utils::unbox_boolean(env, result.get());
-    if (!created.has_value())
+    if (create_in_store(/* use_strongbox */ false))
     {
-        return nullptr;
-    }
-    if (!created.value())
-    {
-        utils::report_java_error(env, "KeyManagement.CreateKey");
-        return nullptr;
+        return inspect_created_key();
     }
 
-    IsolationLevel isolation_level = IsolationLevel::software;
-    const char *storage_description = nullptr;
-    get_key_properties(name, isolation_level, &storage_description);
-
-    if (nullptr == storage_description)
-    {
-        // Error happened getting key properties. This is reported by get_key_properties, so we just return here.
-        return nullptr;
-    }
-
-    mpss::utils::log_trace("Key '{}' created on Android with {} storage.", name, storage_description);
-    return std::make_unique<AndroidKeyPair>(algorithm, name, isolation_level, storage_description);
+    const std::string fallback_error = mpss::get_error();
+    mpss::utils::log_and_set_error(
+        "Failed to create Android key '{}'; StrongBox attempt failed: {}; Android Keystore fallback failed: {}", name,
+        strongbox_error, fallback_error);
+    return nullptr;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

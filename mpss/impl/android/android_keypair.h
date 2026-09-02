@@ -4,9 +4,20 @@
 #pragma once
 
 #include "mpss/mpss.h"
+#include <cstdint>
+#include <optional>
 
 namespace mpss::impl::os
 {
+
+[[nodiscard]]
+std::optional<KeyInfo> android_key_info_from_security_level(std::int32_t security_level) noexcept;
+
+[[nodiscard]]
+bool delete_android_key(std::string_view key_name);
+
+[[nodiscard]]
+bool close_android_key(std::string_view key_name);
 
 class AndroidKeyPair : public mpss::KeyPair
 {

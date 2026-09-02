@@ -3,6 +3,7 @@
 
 #include "mpss/impl/android/JNIHelper.h"
 #include "mpss/impl/android/JNIObject.h"
+#include "mpss/impl/android/android_keypair.h"
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/log.h"
 #include "mpss/mpss.h"
@@ -217,6 +218,152 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 }
 
 } // namespace
+
+// Scenario: Android reports StrongBox, Trusted Environment, and Software security levels for mixed isolation.
+// Expected behavior: mixed accepts StrongBox and TEE evidence but rejects software evidence.
+TEST(AndroidIsolationPolicyTest, MixedAcceptsStrongBoxAndTeeButRejectsSoftware)
+{
+    using enum mpss::IsolationLevel;
+
+    const std::optional<mpss::KeyInfo> strongbox = mpss::impl::os::android_key_info_from_security_level(4);
+    const std::optional<mpss::KeyInfo> tee = mpss::impl::os::android_key_info_from_security_level(3);
+    const std::optional<mpss::KeyInfo> software_key_info =
+        mpss::impl::os::android_key_info_from_security_level(1);
+
+    ASSERT_TRUE(strongbox.has_value());
+    ASSERT_TRUE(tee.has_value());
+    ASSERT_TRUE(software_key_info.has_value());
+    EXPECT_TRUE(mpss::meets_minimum_isolation(strongbox->isolation_level, mixed));
+    EXPECT_TRUE(mpss::meets_minimum_isolation(tee->isolation_level, mixed));
+    EXPECT_FALSE(mpss::meets_minimum_isolation(software_key_info->isolation_level, mixed));
+}
+
+// Scenario: Android reports its two compatibility security levels on older or indeterminate platforms.
+// Expected behavior: Unknown Secure maps to mixed isolation and Unknown maps to software isolation.
+TEST(AndroidIsolationPolicyTest, UnknownSecurityLevelsMapExactly)
+{
+    using enum mpss::IsolationLevel;
+
+    const std::optional<mpss::KeyInfo> unknown_secure = mpss::impl::os::android_key_info_from_security_level(2);
+    const std::optional<mpss::KeyInfo> unknown = mpss::impl::os::android_key_info_from_security_level(0);
+
+    ASSERT_TRUE(unknown_secure.has_value());
+    ASSERT_TRUE(unknown.has_value());
+    EXPECT_EQ(mixed, unknown_secure->isolation_level);
+    EXPECT_STREQ("Unknown Secure", unknown_secure->storage_description);
+    EXPECT_EQ(software, unknown->isolation_level);
+    EXPECT_STREQ("Unknown", unknown->storage_description);
+}
+
+// Scenario: Android security evidence cannot be queried or has an unrecognized platform value.
+// Expected behavior: no isolation properties are produced, so creation and open fail closed.
+TEST(AndroidIsolationPolicyTest, SecurityLevelQueryFailureFailsClosed)
+{
+    EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(-1).has_value());
+    EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(5).has_value());
+}
+
+// Scenario: normal Android Keystore produces a software P-384 key while mixed isolation is required.
+// Expected behavior: the underqualified newly created key is deleted and never returned.
+TEST(AndroidIsolationPolicyTest, UnderqualifiedCreatedKeyIsDeleted)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, software))
+    {
+        GTEST_SKIP() << "P-384 is not supported by the Android backend.";
+    }
+
+    const std::string probe_name = "test_android_underqualified_create_probe";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(probe_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    std::unique_ptr<mpss::KeyPair> probe =
+        mpss::KeyPair::Create(probe_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, software);
+    ASSERT_NE(nullptr, probe) << mpss::get_error();
+    if (software != probe->key_info().isolation_level)
+    {
+        ASSERT_TRUE(probe->delete_key());
+        GTEST_SKIP() << "Normal Android Keystore is isolated above software on this device.";
+    }
+    ASSERT_TRUE(probe->delete_key());
+
+    const std::string key_name = "test_android_underqualified_create";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    EXPECT_EQ(nullptr,
+              mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, mixed));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("below requested minimum"));
+
+    const std::optional<bool> persisted = java_key_operation("OpenKey", key_name);
+    ASSERT_TRUE(persisted.has_value()) << mpss::get_error();
+    EXPECT_FALSE(*persisted);
+}
+
+// Scenario: an existing normal-Keystore P-384 key is opened with a hardware minimum and then reopened.
+// Expected behavior: the rejected open releases only its runtime handle and leaves the persisted key intact.
+TEST(AndroidIsolationPolicyTest, UnderqualifiedExistingKeyRemainsPersisted)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, software))
+    {
+        GTEST_SKIP() << "P-384 is not supported by the Android backend.";
+    }
+
+    const std::string key_name = "test_android_underqualified_open";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    std::unique_ptr<mpss::KeyPair> created =
+        mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, software);
+    ASSERT_NE(nullptr, created) << mpss::get_error();
+    created.reset();
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name, hardware));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("minimum isolation"));
+
+    std::unique_ptr<mpss::KeyPair> reopened = mpss::KeyPair::Open(key_name, software);
+    ASSERT_NE(nullptr, reopened) << mpss::get_error();
+    ASSERT_TRUE(reopened->delete_key());
+}
+
+// Scenario: Android availability and direct creation request the same hardware minimum for P-384.
+// Expected behavior: both reject the algorithm because hardware creation cannot use normal Keystore fallback.
+TEST(AndroidIsolationPolicyTest, AvailabilityAndCreationApplyTheSameMinimum)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp384r1_sha384, hardware));
+
+    const std::string key_name = "test_android_hardware_minimum";
+    EXPECT_EQ(nullptr,
+              mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, hardware));
+    const std::optional<bool> persisted = java_key_operation("OpenKey", key_name);
+    ASSERT_TRUE(persisted.has_value()) << mpss::get_error();
+    EXPECT_FALSE(*persisted);
+}
 
 // Scenario: Android creates a key and reports one of the platform security-level descriptions.
 // Expected behavior: each Android security-level description maps to the exact approved isolation level.
