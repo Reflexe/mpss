@@ -212,12 +212,13 @@ ExportPolicy GetExportPolicy(NCRYPT_KEY_HANDLE key_handle)
     return 0 != (export_policy & export_allowed) ? allowed : prohibited;
 }
 
-OpenKeyResult GetKey(std::string_view name, const char **storage_description, bool *hardware_backed)
+OpenKeyResult GetKey(std::string_view name, const char **storage_description, mpss::IsolationLevel *isolation_level)
 {
     using enum mpss::impl::KeyProbeStatus;
+    using enum mpss::IsolationLevel;
 
     *storage_description = nullptr;
-    *hardware_backed = false;
+    *isolation_level = software;
 
     // Absence is only concluded when every provider positively confirmed it. A rung that could not
     // answer makes the verdict for the whole ladder indeterminate, even if a later rung is sure the
@@ -228,7 +229,7 @@ OpenKeyResult GetKey(std::string_view name, const char **storage_description, bo
     if (found == tpm_key.status)
     {
         *storage_description = tpm_description;
-        *hardware_backed = true;
+        *isolation_level = hardware;
         return tpm_key;
     }
     any_indeterminate = operational_error == tpm_key.status;
@@ -246,12 +247,12 @@ OpenKeyResult GetKey(std::string_view name, const char **storage_description, bo
         if (VirtualIsolation::isolated == isolation)
         {
             *storage_description = vbs_description;
-            *hardware_backed = true;
+            *isolation_level = mixed;
         }
         else
         {
             *storage_description = software_description;
-            *hardware_backed = false;
+            *isolation_level = software;
         }
         return ksp_key;
     }
@@ -487,8 +488,8 @@ TryOpenKeyResult try_open_key(std::string_view name)
     Algorithm algorithm{unsupported};
 
     const char *storage_description = nullptr;
-    bool hardware_backed = false;
-    OpenKeyResult found_key = GetKey(name, &storage_description, &hardware_backed);
+    IsolationLevel isolation_level = IsolationLevel::software;
+    OpenKeyResult found_key = GetKey(name, &storage_description, &isolation_level);
     if (found != found_key.status)
     {
         if (not_found == found_key.status)
@@ -539,10 +540,10 @@ TryOpenKeyResult try_open_key(std::string_view name)
 
     mpss::utils::log_trace("Key '{}' opened with {} storage.", name, storage_description);
     return {.status = found,
-            .value = std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description)};
+            .value = std::make_unique<WindowsKeyPair>(algorithm, key_handle, isolation_level, storage_description)};
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
 {
     if (name.empty())
     {
@@ -559,7 +560,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    IsolationLevel minimum_isolation)
 {
     const std::string key_name{name};
     if (key_name.empty())
@@ -577,6 +579,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (KeyPolicy::none != policy)
     {
         mpss::utils::log_and_set_error("Windows backend does not support the requested key policy.");
+        return nullptr;
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        mpss::utils::log_and_set_error("Windows backend does not yet support stronger minimum isolation.");
         return nullptr;
     }
 
@@ -598,7 +606,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     {
         CreateKeyResult (*create_key)(std::string_view, mpss::Algorithm);
         const char *storage_description;
-        bool is_hardware_backed;
+        IsolationLevel isolation_level;
 
         // Whether the reported tier rests on per-key isolation evidence. The TPM provider is not
         // verified this way: it does not implement the isolation property, and holding the key is
@@ -610,9 +618,9 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 
     // Strongest protection first: the first provider that creates a key wins.
     static constexpr std::array create_providers = {
-        key_storage_provider{CreateKeyTpm, tpm_description, true, false},
-        key_storage_provider{CreateKeyVbs, vbs_description, true, true},
-        key_storage_provider{CreateKeySoftware, software_description, false, false},
+        key_storage_provider{CreateKeyTpm, tpm_description, IsolationLevel::hardware, false},
+        key_storage_provider{CreateKeyVbs, vbs_description, IsolationLevel::mixed, true},
+        key_storage_provider{CreateKeySoftware, software_description, IsolationLevel::software, false},
     };
 
     // Report why each provider failed; the reasons usually differ.
@@ -625,7 +633,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         if (0 != key_handle)
         {
             const char *storage_description = provider.storage_description;
-            bool hardware_backed = provider.is_hardware_backed;
+            IsolationLevel isolation_level = provider.isolation_level;
 
             if (provider.verify_virtual_isolation)
             {
@@ -645,12 +653,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
                 {
                     // The key was created but is not isolated, so it is reported as what it is.
                     storage_description = software_description;
-                    hardware_backed = false;
+                    isolation_level = IsolationLevel::software;
                 }
             }
 
             mpss::utils::log_trace("Key '{}' created with '{}' storage.", name, storage_description);
-            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, hardware_backed, storage_description);
+            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, isolation_level, storage_description);
         }
 
         if (!errors.empty())

@@ -4,6 +4,9 @@
 #include "mpss/key_policy.h"
 #include "mpss/log.h"
 #include "mpss/mpss.h"
+#ifndef MPSS_CORE_IS_SHARED
+#include "mpss/impl/backend_registry.h"
+#endif
 #include "mpss/utils/utilities.h"
 #include "tests/compat_env.h"
 #include "tests/test_key_names.h"
@@ -28,6 +31,7 @@
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
 #ifndef MPSS_CORE_IS_SHARED
+#include "mpss/impl/yubikey/yk_keypair.h"
 #include "mpss/impl/yubikey/yk_utils.h"
 #endif
 #endif
@@ -76,12 +80,31 @@ class MPSS : public ::testing::Test
         }
         else
         {
-            mpss::GetLogger()->info("Key {} created in {}. Hardware backed: {}", name,
-                                    handle->key_info().storage_description, handle->key_info().is_hardware_backed);
+            mpss::GetLogger()->info("Key {} created in {}. Isolation level: {}", name,
+                                    handle->key_info().storage_description,
+                                    static_cast<std::uint8_t>(handle->key_info().isolation_level));
         }
         return handle;
     }
 };
+
+// Scenario: every concrete isolation level is compared with every possible minimum.
+// Expected behavior: an actual level meets exactly the minima at or below its ordered value.
+TEST(IsolationLevelTest, MeetsEveryMinimumCombination)
+{
+    using enum IsolationLevel;
+    constexpr std::array levels{software, mixed, hardware};
+
+    for (const IsolationLevel actual : levels)
+    {
+        for (const IsolationLevel minimum : levels)
+        {
+            const bool expected =
+                static_cast<std::uint8_t>(actual) >= static_cast<std::uint8_t>(minimum);
+            EXPECT_EQ(expected, meets_minimum_isolation(actual, minimum));
+        }
+    }
+}
 
 void SignAndVerify(Algorithm algorithm, std::string_view suffix, std::size_t hash_size)
 {
@@ -512,6 +535,8 @@ TEST(ErrorContract, HasErrorAndClearErrorTrackTheLastError)
     EXPECT_FALSE(mpss::has_error());
 }
 
+// Scenario: cached default and uncached named-backend availability queries follow the error contract.
+// Expected behavior: answered queries clear stale errors while undispatchable queries report one.
 TEST(ErrorContract, AvailabilityQueriesHonorTheContract)
 {
     // Prime the availability cache for every algorithm, so that the queries below take the
@@ -530,9 +555,8 @@ TEST(ErrorContract, AvailabilityQueriesHonorTheContract)
     (void)mpss::get_available_algorithms();
     EXPECT_FALSE(mpss::has_error());
 
-    // The named-backend query is not cached, so it reaches the backend and, where the backend probes,
-    // the scratch key that probe creates, signs with and deletes. That work is not the question the
-    // caller asked, so it must not be reported either.
+    // Named-backend queries are uncached. Scratch-key work is not the question the caller asked and
+    // must not be reported.
     const std::string default_backend = mpss::get_default_backend_name();
     ASSERT_FALSE(default_backend.empty());
     EXPECT_EQ(nullptr, mpss::KeyPair::Open(""));
@@ -562,6 +586,91 @@ TEST(ErrorContract, AvailabilityQueriesHonorTheContract)
 #ifndef MPSS_CORE_IS_SHARED
 namespace
 {
+struct AvailabilityProbeState
+{
+    IsolationLevel requested_isolation{IsolationLevel::software};
+    bool created{false};
+    bool signed_hash{false};
+    bool deleted{false};
+};
+
+class AvailabilityProbeKeyPair : public KeyPair
+{
+  public:
+    AvailabilityProbeKeyPair(AvailabilityProbeState &state, IsolationLevel isolation_level)
+        : KeyPair(ecdsa_secp256r1_sha256, isolation_level, "test"), state_{state}
+    {
+    }
+
+    void release_key() override
+    {
+    }
+
+  protected:
+    bool do_delete_key() override
+    {
+        state_.deleted = true;
+        return true;
+    }
+
+    [[nodiscard]]
+    std::size_t do_sign_hash(std::span<const std::byte>, std::span<std::byte> sig) const override
+    {
+        state_.signed_hash = true;
+        return sig.size();
+    }
+
+    [[nodiscard]]
+    bool do_verify(std::span<const std::byte>, std::span<const std::byte>) const override
+    {
+        return false;
+    }
+
+    [[nodiscard]]
+    std::size_t do_extract_key(std::span<std::byte>) const override
+    {
+        return 0;
+    }
+
+  private:
+    AvailabilityProbeState &state_;
+};
+
+class AvailabilityProbeBackend : public impl::Backend
+{
+  public:
+    [[nodiscard]]
+    const char *name() const override
+    {
+        return "probe";
+    }
+
+    [[nodiscard]]
+    std::unique_ptr<KeyPair> create_key(std::string_view, Algorithm, KeyPolicy,
+                                        IsolationLevel minimum_isolation) const override
+    {
+        state.requested_isolation = minimum_isolation;
+        state.created = true;
+        return std::make_unique<AvailabilityProbeKeyPair>(state, created_isolation);
+    }
+
+    [[nodiscard]]
+    std::unique_ptr<KeyPair> open_key(std::string_view, IsolationLevel) const override
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]]
+    bool verify(std::span<const std::byte>, std::span<const std::byte>, Algorithm,
+                std::span<const std::byte>) const override
+    {
+        return false;
+    }
+
+    mutable AvailabilityProbeState state;
+    IsolationLevel created_isolation{IsolationLevel::mixed};
+};
+
 // A key pair whose operations always report an internal failure and then return the outcome they
 // were constructed with. It stands in for a backend that reports a failed intermediate step and
 // then recovers -- falling back to another storage tier, or moving on to another device.
@@ -570,7 +679,8 @@ class RecoveringKeyPair : public KeyPair
   public:
     static constexpr char internal_error[] = "Simulated internal failure.";
 
-    explicit RecoveringKeyPair(bool succeed) : KeyPair(ecdsa_secp256r1_sha256, false, "test"), succeed_(succeed)
+    explicit RecoveringKeyPair(bool succeed)
+        : KeyPair(ecdsa_secp256r1_sha256, IsolationLevel::software, "test"), succeed_(succeed)
     {
     }
 
@@ -610,6 +720,32 @@ class RecoveringKeyPair : public KeyPair
     bool succeed_;
 };
 } // namespace
+
+// Scenario: the default availability probe is asked about an algorithm at mixed isolation.
+// Expected behavior: it creates with that minimum, exercises the key, and deletes the scratch key.
+TEST(IsolationLevelTest, DefaultAvailabilityProbeIsConstrained)
+{
+    AvailabilityProbeBackend backend;
+
+    EXPECT_TRUE(backend.is_algorithm_available(ecdsa_secp256r1_sha256, IsolationLevel::mixed));
+    EXPECT_TRUE(backend.state.created);
+    EXPECT_EQ(IsolationLevel::mixed, backend.state.requested_isolation);
+    EXPECT_TRUE(backend.state.signed_hash);
+    EXPECT_TRUE(backend.state.deleted);
+}
+
+// Scenario: a backend returns a software scratch key for a mixed-isolation availability probe.
+// Expected behavior: availability fails and deletes the underqualified scratch key without exercising it.
+TEST(IsolationLevelTest, DefaultAvailabilityProbeRejectsUnderqualifiedKey)
+{
+    AvailabilityProbeBackend backend;
+    backend.created_isolation = IsolationLevel::software;
+
+    EXPECT_FALSE(backend.is_algorithm_available(ecdsa_secp256r1_sha256, IsolationLevel::mixed));
+    EXPECT_TRUE(backend.state.created);
+    EXPECT_TRUE(backend.state.deleted);
+    EXPECT_FALSE(backend.state.signed_hash);
+}
 
 TEST(ErrorContract, SuccessDiscardsRecoveredInternalError)
 {
@@ -732,6 +868,44 @@ TEST_F(MPSS, DISABLED_SecureEnclaveUserPresenceInteractiveSigning)
 #endif
 
 #ifdef __APPLE__
+// Scenario: Apple creates a P-384 key, which Secure Enclave cannot host.
+// Expected behavior: the Keychain key reports software isolation.
+TEST_F(MPSS, AppleKeychainMetadataIsSoftware)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os"))
+    {
+        GTEST_SKIP() << "P-384 is not available in the Apple Keychain";
+    }
+
+    const std::string key_name = test_key_name("mpss_apple_keychain_metadata");
+    DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> key =
+        mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os");
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(IsolationLevel::software, key->key_info().isolation_level);
+    EXPECT_TRUE(key->delete_key());
+}
+
+// Scenario: Apple creates a P-256 key on a host with Secure Enclave support.
+// Expected behavior: the Secure Enclave key reports hardware isolation.
+TEST_F(MPSS, AppleSecureEnclaveMetadataIsHardware)
+{
+    if (!MPSS_SE_SecureEnclaveIsSupported())
+    {
+        GTEST_SKIP() << "Secure Enclave not available";
+    }
+
+    const std::string key_name = test_key_name("mpss_apple_se_metadata");
+    DeleteKey(key_name);
+
+    std::unique_ptr<mpss::KeyPair> key =
+        mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "os");
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(IsolationLevel::hardware, key->key_info().isolation_level);
+    EXPECT_TRUE(key->delete_key());
+}
+
 TEST_F(MPSS, SecureEnclaveUserPresenceFailsWithoutSupportedKey)
 {
     const std::string key_name = test_key_name("mpss_apple_user_presence_unsupported_test");
@@ -838,6 +1012,50 @@ TEST(MPSSTests, IsAlgorithmSupported256)
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
+}
+
+// Scenario: each registered backend receives mixed and hardware creation and availability requests.
+// Expected behavior: every provider fails closed until its stronger-isolation implementation lands.
+TEST(IsolationLevelTest, StrongerCreationAndAvailabilityFailClosed)
+{
+    const auto backends = mpss::get_available_backends();
+    ASSERT_FALSE(backends.empty());
+
+    for (const char *backend : backends)
+    {
+        for (const IsolationLevel minimum : {IsolationLevel::mixed, IsolationLevel::hardware})
+        {
+            EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp256r1_sha256, backend, minimum));
+            const std::string key_name =
+                test_key_name(std::string{"isolation_fail_"} + backend + std::to_string(static_cast<int>(minimum)));
+            EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, backend, KeyPolicy::none,
+                                                     minimum));
+        }
+    }
+
+    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp256r1_sha256, IsolationLevel::mixed));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(test_key_name("default_isolation_fail"),
+                                             ecdsa_secp256r1_sha256, KeyPolicy::none, IsolationLevel::mixed));
+}
+
+// Scenario: a positive default-backend software availability result is followed by a stronger minimum query.
+// Expected behavior: the software cache entry does not satisfy the mixed-isolation query.
+TEST(IsolationLevelTest, DefaultAvailabilityCacheSeparatesMinimum)
+{
+    constexpr std::array algorithms{ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512};
+
+    for (const Algorithm algorithm : algorithms)
+    {
+        if (!mpss::is_algorithm_available(algorithm))
+        {
+            continue;
+        }
+
+        EXPECT_FALSE(mpss::is_algorithm_available(algorithm, IsolationLevel::mixed));
+        return;
+    }
+
+    GTEST_SKIP() << "The default backend reports no software-isolation algorithm available";
 }
 
 // --- Backend discovery and explicit backend API tests ---
@@ -1145,6 +1363,16 @@ TEST_F(MPSS, YubiKeyBackendRejectsUnsupportedKeyPolicy)
     EXPECT_EQ(nullptr,
               mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "yubikey", static_cast<KeyPolicy>(4U << 4U)));
     EXPECT_NE(std::string::npos, mpss::get_error().find("does not support the requested key policy"));
+}
+#endif
+
+#if defined(MPSS_BACKEND_YUBIKEY) && !defined(MPSS_CORE_IS_SHARED)
+// Scenario: a YubiKey key-pair handle is classified from its PIV storage.
+// Expected behavior: every YubiKey key reports hardware isolation.
+TEST(IsolationLevelTest, YubiKeyMetadataIsHardware)
+{
+    mpss::impl::yubikey::YubiKeyKeyPair key{"metadata", ecdsa_secp256r1_sha256, 0x9A, 1};
+    EXPECT_EQ(IsolationLevel::hardware, key.key_info().isolation_level);
 }
 #endif
 

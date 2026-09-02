@@ -88,12 +88,13 @@ const char *YubiKeyBackend::name() const
     return "yubikey";
 }
 
-bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm) const
+bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolation) const
 {
-    return 0 != utils::mpss_to_yk_algorithm(algorithm);
+    return IsolationLevel::software == minimum_isolation && 0 != utils::mpss_to_yk_algorithm(algorithm);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const
+std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                                    IsolationLevel minimum_isolation) const
 {
     const std::string key_name{name};
     if (key_name.empty())
@@ -129,6 +130,12 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     if (0 != (raw_policy & ~supported_policy) || 3U < pin_policy || 3U < touch_policy)
     {
         mpss::utils::log_and_set_error("YubiKey backend does not support the requested key policy.");
+        return nullptr;
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        mpss::utils::log_and_set_error("YubiKey backend does not yet support stronger minimum isolation.");
         return nullptr;
     }
 
@@ -244,7 +251,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     return std::make_unique<YubiKeyKeyPair>(name, algorithm, slot, serial);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
+std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name, IsolationLevel) const
 {
     const std::string key_name{name};
     if (key_name.empty())
