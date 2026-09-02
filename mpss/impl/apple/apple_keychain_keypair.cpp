@@ -8,17 +8,14 @@
 
 namespace
 {
-constexpr const char *keychain_description = "Keychain";
-constexpr const char *secure_enclave_description = "Secure Enclave";
+constexpr const char *storage_description = "Keychain";
 }
 
 namespace mpss::impl::os
 {
 
-AppleKeychainKeyPair::AppleKeychainKeyPair(std::string_view name, Algorithm algorithm, bool hardware_backed)
-    : AppleKeyPairBase{name, algorithm,
-                       hardware_backed ? IsolationLevel::hardware : IsolationLevel::software,
-                       hardware_backed ? secure_enclave_description : keychain_description}
+AppleKeychainKeyPair::AppleKeychainKeyPair(std::string_view name, Algorithm algorithm)
+    : AppleKeyPairBase{name, algorithm, IsolationLevel::software, storage_description}
 {
 }
 

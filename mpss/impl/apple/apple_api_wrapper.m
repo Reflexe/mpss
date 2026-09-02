@@ -82,42 +82,6 @@ int GetKeySize(SecKeyRef keyRef) {
   return bitSize;
 }
 
-static int32_t GetKeyIsolationInternal(NSString *keyLabel,
-                                       bool *hardwareBacked) {
-  SecKeyRef keyRef = CopyKey(keyLabel);
-  if (keyRef == NULL) {
-    SetThreadLocalError(@"Cannot classify a key that is not open.");
-    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
-  }
-
-  CFDictionaryRef attributes = SecKeyCopyAttributes(keyRef);
-  CFRelease(keyRef);
-  if (attributes == NULL) {
-    SetThreadLocalError(@"Failed to retrieve key storage attributes.");
-    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
-  }
-
-  CFTypeRef tokenID = CFDictionaryGetValue(attributes, kSecAttrTokenID);
-  if (tokenID == NULL) {
-    *hardwareBacked = false;
-    CFRelease(attributes);
-    return MPSS_APPLE_RESULT_SUCCESS;
-  }
-
-  if (CFEqual(tokenID, kSecAttrTokenIDSecureEnclave)) {
-    *hardwareBacked = true;
-    CFRelease(attributes);
-    return MPSS_APPLE_RESULT_SUCCESS;
-  }
-
-  NSString *error = [NSString
-      stringWithFormat:@"Key uses an unsupported storage token: %@.",
-                       (__bridge id)tokenID];
-  SetThreadLocalError(error);
-  CFRelease(attributes);
-  return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
-}
-
 SecKeyAlgorithm GetAlgorithm(int signatureType) {
   switch (signatureType) {
   case 1: // ECDSA SHA 256
@@ -234,6 +198,8 @@ static int32_t OpenExistingKeyInternal(NSString *keyLabel, int *bitSize) {
   return MPSS_APPLE_RESULT_SUCCESS;
 }
 
+static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut);
+
 ////////////////////////////////////////////////////////
 // From here on below, the public functions.
 ////////////////////////////////////////////////////////
@@ -258,17 +224,24 @@ int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
   }
 }
 
-int32_t MPSS_GetKeyIsolation(const char *keyName, bool *hardwareBacked) {
+int32_t MPSS_KeychainKeyExists(const char *keyName) {
   ClearThreadLocalError();
-  if (keyName == NULL || hardwareBacked == NULL) {
-    SetThreadLocalError(
-        @"Invalid parameters (keyName or hardwareBacked is NULL).");
+  if (keyName == NULL) {
+    SetThreadLocalError(@"Invalid parameter (keyName is NULL).");
     return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
   }
 
   @autoreleasepool {
-    NSString *keyLabel = GetKeyLabel(keyName);
-    return GetKeyIsolationInternal(keyLabel, hardwareBacked);
+    CFIndex count = 0;
+    const OSStatus status = CountItemsWithName(GetKeyLabel(keyName), &count);
+    if (status != errSecSuccess) {
+      SetThreadLocalError([NSString
+          stringWithFormat:@"Failed to check for an existing Keychain key with status: %d",
+                           (int)status]);
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+    }
+    return count == 0 ? MPSS_APPLE_RESULT_EXPECTED_NEGATIVE
+                      : MPSS_APPLE_RESULT_SUCCESS;
   }
 }
 
@@ -284,7 +257,7 @@ static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut) {
     (id)kSecAttrApplicationTag :
         [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
     (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
-    (id)kSecReturnRef : @YES,
+    (id)kSecReturnAttributes : @YES,
     (id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll
   };
 
