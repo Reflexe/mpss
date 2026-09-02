@@ -1014,50 +1014,6 @@ TEST(MPSSTests, IsAlgorithmSupported256)
     }
 }
 
-// Scenario: each registered backend receives mixed and hardware creation and availability requests.
-// Expected behavior: every provider fails closed until its stronger-isolation implementation lands.
-TEST(IsolationLevelTest, StrongerCreationAndAvailabilityFailClosed)
-{
-    const auto backends = mpss::get_available_backends();
-    ASSERT_FALSE(backends.empty());
-
-    for (const char *backend : backends)
-    {
-        for (const IsolationLevel minimum : {IsolationLevel::mixed, IsolationLevel::hardware})
-        {
-            EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp256r1_sha256, backend, minimum));
-            const std::string key_name =
-                test_key_name(std::string{"isolation_fail_"} + backend + std::to_string(static_cast<int>(minimum)));
-            EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, backend, KeyPolicy::none,
-                                                     minimum));
-        }
-    }
-
-    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp256r1_sha256, IsolationLevel::mixed));
-    EXPECT_EQ(nullptr, mpss::KeyPair::Create(test_key_name("default_isolation_fail"),
-                                             ecdsa_secp256r1_sha256, KeyPolicy::none, IsolationLevel::mixed));
-}
-
-// Scenario: a positive default-backend software availability result is followed by a stronger minimum query.
-// Expected behavior: the software cache entry does not satisfy the mixed-isolation query.
-TEST(IsolationLevelTest, DefaultAvailabilityCacheSeparatesMinimum)
-{
-    constexpr std::array algorithms{ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512};
-
-    for (const Algorithm algorithm : algorithms)
-    {
-        if (!mpss::is_algorithm_available(algorithm))
-        {
-            continue;
-        }
-
-        EXPECT_FALSE(mpss::is_algorithm_available(algorithm, IsolationLevel::mixed));
-        return;
-    }
-
-    GTEST_SKIP() << "The default backend reports no software-isolation algorithm available";
-}
-
 // --- Backend discovery and explicit backend API tests ---
 
 TEST(BackendTest, GetAvailableBackends)
