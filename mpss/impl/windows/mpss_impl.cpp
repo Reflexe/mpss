@@ -101,9 +101,6 @@ OpenKeyResult OpenKeyInProvider(LPCWSTR provider_name, std::string_view name)
     NCRYPT_PROV_HANDLE provider_handle = GetProvider(provider_name, /* speculative */ true);
     if (0 == provider_handle)
     {
-        // A provider that cannot be opened holds no key that anything can reach, including this
-        // backend's own creation path, so it does not make the name indeterminate. This is what a
-        // machine without a TPM looks like, and creation has to keep working there.
         return {.status = not_found, .value = 0};
     }
 
@@ -289,6 +286,22 @@ CreateOutcome OutcomeFromStatus(SECURITY_STATUS status)
     return static_cast<SECURITY_STATUS>(NTE_EXISTS) == status ? CreateOutcome::name_taken : CreateOutcome::unavailable;
 }
 
+bool CleanupCreatedKey(NCRYPT_KEY_HANDLE &key_handle, std::string_view name)
+{
+    SECURITY_STATUS status = ::NCryptDeleteKey(key_handle, /* dwFlags */ 0);
+    if (ERROR_SUCCESS == status)
+    {
+        key_handle = 0;
+        return true;
+    }
+
+    ::NCryptFreeObject(key_handle);
+    key_handle = 0;
+    mpss::utils::log_and_set_error("Failed to delete newly created key '{}' during cleanup with error code {}.", name,
+                                   mpss::utils::to_hex(status));
+    return false;
+}
+
 CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name, mpss::Algorithm algorithm,
                                     DWORD create_flags)
 {
@@ -305,6 +318,7 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
     {
         return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
+
     SCOPE_GUARD(::NCryptFreeObject(provider_handle));
 
     NCRYPT_KEY_HANDLE key_handle = 0;
@@ -319,7 +333,6 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
         return {.outcome = OutcomeFromStatus(status), .value = 0};
     }
 
-    // NCryptDeleteKey frees the handle on success, so only free it explicitly if the delete fails.
     SCOPE_GUARD({
         if (0 != key_handle)
         {
@@ -338,9 +351,6 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
     {
         report_provider_failure(/* speculative */ true, "NCryptSetProperty (export policy) failed with error code {}.",
                                 mpss::utils::to_hex(status));
-
-        // This call addresses a handle that is already ours, so it cannot be the one to discover
-        // that the name belongs to someone else.
         return {.outcome = CreateOutcome::unavailable, .value = 0};
     }
 
@@ -356,7 +366,7 @@ CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name
     mpss::utils::clear_error();
 
     const NCRYPT_KEY_HANDLE result = key_handle;
-    key_handle = 0; // Disarm the cleanup guard: ownership passes to the caller.
+    key_handle = 0;
     return {.outcome = CreateOutcome::created, .value = result};
 }
 
@@ -556,7 +566,6 @@ std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
     }
-
     return std::move(result.value);
 }
 
@@ -582,12 +591,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    if (IsolationLevel::software != minimum_isolation)
-    {
-        mpss::utils::log_and_set_error("Windows backend does not yet support stronger minimum isolation.");
-        return nullptr;
-    }
-
     // Fail if the key already exists or is already open.
     TryOpenKeyResult existing_key = try_open_key(name);
     if (mpss::impl::KeyProbeStatus::operational_error == existing_key.status)
@@ -607,58 +610,59 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         CreateKeyResult (*create_key)(std::string_view, mpss::Algorithm);
         const char *storage_description;
         IsolationLevel isolation_level;
-
-        // Whether the reported tier rests on per-key isolation evidence. The TPM provider is not
-        // verified this way: it does not implement the isolation property, and holding the key is
-        // itself the evidence. The software KSP holds both isolated and ordinary keys, so a key
-        // created there must be classified by what the key reports, not by the flag that was asked
-        // for.
-        bool verify_virtual_isolation;
     };
 
     // Strongest protection first: the first provider that creates a key wins.
     static constexpr std::array create_providers = {
-        key_storage_provider{CreateKeyTpm, tpm_description, IsolationLevel::hardware, false},
-        key_storage_provider{CreateKeyVbs, vbs_description, IsolationLevel::mixed, true},
-        key_storage_provider{CreateKeySoftware, software_description, IsolationLevel::software, false},
+        key_storage_provider{CreateKeyTpm, tpm_description, IsolationLevel::hardware},
+        key_storage_provider{CreateKeyVbs, vbs_description, IsolationLevel::mixed},
+        key_storage_provider{CreateKeySoftware, software_description, IsolationLevel::software},
     };
 
     // Report why each provider failed; the reasons usually differ.
     std::string errors;
     for (const key_storage_provider &provider : create_providers)
     {
+        if (!mpss::meets_minimum_isolation(provider.isolation_level, minimum_isolation))
+        {
+            continue;
+        }
+
         mpss::utils::log_trace("Creating key '{}' with {} provider.", name, provider.storage_description);
         const CreateKeyResult created = provider.create_key(name, algorithm);
-        const NCRYPT_KEY_HANDLE key_handle = created.value;
+        NCRYPT_KEY_HANDLE key_handle = created.value;
         if (0 != key_handle)
         {
             const char *storage_description = provider.storage_description;
-            IsolationLevel isolation_level = provider.isolation_level;
-
-            if (provider.verify_virtual_isolation)
+            IsolationLevel isolation = provider.isolation_level;
+            if (IsolationLevel::hardware != provider.isolation_level)
             {
-                const VirtualIsolation isolation = GetVirtualIsolation(key_handle);
-                if (VirtualIsolation::indeterminate == isolation)
+                const VirtualIsolation virtual_isolation = GetVirtualIsolation(key_handle);
+                if (VirtualIsolation::indeterminate == virtual_isolation)
                 {
-                    // The tier could not be established, so the key is removed rather than reported
-                    // at a tier that was never confirmed.
-                    if (ERROR_SUCCESS != ::NCryptDeleteKey(key_handle, /* dwFlags */ 0))
-                    {
-                        ::NCryptFreeObject(key_handle);
-                    }
+                    CleanupCreatedKey(key_handle, name);
                     return nullptr;
                 }
-
-                if (VirtualIsolation::not_isolated == isolation)
-                {
-                    // The key was created but is not isolated, so it is reported as what it is.
-                    storage_description = software_description;
-                    isolation_level = IsolationLevel::software;
-                }
+                isolation = VirtualIsolation::isolated == virtual_isolation ? IsolationLevel::mixed
+                                                                            : IsolationLevel::software;
+                storage_description =
+                    IsolationLevel::mixed == isolation ? vbs_description : software_description;
             }
 
+            if (!mpss::meets_minimum_isolation(isolation, minimum_isolation))
+            {
+                const IsolationLevel actual_isolation = isolation;
+                if (!CleanupCreatedKey(key_handle, name))
+                {
+                    return nullptr;
+                }
+                mpss::utils::log_and_set_error(
+                    "Newly created key '{}' measured at isolation level {} below requested minimum {}.", name,
+                    static_cast<unsigned>(actual_isolation), static_cast<unsigned>(minimum_isolation));
+                return nullptr;
+            }
             mpss::utils::log_trace("Key '{}' created with '{}' storage.", name, storage_description);
-            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, isolation_level, storage_description);
+            return std::make_unique<WindowsKeyPair>(algorithm, key_handle, isolation, storage_description);
         }
 
         if (!errors.empty())
