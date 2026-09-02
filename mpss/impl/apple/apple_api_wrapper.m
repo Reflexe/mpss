@@ -198,6 +198,8 @@ static int32_t OpenExistingKeyInternal(NSString *keyLabel, int *bitSize) {
   return MPSS_APPLE_RESULT_SUCCESS;
 }
 
+static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut);
+
 ////////////////////////////////////////////////////////
 // From here on below, the public functions.
 ////////////////////////////////////////////////////////
@@ -222,6 +224,27 @@ int32_t MPSS_OpenExistingKey(const char *keyName, int *bitSize) {
   }
 }
 
+int32_t MPSS_KeychainKeyExists(const char *keyName) {
+  ClearThreadLocalError();
+  if (keyName == NULL) {
+    SetThreadLocalError(@"Invalid parameter (keyName is NULL).");
+    return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+  }
+
+  @autoreleasepool {
+    CFIndex count = 0;
+    const OSStatus status = CountItemsWithName(GetKeyLabel(keyName), &count);
+    if (status != errSecSuccess) {
+      SetThreadLocalError([NSString
+          stringWithFormat:@"Failed to check for an existing Keychain key with status: %d",
+                           (int)status]);
+      return MPSS_APPLE_RESULT_OPERATIONAL_ERROR;
+    }
+    return count == 0 ? MPSS_APPLE_RESULT_EXPECTED_NEGATIVE
+                      : MPSS_APPLE_RESULT_SUCCESS;
+  }
+}
+
 // Counts the private-key items carrying this name. Uses the same query shape as the ambiguity check
 // in OpenExistingKeyInternal, but deliberately bypasses the in-process key cache: this runs right
 // after a creation, when the cache cannot yet reflect what another process has done.
@@ -234,7 +257,7 @@ static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut) {
     (id)kSecAttrApplicationTag :
         [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
     (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
-    (id)kSecReturnRef : @YES,
+    (id)kSecReturnAttributes : @YES,
     (id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll
   };
 

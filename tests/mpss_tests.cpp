@@ -31,6 +31,7 @@
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
 #ifndef MPSS_CORE_IS_SHARED
+#include "mpss/impl/yubikey/yk_backend.h"
 #include "mpss/impl/yubikey/yk_keypair.h"
 #include "mpss/impl/yubikey/yk_utils.h"
 #endif
@@ -869,10 +870,10 @@ TEST_F(MPSS, DISABLED_SecureEnclaveUserPresenceInteractiveSigning)
 
 #ifdef __APPLE__
 // Scenario: Apple creates a P-384 key, which Secure Enclave cannot host.
-// Expected behavior: the Keychain key reports software isolation.
+// Expected behavior: a software minimum creates and reopens a software-classified Keychain key.
 TEST_F(MPSS, AppleKeychainMetadataIsSoftware)
 {
-    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os"))
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", IsolationLevel::software))
     {
         GTEST_SKIP() << "P-384 is not available in the Apple Keychain";
     }
@@ -880,11 +881,18 @@ TEST_F(MPSS, AppleKeychainMetadataIsSoftware)
     const std::string key_name = test_key_name("mpss_apple_keychain_metadata");
     DeleteKey(key_name);
 
-    std::unique_ptr<mpss::KeyPair> key =
-        mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os");
+    std::unique_ptr<mpss::KeyPair> key = mpss::KeyPair::Create(
+        key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, IsolationLevel::software);
     ASSERT_NE(nullptr, key);
     EXPECT_EQ(IsolationLevel::software, key->key_info().isolation_level);
-    EXPECT_TRUE(key->delete_key());
+    EXPECT_STREQ("Keychain", key->key_info().storage_description);
+    key.reset();
+
+    key = mpss::KeyPair::Open(key_name, "os", IsolationLevel::software);
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(IsolationLevel::software, key->key_info().isolation_level);
+    EXPECT_STREQ("Keychain", key->key_info().storage_description);
+    ASSERT_TRUE(key->delete_key());
 }
 
 // Scenario: Apple creates a P-256 key on a host with Secure Enclave support.
@@ -906,6 +914,94 @@ TEST_F(MPSS, AppleSecureEnclaveMetadataIsHardware)
     EXPECT_TRUE(key->delete_key());
 }
 
+class AppleStrongerMinimumTest : public MPSS, public ::testing::WithParamInterface<IsolationLevel>
+{
+};
+
+// Scenario: a mixed or hardware request targets the name of an existing P-384 software Keychain key.
+// Expected behavior: Apple never opens, replaces, or deletes the excluded Keychain key.
+TEST_P(AppleStrongerMinimumTest, NeverAttemptsKeychain)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", IsolationLevel::software))
+    {
+        GTEST_SKIP() << "P-384 is not available in the Apple Keychain";
+    }
+
+    const IsolationLevel minimum = GetParam();
+    const std::string key_name =
+        test_key_name("mpss_apple_stronger_excludes_keychain_" + std::to_string(static_cast<unsigned>(minimum)));
+    DeleteKey(key_name);
+    std::unique_ptr<mpss::KeyPair> software_key = mpss::KeyPair::Create(
+        key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, IsolationLevel::software);
+    ASSERT_NE(nullptr, software_key);
+    software_key.reset();
+
+    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", minimum));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name, "os", minimum));
+    EXPECT_TRUE(mpss::get_error().empty());
+    EXPECT_EQ(nullptr,
+              mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, minimum));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("already exists"));
+
+    software_key = mpss::KeyPair::Open(key_name, "os", IsolationLevel::software);
+    ASSERT_NE(nullptr, software_key);
+    EXPECT_EQ(IsolationLevel::software, software_key->key_info().isolation_level);
+    ASSERT_TRUE(software_key->delete_key());
+}
+
+std::string AppleStrongerMinimumName(const ::testing::TestParamInfo<IsolationLevel> &info)
+{
+    switch (info.param)
+    {
+    case IsolationLevel::mixed:
+        return "Mixed";
+    case IsolationLevel::hardware:
+        return "Hardware";
+    default:
+        return "Invalid";
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(StrongerMinimums, AppleStrongerMinimumTest,
+                         ::testing::Values(IsolationLevel::mixed, IsolationLevel::hardware),
+                         AppleStrongerMinimumName);
+
+// Scenario: Apple availability and creation are queried for P-256 at every valid minimum.
+// Expected behavior: each availability result matches creation and every returned key has no invented mixed tier.
+TEST_F(MPSS, AppleAvailabilityMatchesConstrainedCreation)
+{
+    constexpr std::array minimums{
+        IsolationLevel::software,
+        IsolationLevel::mixed,
+        IsolationLevel::hardware,
+    };
+
+    for (const IsolationLevel minimum : minimums)
+    {
+        const std::string key_name =
+            test_key_name("mpss_apple_availability_" + std::to_string(static_cast<unsigned>(minimum)));
+        DeleteKey(key_name);
+
+        const bool available = mpss::is_algorithm_available(ecdsa_secp256r1_sha256, "os", minimum);
+        std::unique_ptr<mpss::KeyPair> key =
+            mpss::KeyPair::Create(key_name, ecdsa_secp256r1_sha256, "os", KeyPolicy::none, minimum);
+        EXPECT_EQ(available, nullptr != key);
+
+        if (nullptr != key)
+        {
+            EXPECT_TRUE(mpss::meets_minimum_isolation(key->key_info().isolation_level, minimum));
+            EXPECT_NE(IsolationLevel::mixed, key->key_info().isolation_level);
+            ASSERT_TRUE(key->delete_key());
+        }
+        else
+        {
+            EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name, "os", IsolationLevel::software));
+        }
+    }
+}
+
+// Scenario: Apple user-presence policy is requested for an algorithm Secure Enclave cannot host.
+// Expected behavior: creation fails instead of silently creating a software Keychain key.
 TEST_F(MPSS, SecureEnclaveUserPresenceFailsWithoutSupportedKey)
 {
     const std::string key_name = test_key_name("mpss_apple_user_presence_unsupported_test");
@@ -1323,12 +1419,27 @@ TEST_F(MPSS, YubiKeyBackendRejectsUnsupportedKeyPolicy)
 #endif
 
 #if defined(MPSS_BACKEND_YUBIKEY) && !defined(MPSS_CORE_IS_SHARED)
-// Scenario: a YubiKey key-pair handle is classified from its PIV storage.
-// Expected behavior: every YubiKey key reports hardware isolation.
-TEST(IsolationLevelTest, YubiKeyMetadataIsHardware)
+// Scenario: YubiKey capability and metadata are evaluated at every valid minimum.
+// Expected behavior: one hardware PIV mode satisfies software, mixed, and hardware without a mixed storage mode.
+TEST(IsolationLevelTest, YubiKeyHardwareSatisfiesEveryMinimum)
 {
+    constexpr std::array minimums{
+        IsolationLevel::software,
+        IsolationLevel::mixed,
+        IsolationLevel::hardware,
+    };
+    mpss::impl::yubikey::YubiKeyBackend backend;
     mpss::impl::yubikey::YubiKeyKeyPair key{"metadata", ecdsa_secp256r1_sha256, 0x9A, 1};
+
     EXPECT_EQ(IsolationLevel::hardware, key.key_info().isolation_level);
+    EXPECT_STREQ("YubiKey PIV", key.key_info().storage_description);
+
+    for (const IsolationLevel minimum : minimums)
+    {
+        EXPECT_TRUE(backend.is_algorithm_available(ecdsa_secp256r1_sha256, minimum));
+        EXPECT_TRUE(mpss::is_algorithm_available(ecdsa_secp256r1_sha256, "yubikey", minimum));
+        EXPECT_TRUE(mpss::meets_minimum_isolation(key.key_info().isolation_level, minimum));
+    }
 }
 #endif
 

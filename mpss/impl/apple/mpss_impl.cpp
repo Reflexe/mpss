@@ -20,12 +20,14 @@ namespace
 
 using OpenKeyResult = KeyProbeResult<std::unique_ptr<KeyPair>>;
 
-OpenKeyResult try_open_key(const std::string &key_name)
+OpenKeyResult try_open_key(const std::string &key_name, IsolationLevel minimum_isolation)
 {
     using enum utils::AppleOperationResult;
 
+    std::string secure_enclave_error;
     mpss::utils::log_trace("Attempting to open key '{}' on Apple backend.", key_name);
-    if (MPSS_SE_SecureEnclaveIsSupported())
+    if (mpss::meets_minimum_isolation(IsolationLevel::hardware, minimum_isolation) &&
+        MPSS_SE_SecureEnclaveIsSupported())
     {
         const std::int32_t raw_result = MPSS_SE_OpenExistingKey(key_name.c_str());
         switch (utils::decode_apple_result(raw_result))
@@ -38,11 +40,22 @@ OpenKeyResult try_open_key(const std::string &key_name)
             break;
         case operational_error:
             utils::report_secure_enclave_error("open key");
-            return {.status = KeyProbeStatus::operational_error, .value = nullptr};
+            secure_enclave_error = mpss::get_error();
+            break;
         case invalid_result:
             utils::report_invalid_apple_result("Secure Enclave", "open key", raw_result);
+            secure_enclave_error = mpss::get_error();
+            break;
+        }
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        if (!secure_enclave_error.empty())
+        {
             return {.status = KeyProbeStatus::operational_error, .value = nullptr};
         }
+        return {.status = KeyProbeStatus::not_found, .value = nullptr};
     }
 
     int bit_size = 0;
@@ -52,12 +65,31 @@ OpenKeyResult try_open_key(const std::string &key_name)
     case success:
         break;
     case expected_negative:
+        if (!secure_enclave_error.empty())
+        {
+            mpss::utils::set_error(secure_enclave_error);
+            return {.status = KeyProbeStatus::operational_error, .value = nullptr};
+        }
         return {.status = KeyProbeStatus::not_found, .value = nullptr};
     case operational_error:
         utils::report_keychain_error("open key");
+        if (!secure_enclave_error.empty())
+        {
+            const std::string keychain_error = mpss::get_error();
+            mpss::utils::log_and_set_error(
+                "Failed to open Apple key '{}'; Secure Enclave attempt failed: {}; Keychain fallback failed: {}",
+                key_name, secure_enclave_error, keychain_error);
+        }
         return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     case invalid_result:
         utils::report_invalid_apple_result("Keychain", "open key", raw_result);
+        if (!secure_enclave_error.empty())
+        {
+            const std::string keychain_error = mpss::get_error();
+            mpss::utils::log_and_set_error(
+                "Failed to open Apple key '{}'; Secure Enclave attempt failed: {}; Keychain fallback failed: {}",
+                key_name, secure_enclave_error, keychain_error);
+        }
         return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
 
@@ -81,12 +113,16 @@ OpenKeyResult try_open_key(const std::string &key_name)
 
     mpss::utils::log_trace("Key '{}' found in Keychain with algorithm '{}'.", key_name,
                            get_algorithm_info(algorithm).type_str);
+    if (!secure_enclave_error.empty())
+    {
+        mpss::utils::clear_error();
+    }
     return {.status = KeyProbeStatus::found, .value = std::make_unique<AppleKeychainKeyPair>(key_name, algorithm)};
 }
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_isolation)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};
@@ -96,10 +132,17 @@ std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
         return nullptr;
     }
 
-    OpenKeyResult result = try_open_key(key_name);
+    OpenKeyResult result = try_open_key(key_name, minimum_isolation);
     if (KeyProbeStatus::not_found == result.status)
     {
         mpss::utils::log_debug("Key '{}' not found.", key_name);
+    }
+    if (nullptr != result.value &&
+        !mpss::meets_minimum_isolation(result.value->key_info().isolation_level, minimum_isolation))
+    {
+        result.value.reset();
+        mpss::utils::log_and_set_error("Apple key '{}' does not meet the requested minimum isolation.", key_name);
+        return nullptr;
     }
 
     return std::move(result.value);
@@ -130,12 +173,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    if (IsolationLevel::software != minimum_isolation)
-    {
-        mpss::utils::log_and_set_error("Apple backend does not yet support stronger minimum isolation.");
-        return nullptr;
-    }
-
     const bool require_user_presence = KeyPolicy::none != (policy & KeyPolicy::apple_secure_enclave_user_presence);
     const bool secure_enclave_supported = MPSS_SE_SecureEnclaveIsSupported();
     if (require_user_presence && (!secure_enclave_supported || ecdsa_secp256r1_sha256 != algorithm))
@@ -145,7 +182,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    OpenKeyResult existing_key = try_open_key(key_name);
+    OpenKeyResult existing_key = try_open_key(key_name, minimum_isolation);
     if (KeyProbeStatus::operational_error == existing_key.status)
     {
         return nullptr;
@@ -156,7 +193,28 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    if (secure_enclave_supported && ecdsa_secp256r1_sha256 == algorithm)
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        const std::int32_t raw_result = MPSS_KeychainKeyExists(key_name.c_str());
+        switch (utils::decode_apple_result(raw_result))
+        {
+        case utils::AppleOperationResult::success:
+            mpss::utils::log_and_set_error("Key '{}' already exists.", name);
+            return nullptr;
+        case utils::AppleOperationResult::expected_negative:
+            break;
+        case utils::AppleOperationResult::operational_error:
+            utils::report_keychain_error("check key name");
+            return nullptr;
+        case utils::AppleOperationResult::invalid_result:
+            utils::report_invalid_apple_result("Keychain", "check key name", raw_result);
+            return nullptr;
+        }
+    }
+
+    std::string secure_enclave_error;
+    if (secure_enclave_supported && ecdsa_secp256r1_sha256 == algorithm &&
+        mpss::meets_minimum_isolation(IsolationLevel::hardware, minimum_isolation))
     {
         // Secure Enclave only supports ECDSA P256.
         mpss::utils::log_trace("Creating key '{}' in Secure Enclave.", key_name);
@@ -167,6 +225,18 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         }
 
         utils::report_secure_enclave_error("create key");
+        secure_enclave_error = mpss::get_error();
+        if (require_user_presence || IsolationLevel::software != minimum_isolation)
+        {
+            return nullptr;
+        }
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        mpss::utils::log_and_set_error(
+            "Algorithm '{}' cannot satisfy the requested Apple minimum isolation.",
+            get_algorithm_info(algorithm).type_str);
         return nullptr;
     }
 
@@ -174,10 +244,21 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (MPSS_CreateKey(key_name.c_str(), static_cast<int>(algorithm)))
     {
         mpss::utils::log_trace("Key '{}' created in Keychain.", key_name);
+        if (!secure_enclave_error.empty())
+        {
+            mpss::utils::clear_error();
+        }
         return std::make_unique<AppleKeychainKeyPair>(name, algorithm);
     }
 
     utils::report_keychain_error("create key");
+    if (!secure_enclave_error.empty())
+    {
+        const std::string keychain_error = mpss::get_error();
+        mpss::utils::log_and_set_error(
+            "Failed to create Apple key '{}'; Secure Enclave attempt failed: {}; Keychain fallback failed: {}", name,
+            secure_enclave_error, keychain_error);
+    }
     return nullptr;
 }
 
