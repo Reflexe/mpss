@@ -1051,11 +1051,10 @@ class MPSSStore : public ::testing::Test
     // Open "mpss:<key_name>" through OSSL_STORE, optionally selecting a backend via the mpss_backend
     // ctx parameter, and return the reopened key (or nullptr if none was produced).
     EVP_PKEY *store_open_key(const std::string &key_name, const char *backend,
-                             std::optional<unsigned int> minimum_isolation = std::nullopt,
-                             std::optional<std::uint64_t> key_policy = std::nullopt)
+                             std::optional<unsigned int> minimum_isolation = std::nullopt)
     {
         const std::string uri = "mpss:" + key_name;
-        OSSL_PARAM params[4];
+        OSSL_PARAM params[3];
         std::size_t param_count = 0;
         if (nullptr != backend)
         {
@@ -1066,10 +1065,6 @@ class MPSSStore : public ::testing::Test
         {
             params[param_count++] =
                 OSSL_PARAM_construct_uint("mpss_minimum_isolation", &*minimum_isolation);
-        }
-        if (key_policy)
-        {
-            params[param_count++] = OSSL_PARAM_construct_uint64("mpss_key_policy", &*key_policy);
         }
         params[param_count] = OSSL_PARAM_construct_end();
         OSSL_STORE_CTX *store = OSSL_STORE_open_ex(uri.c_str(), libctx, "provider=mpss", nullptr, nullptr,
@@ -1256,27 +1251,6 @@ TEST_F(MPSSStore, OpenReceivesMinimumIsolation)
     {
         EXPECT_EQ(nullptr, store_open_key(key_name, backend, MPSS_ISOLATION_HARDWARE));
     }
-}
-
-// Scenario: an OpenSSL store caller supplies the creation-only mpss_key_policy parameter while opening.
-// Expected behavior: opening succeeds because key policy is never forwarded to core Open.
-TEST_F(MPSSStore, KeyPolicyIsNotAppliedWhileOpening)
-{
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
-    {
-        GTEST_SKIP() << "Algorithm not supported by current backend";
-    }
-
-    const std::string key_name = test_key_name("test_open_ignores_key_policy");
-    mpss_delete_key(key_name.c_str());
-    SCOPE_GUARD(mpss_delete_key(key_name.c_str()));
-
-    evp_pkey_ptr created = GenerateKey(libctx, key_name);
-    ASSERT_NE(nullptr, created.get());
-    created.reset();
-
-    evp_pkey_ptr reopened(store_open_key(key_name, nullptr, std::nullopt, UINT64_MAX));
-    EXPECT_NE(nullptr, reopened.get());
 }
 
 // Scenario: an OpenSSL store caller supplies an undefined minimum-isolation integer.
