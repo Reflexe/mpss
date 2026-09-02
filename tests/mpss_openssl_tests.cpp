@@ -33,6 +33,7 @@
 #include <openssl/provider.h>
 #include <openssl/store.h>
 #include <openssl/x509.h>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -204,8 +205,15 @@ std::string ReferencePemFor(std::string_view backend, std::string_view key_name)
     return ReferencePem(Base64(LoadReference(backend, key_name)));
 }
 
+bool GetIsolationLevel(EVP_PKEY *key, unsigned int &isolation_level)
+{
+    OSSL_PARAM params[] = {OSSL_PARAM_construct_uint("isolation_level", &isolation_level), OSSL_PARAM_END};
+    return 1 == EVP_PKEY_get_params(key, params) && OSSL_PARAM_modified(params);
+}
+
 evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, const char *backend = nullptr,
-                         std::uint64_t key_policy = MPSS_KEY_POLICY_NONE)
+                         std::uint64_t key_policy = MPSS_KEY_POLICY_NONE,
+                         std::optional<unsigned int> minimum_isolation = std::nullopt)
 {
     evp_pkey_ctx_ptr ctx(EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss"));
     if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
@@ -213,7 +221,7 @@ evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, cons
         return nullptr;
     }
 
-    OSSL_PARAM params[5];
+    OSSL_PARAM params[6];
     int count = 0;
     params[count++] = OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0);
     params[count++] = OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(mpss_p256_algorithm), 0);
@@ -224,6 +232,10 @@ evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, cons
     if (MPSS_KEY_POLICY_NONE != key_policy)
     {
         params[count++] = OSSL_PARAM_construct_uint64("mpss_key_policy", &key_policy);
+    }
+    if (minimum_isolation)
+    {
+        params[count++] = OSSL_PARAM_construct_uint("mpss_minimum_isolation", &*minimum_isolation);
     }
     params[count] = OSSL_PARAM_END;
     if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
@@ -314,25 +326,25 @@ TEST(CApiErrorContract, AvailabilityQueriesHonorTheContract)
 {
     // Prime the availability cache for every algorithm, so that the queries below take the
     // early-return path, where nothing else would incidentally overwrite a stale error.
-    const char **available = mpss_get_available_algorithms();
+    const char **available = mpss_get_available_algorithms(MPSS_ISOLATION_SOFTWARE);
     ASSERT_NE(nullptr, available);
 
     // A query that cannot be answered reports why. Each starts from a clean slate, so only the call
     // under test can account for the error.
     mpss_clear_error();
-    EXPECT_FALSE(mpss_is_algorithm_available(nullptr));
+    EXPECT_FALSE(mpss_is_algorithm_available(nullptr, MPSS_ISOLATION_SOFTWARE));
     EXPECT_TRUE(mpss_has_error());
 
     mpss_clear_error();
-    EXPECT_FALSE(mpss_is_algorithm_available("no_such_algorithm"));
+    EXPECT_FALSE(mpss_is_algorithm_available("no_such_algorithm", MPSS_ISOLATION_SOFTWARE));
     EXPECT_TRUE(mpss_has_error());
 
     mpss_clear_error();
-    EXPECT_FALSE(mpss_is_algorithm_available_in_backend("no_such_algorithm", "os"));
+    EXPECT_FALSE(mpss_is_algorithm_available_in_backend("no_such_algorithm", "os", MPSS_ISOLATION_SOFTWARE));
     EXPECT_TRUE(mpss_has_error());
 
     mpss_clear_error();
-    EXPECT_FALSE(mpss_is_algorithm_available_in_backend(nullptr, nullptr));
+    EXPECT_FALSE(mpss_is_algorithm_available_in_backend(nullptr, nullptr, MPSS_ISOLATION_SOFTWARE));
     EXPECT_TRUE(mpss_has_error());
 
     mpss_clear_error();
@@ -349,13 +361,13 @@ TEST(CApiErrorContract, AvailabilityQueriesHonorTheContract)
     {
         EXPECT_FALSE(mpss_delete_key(""));
         ASSERT_TRUE(mpss_has_error());
-        EXPECT_TRUE(mpss_is_algorithm_available(available[0]));
+        EXPECT_TRUE(mpss_is_algorithm_available(available[0], MPSS_ISOLATION_SOFTWARE));
         EXPECT_FALSE(mpss_has_error());
     }
 
     EXPECT_FALSE(mpss_delete_key(""));
     ASSERT_TRUE(mpss_has_error());
-    (void)mpss_get_available_algorithms();
+    (void)mpss_get_available_algorithms(MPSS_ISOLATION_SOFTWARE);
     EXPECT_FALSE(mpss_has_error());
 
     // Discovery accessors leave the last error alone.
@@ -479,7 +491,7 @@ TEST_F(MPSSDigest, OneShotDigest)
 
 TEST(MPSS_OpenSSL, GetKeyDescriptors)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -510,20 +522,26 @@ TEST(MPSS_OpenSSL, GetKeyDescriptors)
     EVP_PKEY_CTX_free(ctx);
 
     // Query gettable parameters
-    OSSL_PARAM get_params[4];
-    int is_hw = -1;
+    OSSL_PARAM get_params[3];
+    unsigned int isolation_level = 99;
     char storage_desc[256] = {0};
-    get_params[0] = OSSL_PARAM_construct_int("is_hardware_backed", &is_hw);
+    get_params[0] = OSSL_PARAM_construct_uint("isolation_level", &isolation_level);
     get_params[1] = OSSL_PARAM_construct_utf8_string("storage_description", storage_desc, sizeof(storage_desc));
     get_params[2] = OSSL_PARAM_END;
 
     ASSERT_EQ(1, EVP_PKEY_get_params(pkey, get_params));
-    // is_hardware_backed should be 0 or 1
-    ASSERT_TRUE(0 == is_hw || 1 == is_hw);
+    ASSERT_LE(isolation_level, MPSS_ISOLATION_HARDWARE);
     // storage_description should not be empty
     ASSERT_GT(strlen(storage_desc), 0);
+    EXPECT_NE(nullptr, OSSL_PARAM_locate_const(EVP_PKEY_gettable_params(pkey), "isolation_level"));
+    EXPECT_EQ(nullptr, OSSL_PARAM_locate_const(EVP_PKEY_gettable_params(pkey), "is_hardware_backed"));
 
     EVP_PKEY_free(pkey);
+    {
+        const std::unique_ptr<mpss::KeyPair> core_key = mpss::KeyPair::Open(key_name);
+        ASSERT_NE(nullptr, core_key);
+        EXPECT_EQ(static_cast<unsigned int>(core_key->key_info().isolation_level), isolation_level);
+    }
     ASSERT_EQ(1, mpss_delete_key(key_name));
     ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
     OSSL_LIB_CTX_free(mpss_libctx);
@@ -555,7 +573,7 @@ TEST(MPSS_OpenSSL, GenSetParamsRejectsNullString)
 
 TEST(MPSS_OpenSSL, GenerateRequiresAlgorithm)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -623,7 +641,7 @@ TEST(MPSS_OpenSSL, GenerateRequiresAlgorithm)
 
 TEST(MPSS_OpenSSL, DefaultBackendReturned)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -670,7 +688,7 @@ TEST(MPSS_OpenSSL, DefaultBackendReturned)
 
 TEST(MPSS_OpenSSL, ExplicitBackend)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -735,7 +753,7 @@ TEST(MPSS_OpenSSL, DeleteKeyFromBackend)
     {
         const char *backend = *b;
 
-        if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", backend))
+        if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", backend, MPSS_ISOLATION_SOFTWARE))
         {
             continue;
         }
@@ -793,6 +811,70 @@ TEST(IsolationLevelDefines, MatchCppEnum)
     static_assert(MPSS_ISOLATION_HARDWARE == static_cast<std::uint8_t>(mpss::IsolationLevel::hardware));
 }
 
+// Scenario: C callers constrain availability checks with each defined minimum isolation.
+// Expected behavior: every positive C result is confirmed by the C++ API at the same minimum.
+TEST(CApiIsolation, AvailabilityHonorsMinimumIsolation)
+{
+    constexpr std::array<std::pair<unsigned int, mpss::IsolationLevel>, 3> levels{{
+        {MPSS_ISOLATION_SOFTWARE, mpss::IsolationLevel::software},
+        {MPSS_ISOLATION_MIXED, mpss::IsolationLevel::mixed},
+        {MPSS_ISOLATION_HARDWARE, mpss::IsolationLevel::hardware},
+    }};
+
+    for (const auto &[c_level, cpp_level] : levels)
+    {
+        SCOPED_TRACE(c_level);
+        if (mpss_is_algorithm_available(mpss_p256_algorithm, c_level))
+        {
+            EXPECT_TRUE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, cpp_level));
+        }
+        const std::string_view backend = mpss::get_default_backend_name();
+        if (!backend.empty() &&
+            mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, backend.data(), c_level))
+        {
+            EXPECT_TRUE(
+                mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, backend, cpp_level));
+        }
+
+        const char **c_algorithms = mpss_get_available_algorithms(c_level);
+        ASSERT_NE(nullptr, c_algorithms);
+        std::vector<std::string_view> c_names;
+        for (const char **name = c_algorithms; nullptr != *name; ++name)
+        {
+            c_names.emplace_back(*name);
+        }
+
+        const std::vector<mpss::Algorithm> cpp_algorithms = mpss::get_available_algorithms(cpp_level);
+        for (const std::string_view c_name : c_names)
+        {
+            const auto matches_name = [c_name](mpss::Algorithm algorithm) {
+                return c_name == mpss::get_algorithm_info(algorithm).type_str;
+            };
+            EXPECT_NE(cpp_algorithms.end(), std::ranges::find_if(cpp_algorithms, matches_name));
+        }
+    }
+}
+
+// Scenario: a C caller passes an integer that is not a defined isolation constant.
+// Expected behavior: every isolation-aware C API rejects it and records an error.
+TEST(CApiIsolation, UndefinedValuesFailWithError)
+{
+    constexpr unsigned int invalid_isolation = MPSS_ISOLATION_HARDWARE + 1U;
+
+    EXPECT_FALSE(mpss_is_algorithm_available(mpss_p256_algorithm, invalid_isolation));
+    EXPECT_TRUE(mpss_has_error());
+    EXPECT_STREQ("Invalid minimum isolation level.", mpss_get_error());
+
+    EXPECT_FALSE(mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, "os", invalid_isolation));
+    EXPECT_TRUE(mpss_has_error());
+
+    const char **algorithms = mpss_get_available_algorithms(invalid_isolation);
+    ASSERT_NE(nullptr, algorithms);
+    EXPECT_EQ(nullptr, algorithms[0]);
+    EXPECT_TRUE(mpss_has_error());
+    mpss_clear_error();
+}
+
 // --- KeyPolicy C define / C++ enum agreement tests ---
 
 TEST(KeyPolicyDefines, NoneMatchesCppEnum)
@@ -832,7 +914,7 @@ TEST(KeyPolicyDefines, YubikeyTouchDefinesMatchCppEnum)
 
 TEST(MPSS_OpenSSL, CreateKeyWithPolicyParam)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -867,6 +949,66 @@ TEST(MPSS_OpenSSL, CreateKeyWithPolicyParam)
     ASSERT_TRUE(mpss_delete_key(key_name));
     ASSERT_NE(0, OSSL_PROVIDER_unload(mpss_prov));
     OSSL_LIB_CTX_free(mpss_libctx);
+}
+
+// Scenario: key generation requests the strongest defined minimum through the provider parameter.
+// Expected behavior: a created key reports hardware isolation, proving the minimum reached core Create.
+TEST(MPSS_OpenSSL, CreateReceivesMinimumIsolation)
+{
+    const char *backend = mpss_get_default_backend_name();
+    ASSERT_NE(nullptr, backend);
+    if ('\0' == backend[0])
+    {
+        GTEST_SKIP() << "No default backend available";
+    }
+    if (!mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, backend, MPSS_ISOLATION_HARDWARE))
+    {
+        GTEST_SKIP() << "Current backend cannot create a hardware-isolated P-256 key";
+    }
+
+    const std::string key_name = test_key_name("test_create_minimum_isolation");
+    mpss_delete_key_from_backend(key_name.c_str(), backend);
+    SCOPE_GUARD(mpss_delete_key_from_backend(key_name.c_str(), backend));
+
+    OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
+    ASSERT_NE(nullptr, libctx);
+    SCOPE_GUARD(OSSL_LIB_CTX_free(libctx));
+    ASSERT_NE(0, OSSL_PROVIDER_add_builtin(libctx, "mpss", OSSL_provider_init));
+    OSSL_PROVIDER *provider = OSSL_PROVIDER_load(libctx, "mpss");
+    ASSERT_NE(nullptr, provider);
+    SCOPE_GUARD(OSSL_PROVIDER_unload(provider));
+
+    evp_pkey_ptr key = GenerateKey(libctx, key_name, backend, MPSS_KEY_POLICY_NONE, MPSS_ISOLATION_HARDWARE);
+    ASSERT_NE(nullptr, key.get());
+
+    unsigned int isolation = MPSS_ISOLATION_SOFTWARE;
+    ASSERT_TRUE(GetIsolationLevel(key.get(), isolation));
+    EXPECT_EQ(MPSS_ISOLATION_HARDWARE, isolation);
+}
+
+// Scenario: key generation receives an undefined minimum-isolation integer.
+// Expected behavior: parameter setting fails and the OpenSSL error queue records invalid data.
+TEST(MPSS_OpenSSL, CreateRejectsUndefinedMinimumIsolation)
+{
+    OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
+    ASSERT_NE(nullptr, libctx);
+    SCOPE_GUARD(OSSL_LIB_CTX_free(libctx));
+    ASSERT_NE(0, OSSL_PROVIDER_add_builtin(libctx, "mpss", OSSL_provider_init));
+    OSSL_PROVIDER *provider = OSSL_PROVIDER_load(libctx, "mpss");
+    ASSERT_NE(nullptr, provider);
+    SCOPE_GUARD(OSSL_PROVIDER_unload(provider));
+
+    evp_pkey_ctx_ptr ctx(EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss"));
+    ASSERT_NE(nullptr, ctx.get());
+    ASSERT_EQ(1, EVP_PKEY_keygen_init(ctx.get()));
+
+    unsigned int invalid_isolation = MPSS_ISOLATION_HARDWARE + 1U;
+    const OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_uint("mpss_minimum_isolation", &invalid_isolation), OSSL_PARAM_END};
+    ERR_clear_error();
+    EXPECT_EQ(0, EVP_PKEY_CTX_set_params(ctx.get(), params));
+    EXPECT_NE(0UL, ERR_peek_error());
+    ERR_clear_error();
 }
 
 // Fixture for the OSSL_STORE "open existing key by name" flow. Loads the mpss provider (key
@@ -908,14 +1050,25 @@ class MPSSStore : public ::testing::Test
 
     // Open "mpss:<key_name>" through OSSL_STORE, optionally selecting a backend via the mpss_backend
     // ctx parameter, and return the reopened key (or nullptr if none was produced).
-    EVP_PKEY *store_open_key(const std::string &key_name, const char *backend)
+    EVP_PKEY *store_open_key(const std::string &key_name, const char *backend,
+                             std::optional<unsigned int> minimum_isolation = std::nullopt)
     {
         const std::string uri = "mpss:" + key_name;
-        OSSL_PARAM backend_params[] = {
-            OSSL_PARAM_construct_utf8_string("mpss_backend", const_cast<char *>(nullptr != backend ? backend : ""), 0),
-            OSSL_PARAM_construct_end()};
+        OSSL_PARAM params[3];
+        std::size_t param_count = 0;
+        if (nullptr != backend)
+        {
+            params[param_count++] =
+                OSSL_PARAM_construct_utf8_string("mpss_backend", const_cast<char *>(backend), 0);
+        }
+        if (minimum_isolation)
+        {
+            params[param_count++] =
+                OSSL_PARAM_construct_uint("mpss_minimum_isolation", &*minimum_isolation);
+        }
+        params[param_count] = OSSL_PARAM_construct_end();
         OSSL_STORE_CTX *store = OSSL_STORE_open_ex(uri.c_str(), libctx, "provider=mpss", nullptr, nullptr,
-                                                   nullptr != backend ? backend_params : nullptr, nullptr, nullptr);
+                                                   0 != param_count ? params : nullptr, nullptr, nullptr);
         if (nullptr == store)
         {
             return nullptr;
@@ -1030,7 +1183,7 @@ class MPSSStore : public ::testing::Test
 
 TEST_F(MPSSStore, ReopenByNameDefaultBackend)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1050,7 +1203,7 @@ TEST_F(MPSSStore, ReopenByNameDefaultBackend)
 
 TEST_F(MPSSStore, ReopenByNameExplicitBackendOS)
 {
-    if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", "os"))
+    if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", "os", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "os backend not available";
     }
@@ -1061,9 +1214,82 @@ TEST_F(MPSSStore, ReopenByNameExplicitBackendOS)
     reopen_roundtrip(reopen_os_name.c_str(), "os", MPSS_KEY_POLICY_NONE);
 }
 
+// Scenario: a store open requests the key's actual isolation level as its minimum.
+// Expected behavior: the key reopens, its reference stays unchanged, and a stricter unavailable minimum fails.
+TEST_F(MPSSStore, OpenReceivesMinimumIsolation)
+{
+    const char *backend = mpss_get_default_backend_name();
+    ASSERT_NE(nullptr, backend);
+    if ('\0' == backend[0])
+    {
+        GTEST_SKIP() << "No default backend available";
+    }
+    if (!mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, backend, MPSS_ISOLATION_SOFTWARE))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = test_key_name("test_open_minimum_isolation");
+    mpss_delete_key_from_backend(key_name.c_str(), backend);
+    SCOPE_GUARD(mpss_delete_key_from_backend(key_name.c_str(), backend));
+
+    evp_pkey_ptr created = GenerateKey(libctx, key_name, backend);
+    ASSERT_NE(nullptr, created.get());
+    unsigned int actual_isolation = MPSS_ISOLATION_SOFTWARE;
+    ASSERT_TRUE(GetIsolationLevel(created.get(), actual_isolation));
+    created.reset();
+
+    evp_pkey_ptr reopened(store_open_key(key_name, backend, actual_isolation));
+    ASSERT_NE(nullptr, reopened.get());
+    unsigned int reopened_isolation = MPSS_ISOLATION_SOFTWARE;
+    ASSERT_TRUE(GetIsolationLevel(reopened.get(), reopened_isolation));
+    EXPECT_EQ(actual_isolation, reopened_isolation);
+    EXPECT_EQ(ReferencePemFor(backend, key_name), EncodeReferencePem(reopened.get()));
+    reopened.reset();
+
+    if (actual_isolation < MPSS_ISOLATION_HARDWARE)
+    {
+        EXPECT_EQ(nullptr, store_open_key(key_name, backend, MPSS_ISOLATION_HARDWARE));
+    }
+}
+
+// Scenario: an OpenSSL store caller supplies an undefined minimum-isolation integer.
+// Expected behavior: store open fails and leaves an error on the OpenSSL queue.
+TEST_F(MPSSStore, OpenRejectsUndefinedMinimumIsolation)
+{
+    ERR_clear_error();
+    EXPECT_EQ(nullptr, store_open_key(test_key_name("unused_invalid_isolation"), nullptr,
+                                      MPSS_ISOLATION_HARDWARE + 1U));
+    EXPECT_NE(0UL, ERR_peek_error());
+    ERR_clear_error();
+}
+
+// Scenario: one store operation requests hardware isolation and a later operation omits a minimum.
+// Expected behavior: the later operation uses software, with no transient minimum leaking between calls.
+TEST_F(MPSSStore, TransientMinimumDoesNotLeak)
+{
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
+    {
+        GTEST_SKIP() << "Algorithm not supported by current backend";
+    }
+
+    const std::string key_name = test_key_name("test_open_minimum_no_leak");
+    mpss_delete_key(key_name.c_str());
+    SCOPE_GUARD(mpss_delete_key(key_name.c_str()));
+
+    evp_pkey_ptr created = GenerateKey(libctx, key_name);
+    ASSERT_NE(nullptr, created.get());
+    created.reset();
+
+    evp_pkey_ptr strict(store_open_key(key_name, nullptr, MPSS_ISOLATION_HARDWARE));
+    strict.reset();
+    evp_pkey_ptr defaulted(store_open_key(key_name, nullptr));
+    EXPECT_NE(nullptr, defaulted.get());
+}
+
 TEST_F(MPSSStore, DeleteByName)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1144,7 +1370,7 @@ TEST_F(MPSSStore, ExportTypesMatchSupportedSelections)
 
 TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1196,7 +1422,7 @@ TEST_F(MPSSStore, ExportRefusesPrivateKeySelection)
 
 TEST_F(MPSSStore, AdvertisesGroupNameParam)
 {
-    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256"))
+    if (!mpss_is_algorithm_available("ecdsa_secp256r1_sha256", MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1239,7 +1465,8 @@ TEST_F(MPSSStore, ReopenByNameYubiKey)
     {
         GTEST_SKIP() << "YubiKey device not available";
     }
-    if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", "yubikey"))
+    if (!mpss_is_algorithm_available_in_backend("ecdsa_secp256r1_sha256", "yubikey",
+                                                MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "YubiKey backend not available";
     }
@@ -1256,7 +1483,7 @@ TEST_F(MPSSStore, ReopenByNameYubiKey)
 // Expected behavior: the key is reopened by name and is usable for signing.
 TEST_F(MPSSStore, ReferencePemDecoderReopensKeyByName)
 {
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1291,7 +1518,7 @@ class MPSSReferencePemRejects : public MPSSStore, public ::testing::WithParamInt
 // Expected behavior: it decodes to no key.
 TEST_P(MPSSReferencePemRejects, MalformedLoadReferenceDecodesToNoKey)
 {
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1353,7 +1580,7 @@ TEST_F(MPSSStore, ReferencePemDecoderRejectsForeignPem)
 // key is usable for signing.
 TEST_F(MPSSStore, ReferencePemEncoderCarriesNameAndRoundTrips)
 {
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1392,7 +1619,7 @@ TEST_F(MPSSStore, ReferencePemEncoderCarriesNameAndRoundTrips)
 // result can sign; a caller that asked for public material must not receive that.
 TEST_F(MPSSStore, ReferencePemIsNotDecodedForAPublicKeyRequest)
 {
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1425,7 +1652,7 @@ TEST_F(MPSSStore, ReferencePemIsNotDecodedForAPublicKeyRequest)
 // lives instead of resolving a same-named key on the default one.
 TEST_F(MPSSStore, ReferencePemCarriesExplicitBackend)
 {
-    if (!mpss_is_algorithm_available(mpss_p256_algorithm))
+    if (!mpss_is_algorithm_available(mpss_p256_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend";
     }
@@ -1455,7 +1682,7 @@ class CreateAndDeleteKeyTest : public ::testing::TestWithParam<const char *>
 TEST_P(CreateAndDeleteKeyTest, CreateAndDeleteKey)
 {
     const char *mpss_algorithm = GetParam();
-    if (!mpss_is_algorithm_available(mpss_algorithm))
+    if (!mpss_is_algorithm_available(mpss_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend: " << mpss_algorithm;
     }

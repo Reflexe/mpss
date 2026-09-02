@@ -78,10 +78,11 @@ extern "C"
      * that the next call will succeed.
      *
      * @param[in] algorithm_name The algorithm name (e.g. "ecdsa_secp256r1_sha256").
+     * @param[in] minimum_isolation The minimum acceptable isolation level (MPSS_ISOLATION_*).
      * @return true if the algorithm is available, false if it is unavailable or if availability could
      * not be determined. The two are distinguished by @ref mpss_has_error.
      */
-    MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available(const char *algorithm_name);
+    MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available(const char *algorithm_name, unsigned int minimum_isolation);
 
     /**
      * @brief Checks whether an algorithm is available in the specified backend.
@@ -90,11 +91,13 @@ extern "C"
      *
      * @param[in] algorithm_name The algorithm name (e.g. "ecdsa_secp256r1_sha256").
      * @param[in] backend_name The backend to check (e.g. "os", "yubikey").
+     * @param[in] minimum_isolation The minimum acceptable isolation level (MPSS_ISOLATION_*).
      * @return true if the algorithm is available, false if it is unavailable or if availability could
      * not be determined. The two are distinguished by @ref mpss_has_error.
      */
     MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available_in_backend(const char *algorithm_name,
-                                                                   const char *backend_name);
+                                                                   const char *backend_name,
+                                                                   unsigned int minimum_isolation);
 
     /**
      * @brief Returns all algorithm names available in the default backend.
@@ -102,12 +105,13 @@ extern "C"
      * Each algorithm is decided as described in @ref mpss_is_algorithm_available and inherits its
      * meaning of "available". The list is recomputed on every call.
      *
+     * @param[in] minimum_isolation The minimum acceptable isolation level (MPSS_ISOLATION_*).
      * @return A null-terminated array of algorithm name strings. The array is valid until the next
      * call to @ref mpss_get_available_algorithms on the same thread, and is destroyed when that
      * thread exits; copy it if it must outlive either. The strings it points to are valid for the
      * lifetime of the process.
      */
-    MPSS_OPENSSL_DECOR const char **mpss_get_available_algorithms(void);
+    MPSS_OPENSSL_DECOR const char **mpss_get_available_algorithms(unsigned int minimum_isolation);
 
     /**
      * @brief Retrieves the last error message recorded on this thread.
