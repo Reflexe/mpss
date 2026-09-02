@@ -359,7 +359,8 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     jmethodID method = env->GetStaticMethodID(
-        key_management, "CreateKey", "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;Z)I");
+        key_management, "CreateKey",
+        "(Ljava/lang/String;Lcom/microsoft/research/mpss/Algorithm;Z)Ljava/lang/Boolean;");
     if (utils::check_and_clear_exception(env, "resolving KeyManagement.CreateKey"))
     {
         return nullptr;
@@ -470,62 +471,53 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     };
 
     auto create_in_store = [&](bool use_strongbox) {
-        const jint result = env->CallStaticIntMethod(key_management, method, key_name.get(), algorithm_value.get(),
-                                                     use_strongbox ? JNI_TRUE : JNI_FALSE);
+        jni_object result(env, env->CallStaticObjectMethod(key_management, method, key_name.get(),
+                                                           algorithm_value.get(),
+                                                           use_strongbox ? JNI_TRUE : JNI_FALSE));
         if (utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
         {
-            return AndroidCreateOutcome::operational_error;
+            return false;
         }
 
-        switch (result)
+        if (result.is_null())
         {
-        case static_cast<jint>(AndroidCreateOutcome::created):
-            return AndroidCreateOutcome::created;
-        case static_cast<jint>(AndroidCreateOutcome::unavailable):
-            mpss::utils::log_and_set_error("StrongBox is unavailable or unsupported for algorithm '{}'.",
-                                           get_algorithm_info(algorithm).type_str);
-            return AndroidCreateOutcome::unavailable;
-        case static_cast<jint>(AndroidCreateOutcome::operational_error):
             utils::report_java_error(env, "KeyManagement.CreateKey");
-            return AndroidCreateOutcome::operational_error;
-        default:
-            mpss::utils::log_and_set_error("KeyManagement.CreateKey returned unknown result {}.", result);
-            return AndroidCreateOutcome::operational_error;
+            return false;
         }
+
+        const std::optional<bool> created = utils::unbox_boolean(env, result.get());
+        if (!created.has_value())
+        {
+            return false;
+        }
+        if (!created.value())
+        {
+            utils::report_java_error(env, "KeyManagement.CreateKey");
+        }
+        return created.value();
     };
 
-    AndroidCreateOutcome strongbox_outcome = AndroidCreateOutcome::not_attempted;
-    if (android_strongbox_supports(algorithm))
+    if (create_in_store(/* use_strongbox */ true))
     {
-        strongbox_outcome = create_in_store(/* use_strongbox */ true);
-        if (AndroidCreateOutcome::created == strongbox_outcome)
-        {
-            return inspect_created_key();
-        }
-        if (AndroidCreateOutcome::operational_error == strongbox_outcome)
-        {
-            return nullptr;
-        }
-    }
-    else
-    {
-        mpss::utils::log_and_set_error("StrongBox does not support algorithm '{}'.",
-                                       get_algorithm_info(algorithm).type_str);
+        return inspect_created_key();
     }
 
-    if (android_should_try_normal_keystore(minimum_isolation, strongbox_outcome))
+    const std::string strongbox_error = mpss::get_error();
+    if (IsolationLevel::hardware == minimum_isolation)
     {
-        const AndroidCreateOutcome normal_outcome = create_in_store(/* use_strongbox */ false);
-        if (AndroidCreateOutcome::created == normal_outcome)
-        {
-            return inspect_created_key();
-        }
+        mpss::utils::log_and_set_error("Failed to create Android key '{}' with StrongBox: {}", name, strongbox_error);
         return nullptr;
     }
 
-    const std::string reason = mpss::get_error();
-    mpss::utils::log_and_set_error("Failed to create Android key '{}' at the requested minimum isolation: {}", name,
-                                   reason);
+    if (create_in_store(/* use_strongbox */ false))
+    {
+        return inspect_created_key();
+    }
+
+    const std::string fallback_error = mpss::get_error();
+    mpss::utils::log_and_set_error(
+        "Failed to create Android key '{}'; StrongBox attempt failed: {}; Android Keystore fallback failed: {}", name,
+        strongbox_error, fallback_error);
     return nullptr;
 }
 

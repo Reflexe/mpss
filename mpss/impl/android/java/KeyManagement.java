@@ -47,9 +47,6 @@ import java.util.Arrays;
  * key storage.
  */
 public class KeyManagement {
-    private static final int CREATE_OPERATIONAL_ERROR = -1;
-    private static final int CREATE_UNAVAILABLE = 0;
-    private static final int CREATE_CREATED = 1;
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
     private static final Object _keyLock = new Object();
 
@@ -179,9 +176,9 @@ public class KeyManagement {
      * @param keyName Name of the key to create.
      * @param algorithm Algorithm for the key.
      * @param useStrongbox Whether StrongBox is required for this attempt.
-     * @return 1 if created, 0 if StrongBox is unavailable or unsupported, and -1 on an operational failure.
+     * @return True if created and False otherwise.
      */
-    public static int CreateKey(String keyName, Algorithm algorithm, boolean useStrongbox) {
+    public static Boolean CreateKey(String keyName, Algorithm algorithm, boolean useStrongbox) {
         ClearError();
         synchronized (_keyLock) {
             try {
@@ -189,8 +186,10 @@ public class KeyManagement {
                 if (null == algorithm) throw new IllegalArgumentException("algorithm is null.");
 
                 if (useStrongbox && algorithm != Algorithm.secp256r1) {
-                    Log.w("MPSS", "StrongBox does not support the requested algorithm.");
-                    return CREATE_UNAVAILABLE;
+                    String msg = "StrongBox does not support the requested algorithm.";
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return false;
                 }
 
                 // Fail-closed existence check. containsAlias tests presence without loading the key, so
@@ -203,43 +202,45 @@ public class KeyManagement {
                         String msg = "Key with same name already exists: " + keyName;
                         Log.e("MPSS", msg);
                         SetError(msg);
-                        return CREATE_OPERATIONAL_ERROR;
+                        return false;
                     }
                 } catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException ex) {
                     String msg = "Could not determine whether key exists; refusing to create: " + ex.toString();
                     Log.e("MPSS", msg);
                     SetError(msg);
-                    return CREATE_OPERATIONAL_ERROR;
+                    return false;
                 }
 
                 KeyPair kp;
                 try {
                     kp = GenerateKey(keyName, algorithm, useStrongbox);
                 } catch (StrongBoxUnavailableException ex) {
-                    Log.w("MPSS", "StrongBox is not available.");
-                    return CREATE_UNAVAILABLE;
+                    String msg = "StrongBox is not available: " + ex.toString();
+                    Log.w("MPSS", msg);
+                    SetError(msg);
+                    return false;
                 }
 
                 if (null == kp) {
                     String msg = "Android key generation returned no key.";
                     Log.e("MPSS", msg);
                     SetError(msg);
-                    return CREATE_OPERATIONAL_ERROR;
+                    return false;
                 }
 
                 MemKeyStore.AddKey(keyName, kp);
-                return CREATE_CREATED;
+                return true;
             } catch (InvalidAlgorithmParameterException | NoSuchAlgorithmException |
                      NoSuchProviderException | InvalidKeySpecException ex) {
                 String msg = "Error creating key: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
-                return CREATE_OPERATIONAL_ERROR;
+                return false;
             } catch (RuntimeException ex) {
                 String msg = "Unexpected error creating key: " + ex.toString();
                 Log.e("MPSS", msg);
                 SetError(msg);
-                return CREATE_OPERATIONAL_ERROR;
+                return false;
             }
         }
     }

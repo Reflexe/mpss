@@ -10,29 +10,6 @@
 namespace mpss::impl::os
 {
 
-enum class AndroidCreateOutcome : std::int32_t
-{
-    operational_error = -1,
-    unavailable = 0,
-    created = 1,
-    not_attempted = 2
-};
-
-[[nodiscard]]
-constexpr bool android_strongbox_supports(Algorithm algorithm) noexcept
-{
-    return Algorithm::ecdsa_secp256r1_sha256 == algorithm;
-}
-
-[[nodiscard]]
-constexpr bool android_should_try_normal_keystore(IsolationLevel minimum_isolation,
-                                                   AndroidCreateOutcome strongbox_outcome) noexcept
-{
-    return IsolationLevel::hardware != minimum_isolation &&
-           (AndroidCreateOutcome::not_attempted == strongbox_outcome ||
-            AndroidCreateOutcome::unavailable == strongbox_outcome);
-}
-
 [[nodiscard]]
 std::optional<KeyInfo> android_key_info_from_security_level(std::int32_t security_level) noexcept;
 
