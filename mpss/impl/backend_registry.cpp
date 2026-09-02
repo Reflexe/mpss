@@ -16,27 +16,10 @@
 #include <cstring>
 #include <mutex>
 #include <random>
-#include <set>
-#include <tuple>
 #include <unordered_map>
 
 namespace
 {
-using AvailabilityCacheKey = std::tuple<std::string, mpss::Algorithm, mpss::IsolationLevel>;
-
-struct AvailabilityCache
-{
-    std::mutex mutex;
-    std::set<AvailabilityCacheKey> positive_results;
-};
-
-AvailabilityCache &availability_cache()
-{
-    // Availability remains callable from host static destructors, just like BackendRegistry::Instance().
-    static AvailabilityCache &cache = *new AvailabilityCache(); // NOLINT(cppcoreguidelines-owning-memory)
-    return cache;
-}
-
 std::string random_string(std::size_t length)
 {
     // Note: This function is not cryptographically secure. It is only used for generating random key names for
@@ -307,23 +290,7 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, 
         return false;
     }
 
-    const AvailabilityCacheKey cache_key{std::string{backend->name()}, algorithm, minimum_isolation};
-    AvailabilityCache &cache = availability_cache();
-    {
-        std::scoped_lock lock{cache.mutex};
-        if (cache.positive_results.contains(cache_key))
-        {
-            return true;
-        }
-    }
-
-    const bool available = backend->is_algorithm_available(algorithm, minimum_isolation);
-    if (available)
-    {
-        std::scoped_lock lock{cache.mutex};
-        cache.positive_results.insert(cache_key);
-    }
-    return available;
+    return backend->is_algorithm_available(algorithm, minimum_isolation);
 }
 
 // Explicit-backend functions - the real implementations.

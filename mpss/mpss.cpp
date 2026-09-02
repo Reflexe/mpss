@@ -4,12 +4,32 @@
 #include "mpss/mpss.h"
 #include "mpss/impl/backend_registry.h"
 #include "mpss/utils/utilities.h"
+#include <array>
+#include <mutex>
+#include <optional>
 
 namespace mpss
 {
 
 namespace
 {
+static constexpr std::size_t isolation_level_count =
+    static_cast<std::size_t>(IsolationLevel::hardware) + 1;
+
+struct DefaultAvailabilityCache
+{
+    std::mutex mutex;
+    std::array<std::array<std::optional<bool>, isolation_level_count>, algorithm_info.size()> entries{};
+};
+
+DefaultAvailabilityCache &default_availability_cache()
+{
+    // Availability remains callable from host static destructors.
+    static DefaultAvailabilityCache &cache =
+        *new DefaultAvailabilityCache(); // NOLINT(cppcoreguidelines-owning-memory)
+    return cache;
+}
+
 // Success is the truthy result: a non-null key, true, or a non-zero size. Explicit conversions are
 // permitted, so that std::unique_ptr qualifies.
 template <typename T>
@@ -73,8 +93,34 @@ bool is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolatio
         return false;
     }
 
+    const std::size_t algorithm_index = static_cast<std::size_t>(algorithm);
+    const std::size_t isolation_index = static_cast<std::size_t>(minimum_isolation);
+    if (isolation_index >= isolation_level_count)
+    {
+        return impl::is_algorithm_available(algorithm, minimum_isolation);
+    }
+
+    DefaultAvailabilityCache &cache = default_availability_cache();
+    {
+        std::scoped_lock lock{cache.mutex};
+        if (cache.entries[algorithm_index][isolation_index])
+        {
+            // NOLINTBEGIN(bugprone-unchecked-optional-access) - guarded by the if above.
+            utils::log_trace("Algorithm availability for '{}' at minimum isolation {} returned from cache: {}.",
+                             info.type_str, isolation_index,
+                             *cache.entries[algorithm_index][isolation_index] ? "available" : "unavailable");
+            return *cache.entries[algorithm_index][isolation_index];
+            // NOLINTEND(bugprone-unchecked-optional-access)
+        }
+    }
+
     utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
     const bool available = impl::is_algorithm_available(algorithm, minimum_isolation);
+    if (available)
+    {
+        std::scoped_lock lock{cache.mutex};
+        cache.entries[algorithm_index][isolation_index] = true;
+    }
     utils::log_trace("Algorithm '{}' is {}.", info.type_str, available ? "available" : "unavailable");
     return available;
 }
