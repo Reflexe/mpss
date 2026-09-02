@@ -535,6 +535,8 @@ TEST(ErrorContract, HasErrorAndClearErrorTrackTheLastError)
     EXPECT_FALSE(mpss::has_error());
 }
 
+// Scenario: cached default and uncached named-backend availability queries follow the error contract.
+// Expected behavior: answered queries clear stale errors while undispatchable queries report one.
 TEST(ErrorContract, AvailabilityQueriesHonorTheContract)
 {
     // Prime the availability cache for every algorithm, so that the queries below take the
@@ -553,8 +555,8 @@ TEST(ErrorContract, AvailabilityQueriesHonorTheContract)
     (void)mpss::get_available_algorithms();
     EXPECT_FALSE(mpss::has_error());
 
-    // Named-backend positives share the backend+algorithm+minimum cache. Whether this reaches a probe
-    // or a cache hit, scratch-key work is not the question the caller asked and must not be reported.
+    // Named-backend queries are uncached. Scratch-key work is not the question the caller asked and
+    // must not be reported.
     const std::string default_backend = mpss::get_default_backend_name();
     ASSERT_FALSE(default_backend.empty());
     EXPECT_EQ(nullptr, mpss::KeyPair::Open(""));
@@ -1036,29 +1038,24 @@ TEST(IsolationLevelTest, StrongerCreationAndAvailabilityFailClosed)
                                              ecdsa_secp256r1_sha256, KeyPolicy::none, IsolationLevel::mixed));
 }
 
-// Scenario: a positive software availability result is followed by stronger and differently named backend queries.
-// Expected behavior: the positive cache entry satisfies neither a different minimum nor a different backend.
-TEST(IsolationLevelTest, AvailabilityCacheSeparatesMinimumAndBackend)
+// Scenario: a positive default-backend software availability result is followed by a stronger minimum query.
+// Expected behavior: the software cache entry does not satisfy the mixed-isolation query.
+TEST(IsolationLevelTest, DefaultAvailabilityCacheSeparatesMinimum)
 {
     constexpr std::array algorithms{ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512};
 
-    for (const char *backend : mpss::get_available_backends())
+    for (const Algorithm algorithm : algorithms)
     {
-        for (const Algorithm algorithm : algorithms)
+        if (!mpss::is_algorithm_available(algorithm))
         {
-            if (!mpss::is_algorithm_available(algorithm, backend))
-            {
-                continue;
-            }
-
-            EXPECT_FALSE(mpss::is_algorithm_available(algorithm, backend, IsolationLevel::mixed));
-            EXPECT_FALSE(mpss::is_algorithm_available(algorithm, "no_such_backend"));
-            EXPECT_TRUE(mpss::has_error());
-            return;
+            continue;
         }
+
+        EXPECT_FALSE(mpss::is_algorithm_available(algorithm, IsolationLevel::mixed));
+        return;
     }
 
-    GTEST_SKIP() << "No backend reports a software-isolation algorithm available";
+    GTEST_SKIP() << "The default backend reports no software-isolation algorithm available";
 }
 
 // --- Backend discovery and explicit backend API tests ---

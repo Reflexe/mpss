@@ -17,10 +17,8 @@
 #define MPSS_ISOLATION_SOFTWARE 0U
 #define MPSS_ISOLATION_MIXED 1U
 #define MPSS_ISOLATION_HARDWARE 2U
-// NOLINTEND(*-macro-to-enum)
 
 /** @brief Key policy constants for use with the "mpss_key_policy" provider parameter. */
-// NOLINTBEGIN(*-macro-to-enum) - C/C++ dual header; macros required for C compatibility.
 #define MPSS_KEY_POLICY_NONE 0U
 
 #ifdef MPSS_BACKEND_YUBIKEY
