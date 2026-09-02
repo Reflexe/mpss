@@ -339,10 +339,9 @@ Java sources and does not raise the runtime minimum. The installer reads its val
 preset rather than duplicating it here.
 
 Android key creation uses a strongest-first ladder constrained by the requested minimum isolation.
-Hardware requests use StrongBox only. Mixed requests try StrongBox first and may fall back to the
-normal Android Keystore only when StrongBox is unavailable or unsupported; the resulting key must
-measure as Trusted Environment isolation or stronger. Software requests preserve the existing
-StrongBox-to-normal-Keystore fallback. Operational generation errors abort rather than falling back.
+Hardware requests use StrongBox only. Software and mixed requests try StrongBox first and may fall
+back to the normal Android Keystore when StrongBox cannot create the key; a mixed request still
+requires the resulting key to measure as Trusted Environment isolation or stronger.
 Every created and opened key is measured from Android's reported security level. StrongBox maps to
 hardware, Trusted Environment and `Unknown Secure` map to mixed, and Software and `Unknown` map to
 software. Before API level 31, secure storage is reported as `Unknown Secure`; API level 31 and later

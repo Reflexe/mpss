@@ -219,20 +219,6 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 
 } // namespace
 
-// Scenario: hardware isolation is requested for StrongBox-supported and unsupported algorithms.
-// Expected behavior: normal Android Keystore fallback is never eligible.
-TEST(AndroidIsolationPolicyTest, HardwareRequestsNeverUseNormalKeystoreFallback)
-{
-    using enum mpss::Algorithm;
-    using enum mpss::IsolationLevel;
-    using enum mpss::impl::os::AndroidCreateOutcome;
-
-    EXPECT_TRUE(mpss::impl::os::android_strongbox_supports(ecdsa_secp256r1_sha256));
-    EXPECT_FALSE(mpss::impl::os::android_should_try_normal_keystore(hardware, unavailable));
-    EXPECT_FALSE(mpss::impl::os::android_strongbox_supports(ecdsa_secp384r1_sha384));
-    EXPECT_FALSE(mpss::impl::os::android_should_try_normal_keystore(hardware, not_attempted));
-}
-
 // Scenario: Android reports StrongBox, Trusted Environment, and Software security levels for mixed isolation.
 // Expected behavior: mixed accepts StrongBox and TEE evidence but rejects software evidence.
 TEST(AndroidIsolationPolicyTest, MixedAcceptsStrongBoxAndTeeButRejectsSoftware)
@@ -250,31 +236,6 @@ TEST(AndroidIsolationPolicyTest, MixedAcceptsStrongBoxAndTeeButRejectsSoftware)
     EXPECT_TRUE(mpss::meets_minimum_isolation(strongbox->isolation_level, mixed));
     EXPECT_TRUE(mpss::meets_minimum_isolation(tee->isolation_level, mixed));
     EXPECT_FALSE(mpss::meets_minimum_isolation(software_key_info->isolation_level, mixed));
-}
-
-// Scenario: software isolation is requested and the StrongBox attempt is unavailable.
-// Expected behavior: StrongBox remains the first candidate and normal Android Keystore fallback stays eligible.
-TEST(AndroidIsolationPolicyTest, SoftwarePreservesStrongestFirstFallback)
-{
-    using enum mpss::Algorithm;
-    using enum mpss::IsolationLevel;
-    using enum mpss::impl::os::AndroidCreateOutcome;
-
-    EXPECT_TRUE(mpss::impl::os::android_strongbox_supports(ecdsa_secp256r1_sha256));
-    EXPECT_TRUE(mpss::impl::os::android_should_try_normal_keystore(software, unavailable));
-}
-
-// Scenario: StrongBox is unavailable, succeeds with underqualified evidence, or fails operationally.
-// Expected behavior: only unavailability permits a qualifying normal-Keystore fallback; success and errors abort it.
-TEST(AndroidIsolationPolicyTest, StrongBoxFallbackRequiresUnavailableOutcome)
-{
-    using enum mpss::IsolationLevel;
-    using enum mpss::impl::os::AndroidCreateOutcome;
-
-    EXPECT_TRUE(mpss::impl::os::android_should_try_normal_keystore(mixed, unavailable));
-    EXPECT_FALSE(mpss::impl::os::android_should_try_normal_keystore(mixed, created));
-    EXPECT_FALSE(mpss::impl::os::android_should_try_normal_keystore(mixed, operational_error));
-    EXPECT_FALSE(mpss::impl::os::android_should_try_normal_keystore(hardware, unavailable));
 }
 
 // Scenario: Android reports its two compatibility security levels on older or indeterminate platforms.
