@@ -6,7 +6,6 @@
 #include "mpss/utils/utilities.h"
 #include <array>
 #include <mutex>
-#include <optional>
 
 namespace mpss
 {
@@ -19,7 +18,7 @@ static constexpr std::size_t isolation_level_count =
 struct DefaultAvailabilityCache
 {
     std::mutex mutex;
-    std::array<std::array<std::optional<bool>, isolation_level_count>, algorithm_info.size()> entries{};
+    std::array<std::array<bool, isolation_level_count>, algorithm_info.size()> entries{};
 };
 
 DefaultAvailabilityCache &default_availability_cache()
@@ -105,12 +104,9 @@ bool is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolatio
         std::scoped_lock lock{cache.mutex};
         if (cache.entries[algorithm_index][isolation_index])
         {
-            // NOLINTBEGIN(bugprone-unchecked-optional-access) - guarded by the if above.
-            utils::log_trace("Algorithm availability for '{}' at minimum isolation {} returned from cache: {}.",
-                             info.type_str, isolation_index,
-                             *cache.entries[algorithm_index][isolation_index] ? "available" : "unavailable");
-            return *cache.entries[algorithm_index][isolation_index];
-            // NOLINTEND(bugprone-unchecked-optional-access)
+            utils::log_trace("Algorithm availability for '{}' at minimum isolation {} returned from cache: available.",
+                             info.type_str, isolation_index);
+            return true;
         }
     }
 
