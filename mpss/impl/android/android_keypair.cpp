@@ -288,11 +288,6 @@ std::size_t AndroidKeyPair::do_extract_key(std::span<std::byte> public_key) cons
 
 void AndroidKeyPair::release_key()
 {
-    close_key();
-}
-
-void AndroidKeyPair::close_key()
-{
     static_cast<void>(close_android_key(key_name_));
 }
 

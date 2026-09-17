@@ -32,7 +32,7 @@ class AndroidKeyPair : public mpss::KeyPair
     {
         try
         {
-            close_key();
+            static_cast<void>(close_android_key(key_name_));
         }
         // NOLINTNEXTLINE(bugprone-empty-catch) - a destructor must not propagate exceptions.
         catch (...)
@@ -55,8 +55,6 @@ class AndroidKeyPair : public mpss::KeyPair
     std::size_t do_extract_key(std::span<std::byte> public_key) const override;
 
   private:
-    void close_key();
-
     std::string key_name_;
 };
 
