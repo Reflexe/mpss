@@ -4,9 +4,20 @@
 #pragma once
 
 #include "mpss/mpss.h"
+#include <cstdint>
+#include <optional>
 
 namespace mpss::impl::os
 {
+
+[[nodiscard]]
+std::optional<KeyInfo> android_key_info_from_security_level(std::int32_t security_level) noexcept;
+
+[[nodiscard]]
+bool delete_android_key(std::string_view key_name);
+
+[[nodiscard]]
+bool close_android_key(std::string_view key_name);
 
 class AndroidKeyPair : public mpss::KeyPair
 {
@@ -21,7 +32,7 @@ class AndroidKeyPair : public mpss::KeyPair
     {
         try
         {
-            close_key();
+            static_cast<void>(close_android_key(key_name_));
         }
         // NOLINTNEXTLINE(bugprone-empty-catch) - a destructor must not propagate exceptions.
         catch (...)
@@ -44,8 +55,6 @@ class AndroidKeyPair : public mpss::KeyPair
     std::size_t do_extract_key(std::span<std::byte> public_key) const override;
 
   private:
-    void close_key();
-
     std::string key_name_;
 };
 
