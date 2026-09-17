@@ -649,18 +649,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
                     IsolationLevel::mixed == isolation ? vbs_description : software_description;
             }
 
-            if (!mpss::meets_minimum_isolation(isolation, minimum_isolation))
-            {
-                const IsolationLevel actual_isolation = isolation;
-                if (!CleanupCreatedKey(key_handle, name))
-                {
-                    return nullptr;
-                }
-                mpss::utils::log_and_set_error(
-                    "Newly created key '{}' measured at isolation level {} below requested minimum {}.", name,
-                    static_cast<unsigned>(actual_isolation), static_cast<unsigned>(minimum_isolation));
-                return nullptr;
-            }
             mpss::utils::log_trace("Key '{}' created with '{}' storage.", name, storage_description);
             return std::make_unique<WindowsKeyPair>(algorithm, key_handle, isolation, storage_description);
         }
