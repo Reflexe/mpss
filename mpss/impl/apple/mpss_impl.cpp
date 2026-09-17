@@ -86,7 +86,7 @@ OpenKeyResult try_open_key(const std::string &key_name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};
@@ -105,7 +105,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    IsolationLevel minimum_isolation)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};
@@ -126,6 +127,12 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (0 != (raw_policy & ~supported_policy))
     {
         mpss::utils::log_and_set_error("Apple backend does not support the requested key policy.");
+        return nullptr;
+    }
+
+    if (IsolationLevel::software != minimum_isolation)
+    {
+        mpss::utils::log_and_set_error("Apple backend does not yet support stronger minimum isolation.");
         return nullptr;
     }
 

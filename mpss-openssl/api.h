@@ -12,8 +12,13 @@
 
 #include <stddef.h>
 
-/** @brief Key policy constants for use with the "mpss_key_policy" provider parameter. */
+/** @brief Key isolation constants for C callers. */
 // NOLINTBEGIN(*-macro-to-enum) - C/C++ dual header; macros required for C compatibility.
+#define MPSS_ISOLATION_SOFTWARE 0U
+#define MPSS_ISOLATION_MIXED 1U
+#define MPSS_ISOLATION_HARDWARE 2U
+
+/** @brief Key policy constants for use with the "mpss_key_policy" provider parameter. */
 #define MPSS_KEY_POLICY_NONE 0U
 
 #ifdef MPSS_BACKEND_YUBIKEY
