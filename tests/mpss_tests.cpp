@@ -896,57 +896,40 @@ TEST_F(MPSS, AppleSecureEnclaveMetadataIsHardware)
     EXPECT_TRUE(key->delete_key());
 }
 
-class AppleStrongerMinimumTest : public MPSS, public ::testing::WithParamInterface<IsolationLevel>
-{
-};
-
 // Scenario: a mixed or hardware request targets the name of an existing P-384 software Keychain key.
 // Expected behavior: Apple never opens, replaces, or deletes the excluded Keychain key.
-TEST_P(AppleStrongerMinimumTest, NeverAttemptsKeychain)
+TEST_F(MPSS, AppleStrongerMinimumNeverAttemptsKeychain)
 {
     if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", IsolationLevel::software))
     {
         GTEST_SKIP() << "P-384 is not available in the Apple Keychain";
     }
 
-    const IsolationLevel minimum = GetParam();
-    const std::string key_name =
-        test_key_name("mpss_apple_stronger_excludes_keychain_" + std::to_string(static_cast<unsigned>(minimum)));
-    DeleteKey(key_name);
-    std::unique_ptr<mpss::KeyPair> software_key = mpss::KeyPair::Create(
-        key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, IsolationLevel::software);
-    ASSERT_NE(nullptr, software_key);
-    software_key.reset();
-
-    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", minimum));
-    EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name, "os", minimum));
-    EXPECT_TRUE(mpss::get_error().empty());
-    EXPECT_EQ(nullptr,
-              mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, minimum));
-    EXPECT_NE(std::string::npos, mpss::get_error().find("already exists"));
-
-    software_key = mpss::KeyPair::Open(key_name, "os", IsolationLevel::software);
-    ASSERT_NE(nullptr, software_key);
-    EXPECT_EQ(IsolationLevel::software, software_key->key_info().isolation_level);
-    ASSERT_TRUE(software_key->delete_key());
-}
-
-std::string AppleStrongerMinimumName(const ::testing::TestParamInfo<IsolationLevel> &info)
-{
-    switch (info.param)
+    constexpr std::array minimums{IsolationLevel::mixed, IsolationLevel::hardware};
+    for (const IsolationLevel minimum : minimums)
     {
-    case IsolationLevel::mixed:
-        return "Mixed";
-    case IsolationLevel::hardware:
-        return "Hardware";
-    default:
-        return "Invalid";
+        SCOPED_TRACE(static_cast<unsigned>(minimum));
+        const std::string key_name =
+            test_key_name("mpss_apple_stronger_excludes_keychain_" + std::to_string(static_cast<unsigned>(minimum)));
+        DeleteKey(key_name);
+        std::unique_ptr<mpss::KeyPair> software_key = mpss::KeyPair::Create(
+            key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, IsolationLevel::software);
+        ASSERT_NE(nullptr, software_key);
+        software_key.reset();
+
+        EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", minimum));
+        EXPECT_EQ(nullptr, mpss::KeyPair::Open(key_name, "os", minimum));
+        EXPECT_TRUE(mpss::get_error().empty());
+        EXPECT_EQ(nullptr,
+                  mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, "os", KeyPolicy::none, minimum));
+        EXPECT_NE(std::string::npos, mpss::get_error().find("already exists"));
+
+        software_key = mpss::KeyPair::Open(key_name, "os", IsolationLevel::software);
+        ASSERT_NE(nullptr, software_key);
+        EXPECT_EQ(IsolationLevel::software, software_key->key_info().isolation_level);
+        ASSERT_TRUE(software_key->delete_key());
     }
 }
-
-INSTANTIATE_TEST_SUITE_P(StrongerMinimums, AppleStrongerMinimumTest,
-                         ::testing::Values(IsolationLevel::mixed, IsolationLevel::hardware),
-                         AppleStrongerMinimumName);
 
 // Scenario: Apple availability and creation are queried for P-256 at every valid minimum.
 // Expected behavior: each availability result matches creation and every returned key has no invented mixed tier.
