@@ -812,7 +812,7 @@ TEST(IsolationLevelDefines, MatchCppEnum)
 }
 
 // Scenario: C callers constrain availability checks with each defined minimum isolation.
-// Expected behavior: every positive C result is confirmed by the C++ API at the same minimum.
+// Expected behavior: C and C++ availability results and algorithm-name lists match exactly.
 TEST(CApiIsolation, AvailabilityHonorsMinimumIsolation)
 {
     constexpr std::array<std::pair<unsigned int, mpss::IsolationLevel>, 3> levels{{
@@ -824,17 +824,13 @@ TEST(CApiIsolation, AvailabilityHonorsMinimumIsolation)
     for (const auto &[c_level, cpp_level] : levels)
     {
         SCOPED_TRACE(c_level);
-        if (mpss_is_algorithm_available(mpss_p256_algorithm, c_level))
-        {
-            EXPECT_TRUE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, cpp_level));
-        }
+        EXPECT_EQ(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, cpp_level),
+                  mpss_is_algorithm_available(mpss_p256_algorithm, c_level));
+
         const std::string_view backend = mpss::get_default_backend_name();
-        if (!backend.empty() &&
-            mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, backend.data(), c_level))
-        {
-            EXPECT_TRUE(
-                mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, backend, cpp_level));
-        }
+        ASSERT_FALSE(backend.empty());
+        EXPECT_EQ(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, backend, cpp_level),
+                  mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, backend.data(), c_level));
 
         const char **c_algorithms = mpss_get_available_algorithms(c_level);
         ASSERT_NE(nullptr, c_algorithms);
@@ -845,13 +841,13 @@ TEST(CApiIsolation, AvailabilityHonorsMinimumIsolation)
         }
 
         const std::vector<mpss::Algorithm> cpp_algorithms = mpss::get_available_algorithms(cpp_level);
-        for (const std::string_view c_name : c_names)
+        std::vector<std::string_view> cpp_names;
+        cpp_names.reserve(cpp_algorithms.size());
+        for (const mpss::Algorithm algorithm : cpp_algorithms)
         {
-            const auto matches_name = [c_name](mpss::Algorithm algorithm) {
-                return c_name == mpss::get_algorithm_info(algorithm).type_str;
-            };
-            EXPECT_NE(cpp_algorithms.end(), std::ranges::find_if(cpp_algorithms, matches_name));
+            cpp_names.emplace_back(mpss::get_algorithm_info(algorithm).type_str);
         }
+        EXPECT_EQ(cpp_names, c_names);
     }
 }
 

@@ -84,7 +84,7 @@ bool has_error() noexcept;
  * @brief Set the last error string that occurred.
  * @param error The error string to set.
  */
-void set_error(std::string error) noexcept;
+MPSS_DECOR void set_error(std::string error) noexcept;
 
 /**
  * @brief Clear the last error for this thread.
