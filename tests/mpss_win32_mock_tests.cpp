@@ -351,7 +351,7 @@ TEST_F(WindowsKeyCreation, TpmProviderReportsTpmProtection)
 }
 
 // Scenario: the host has no TPM, so the platform provider cannot be opened, but VBS is available.
-// Expected behavior: the create falls back to VBS and reports mixed isolation.
+// Expected behavior: the create falls back to VBS, reports mixed isolation, and clears the failed TPM error.
 TEST_F(WindowsKeyCreation, TpmUnavailableFallsBackToVbs)
 {
     FailTpmProvider();
@@ -361,10 +361,11 @@ TEST_F(WindowsKeyCreation, TpmUnavailableFallsBackToVbs)
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Virtualization Based Security", std::string(key->key_info().storage_description));
     EXPECT_EQ(mpss::IsolationLevel::mixed, key->key_info().isolation_level);
+    EXPECT_FALSE(mpss::has_error()) << "successful create left a stale error: " << mpss::get_error();
 }
 
 // Scenario: neither the TPM nor VBS is available.
-// Expected behavior: the create succeeds on software and reports software isolation.
+// Expected behavior: the create succeeds on software, reports software isolation, and clears fallback errors.
 TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
 {
     FailTpmProvider();
@@ -375,20 +376,7 @@ TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
     ASSERT_NE(nullptr, key);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
     EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
-}
-
-// Scenario: a caller asks for a key on a host with no hardware-isolated provider.
-// Expected behavior: success with a software key; the caller can inspect its concrete isolation level.
-TEST_F(WindowsKeyCreation, SoftwareFallbackSucceedsWithoutSignalingDowngrade)
-{
-    FailTpmProvider();
-    FailVbsCreate();
-
-    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
-
-    ASSERT_NE(nullptr, key);
-    EXPECT_FALSE(mpss::has_error()) << "a silent downgrade left an error set: " << mpss::get_error();
-    EXPECT_EQ(mpss::IsolationLevel::software, key->key_info().isolation_level);
+    EXPECT_FALSE(mpss::has_error()) << "successful create left a stale error: " << mpss::get_error();
 }
 
 // Scenario: every provider fails.
@@ -406,18 +394,6 @@ TEST_F(WindowsKeyCreation, AllProvidersFailReportEveryFailure)
     EXPECT_THAT(error, HasSubstr("TPM Protection"));
     EXPECT_THAT(error, HasSubstr("Virtualization Based Security"));
     EXPECT_THAT(error, HasSubstr("Software Protection"));
-}
-
-// Scenario: an earlier provider sets a thread-local error before a later one succeeds.
-// Expected behavior: the successful create leaves no error behind.
-TEST_F(WindowsKeyCreation, SuccessfulFallbackClearsEarlierProviderError)
-{
-    FailTpmProvider();
-
-    std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
-
-    ASSERT_NE(nullptr, key);
-    EXPECT_FALSE(mpss::has_error()) << "successful create left a stale error: " << mpss::get_error();
 }
 
 // Scenario: the TPM-backed provider creates the key.

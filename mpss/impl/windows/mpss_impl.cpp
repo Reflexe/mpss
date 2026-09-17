@@ -286,20 +286,19 @@ CreateOutcome OutcomeFromStatus(SECURITY_STATUS status)
     return static_cast<SECURITY_STATUS>(NTE_EXISTS) == status ? CreateOutcome::name_taken : CreateOutcome::unavailable;
 }
 
-bool CleanupCreatedKey(NCRYPT_KEY_HANDLE &key_handle, std::string_view name)
+void CleanupCreatedKey(NCRYPT_KEY_HANDLE &key_handle, std::string_view name)
 {
     SECURITY_STATUS status = ::NCryptDeleteKey(key_handle, /* dwFlags */ 0);
     if (ERROR_SUCCESS == status)
     {
         key_handle = 0;
-        return true;
+        return;
     }
 
     ::NCryptFreeObject(key_handle);
     key_handle = 0;
     mpss::utils::log_and_set_error("Failed to delete newly created key '{}' during cleanup with error code {}.", name,
                                    mpss::utils::to_hex(status));
-    return false;
 }
 
 CreateKeyResult CreateKeyInProvider(LPCWSTR provider_name, std::string_view name, mpss::Algorithm algorithm,
