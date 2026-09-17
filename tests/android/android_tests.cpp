@@ -219,48 +219,39 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 
 } // namespace
 
-// Scenario: Android reports StrongBox, Trusted Environment, and Software security levels for mixed isolation.
-// Expected behavior: mixed accepts StrongBox and TEE evidence but rejects software evidence.
-TEST(AndroidIsolationPolicyTest, MixedAcceptsStrongBoxAndTeeButRejectsSoftware)
+// Scenario: Android reports valid, unknown, and invalid platform security levels.
+// Expected behavior: valid values map exactly and invalid values fail closed.
+TEST(AndroidIsolationPolicyTest, SecurityLevelsMapExactlyAndRejectInvalidValues)
 {
     using enum mpss::IsolationLevel;
 
-    const std::optional<mpss::KeyInfo> strongbox = mpss::impl::os::android_key_info_from_security_level(4);
-    const std::optional<mpss::KeyInfo> tee = mpss::impl::os::android_key_info_from_security_level(3);
-    const std::optional<mpss::KeyInfo> software_key_info =
-        mpss::impl::os::android_key_info_from_security_level(1);
+    struct mapping
+    {
+        int security_level;
+        mpss::IsolationLevel isolation_level;
+        const char *storage_description;
+    };
+    static constexpr std::array mappings = {
+        mapping{0, software, "Unknown"},
+        mapping{1, software, "Software"},
+        mapping{2, mixed, "Unknown Secure"},
+        mapping{3, mixed, "Trusted Environment"},
+        mapping{4, hardware, "StrongBox"},
+    };
 
-    ASSERT_TRUE(strongbox.has_value());
-    ASSERT_TRUE(tee.has_value());
-    ASSERT_TRUE(software_key_info.has_value());
-    EXPECT_TRUE(mpss::meets_minimum_isolation(strongbox->isolation_level, mixed));
-    EXPECT_TRUE(mpss::meets_minimum_isolation(tee->isolation_level, mixed));
-    EXPECT_FALSE(mpss::meets_minimum_isolation(software_key_info->isolation_level, mixed));
-}
+    for (const mapping &expected : mappings)
+    {
+        const std::optional<mpss::KeyInfo> actual =
+            mpss::impl::os::android_key_info_from_security_level(expected.security_level);
+        ASSERT_TRUE(actual.has_value());
+        EXPECT_EQ(expected.isolation_level, actual->isolation_level);
+        EXPECT_STREQ(expected.storage_description, actual->storage_description);
+    }
 
-// Scenario: Android reports its two compatibility security levels on older or indeterminate platforms.
-// Expected behavior: Unknown Secure maps to mixed isolation and Unknown maps to software isolation.
-TEST(AndroidIsolationPolicyTest, UnknownSecurityLevelsMapExactly)
-{
-    using enum mpss::IsolationLevel;
-
-    const std::optional<mpss::KeyInfo> unknown_secure = mpss::impl::os::android_key_info_from_security_level(2);
-    const std::optional<mpss::KeyInfo> unknown = mpss::impl::os::android_key_info_from_security_level(0);
-
-    ASSERT_TRUE(unknown_secure.has_value());
-    ASSERT_TRUE(unknown.has_value());
-    EXPECT_EQ(mixed, unknown_secure->isolation_level);
-    EXPECT_STREQ("Unknown Secure", unknown_secure->storage_description);
-    EXPECT_EQ(software, unknown->isolation_level);
-    EXPECT_STREQ("Unknown", unknown->storage_description);
-}
-
-// Scenario: Android security evidence cannot be queried or has an unrecognized platform value.
-// Expected behavior: no isolation properties are produced, so creation and open fail closed.
-TEST(AndroidIsolationPolicyTest, SecurityLevelQueryFailureFailsClosed)
-{
-    EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(-1).has_value());
-    EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(5).has_value());
+    for (const int invalid : {-1, 5})
+    {
+        EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(invalid).has_value());
+    }
 }
 
 // Scenario: normal Android Keystore produces a software P-384 key while mixed isolation is required.
@@ -304,7 +295,7 @@ TEST(AndroidIsolationPolicyTest, UnderqualifiedCreatedKeyIsDeleted)
 
     EXPECT_EQ(nullptr,
               mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, mixed));
-    EXPECT_NE(std::string::npos, mpss::get_error().find("below requested minimum"));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("below the requested minimum isolation"));
 
     const std::optional<bool> persisted = java_key_operation("OpenKey", key_name);
     ASSERT_TRUE(persisted.has_value()) << mpss::get_error();

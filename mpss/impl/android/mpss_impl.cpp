@@ -282,7 +282,7 @@ OpenKeyResult try_open_key(std::string_view name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_isolation)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel)
 {
     if (name.empty())
     {
@@ -295,14 +295,6 @@ std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
     }
-    if (nullptr != result.value &&
-        !mpss::meets_minimum_isolation(result.value->key_info().isolation_level, minimum_isolation))
-    {
-        result.value.reset();
-        mpss::utils::log_and_set_error("Key '{}' does not meet the requested minimum isolation.", name);
-        return nullptr;
-    }
-
     return std::move(result.value);
 }
 
@@ -444,23 +436,6 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
             else
             {
                 mpss::utils::set_error(inspection_error);
-            }
-            return nullptr;
-        }
-
-        if (!mpss::meets_minimum_isolation(key_info->isolation_level, minimum_isolation))
-        {
-            const IsolationLevel actual_isolation = key_info->isolation_level;
-            mpss::utils::log_and_set_error(
-                "Newly created Android key '{}' measured at isolation level {} below requested minimum {}.", name,
-                static_cast<unsigned>(actual_isolation), static_cast<unsigned>(minimum_isolation));
-            const std::string rejection_error = mpss::get_error();
-            if (!delete_android_key(name))
-            {
-                const std::string cleanup_error = mpss::get_error();
-                mpss::utils::log_and_set_error(
-                    "Newly created Android key '{}' was underqualified and cleanup failed: {}; rejection error: {}",
-                    name, cleanup_error, rejection_error);
             }
             return nullptr;
         }
