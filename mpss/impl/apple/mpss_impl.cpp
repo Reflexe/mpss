@@ -137,14 +137,6 @@ std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel minimum_
     {
         mpss::utils::log_debug("Key '{}' not found.", key_name);
     }
-    if (nullptr != result.value &&
-        !mpss::meets_minimum_isolation(result.value->key_info().isolation_level, minimum_isolation))
-    {
-        result.value.reset();
-        mpss::utils::log_and_set_error("Apple key '{}' does not meet the requested minimum isolation.", key_name);
-        return nullptr;
-    }
-
     return std::move(result.value);
 }
 
