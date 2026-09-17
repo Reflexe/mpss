@@ -11,6 +11,27 @@
 namespace mpss_openssl::provider
 {
 
+namespace
+{
+thread_local mpss::IsolationLevel key_load_minimum_isolation = mpss::IsolationLevel::software;
+}
+
+mpss_key_load_isolation_scope::mpss_key_load_isolation_scope(mpss::IsolationLevel minimum_isolation) noexcept
+    : previous_{key_load_minimum_isolation}
+{
+    key_load_minimum_isolation = minimum_isolation;
+}
+
+mpss_key_load_isolation_scope::~mpss_key_load_isolation_scope() noexcept
+{
+    key_load_minimum_isolation = previous_;
+}
+
+mpss::IsolationLevel mpss_key_load_minimum_isolation() noexcept
+{
+    return key_load_minimum_isolation;
+}
+
 bool mpss_build_key_load_reference(std::string_view backend, std::string_view key_name, utils::byte_vector &reference)
 {
     if (key_name.empty())

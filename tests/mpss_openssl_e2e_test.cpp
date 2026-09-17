@@ -94,7 +94,7 @@ class CertificateChainSerializationTest : public ::testing::TestWithParam<const 
 TEST_P(CertificateChainSerializationTest, CertificateChainSerialization)
 {
     const char *mpss_algorithm = GetParam();
-    if (!mpss_is_algorithm_available(mpss_algorithm))
+    if (!mpss_is_algorithm_available(mpss_algorithm, MPSS_ISOLATION_SOFTWARE))
     {
         GTEST_SKIP() << "Algorithm not supported by current backend: " << mpss_algorithm;
     }

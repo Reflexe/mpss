@@ -4,6 +4,7 @@
 #pragma once
 
 #include "mpss-openssl/utils/utils.h"
+#include <mpss/key_info.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -13,6 +14,23 @@ namespace mpss_openssl::provider
 
 // A key reference is a load reference PEM-wrapped under this label.
 inline constexpr const char *mpss_key_reference_pem_label = "MPSS KEY REFERENCE";
+
+// Carries a store minimum across its synchronous object callback without changing reference bytes.
+class mpss_key_load_isolation_scope
+{
+  public:
+    explicit mpss_key_load_isolation_scope(mpss::IsolationLevel minimum_isolation) noexcept;
+    ~mpss_key_load_isolation_scope() noexcept;
+
+    mpss_key_load_isolation_scope(const mpss_key_load_isolation_scope &) = delete;
+    mpss_key_load_isolation_scope &operator=(const mpss_key_load_isolation_scope &) = delete;
+
+  private:
+    mpss::IsolationLevel previous_;
+};
+
+[[nodiscard]]
+mpss::IsolationLevel mpss_key_load_minimum_isolation() noexcept;
 
 // The "load reference" is the opaque byte blob handed to mpss_keymgmt_load via
 // OSSL_OBJECT_PARAM_REFERENCE. It packs the target backend and key name as "<backend>\0<key_name>";
