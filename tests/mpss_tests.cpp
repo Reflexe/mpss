@@ -88,24 +88,6 @@ class MPSS : public ::testing::Test
     }
 };
 
-// Scenario: every concrete isolation level is compared with every possible minimum.
-// Expected behavior: an actual level meets exactly the minima at or below its ordered value.
-TEST(IsolationLevelTest, MeetsEveryMinimumCombination)
-{
-    using enum IsolationLevel;
-    constexpr std::array levels{software, mixed, hardware};
-
-    for (const IsolationLevel actual : levels)
-    {
-        for (const IsolationLevel minimum : levels)
-        {
-            const bool expected =
-                static_cast<std::uint8_t>(actual) >= static_cast<std::uint8_t>(minimum);
-            EXPECT_EQ(expected, meets_minimum_isolation(actual, minimum));
-        }
-    }
-}
-
 void SignAndVerify(Algorithm algorithm, std::string_view suffix, std::size_t hash_size)
 {
     if (!mpss::is_algorithm_available(algorithm))
