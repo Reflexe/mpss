@@ -14,6 +14,22 @@
 namespace mpss_openssl::provider
 {
 
+class mpss_key_load_isolation_scope
+{
+  public:
+    explicit mpss_key_load_isolation_scope(mpss::IsolationLevel minimum_isolation) noexcept;
+    ~mpss_key_load_isolation_scope() noexcept;
+
+    mpss_key_load_isolation_scope(const mpss_key_load_isolation_scope &) = delete;
+    mpss_key_load_isolation_scope &operator=(const mpss_key_load_isolation_scope &) = delete;
+
+  private:
+    mpss::IsolationLevel previous_;
+};
+
+[[nodiscard]]
+mpss::IsolationLevel mpss_key_load_minimum_isolation() noexcept;
+
 struct mpss_key
 {
     std::unique_ptr<mpss::KeyPair> key_pair = nullptr;
@@ -26,7 +42,8 @@ struct mpss_key
     std::optional<std::string> alg_name = std::nullopt;
 
     mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
-             const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy = mpss::KeyPolicy::none);
+             const std::optional<std::string> &mpss_backend, mpss::KeyPolicy creation_policy = mpss::KeyPolicy::none,
+             mpss::IsolationLevel minimum_isolation = mpss::IsolationLevel::unspecified);
 
     ~mpss_key() = default;
 
