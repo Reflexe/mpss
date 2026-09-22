@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "mpss/key_info.h"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -17,6 +18,12 @@ enum class AppleOperationResult
     success,
     invalid_result
 };
+
+[[nodiscard]]
+constexpr bool keychain_meets_minimum(IsolationLevel minimum_isolation) noexcept
+{
+    return mpss::meets_minimum_isolation(IsolationLevel::software, minimum_isolation);
+}
 
 [[nodiscard]]
 AppleOperationResult decode_apple_result(std::int32_t result) noexcept;
