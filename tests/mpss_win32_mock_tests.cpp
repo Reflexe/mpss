@@ -11,6 +11,7 @@
 
 #ifdef _WIN32
 
+#include "mpss/impl/os_backend.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include "mpss/mpss.h"
@@ -167,6 +168,12 @@ class WindowsKeyCreation : public ::testing::Test
     {
         return mpss::KeyPair::Create("mock_win32_key", mpss::Algorithm::ecdsa_secp256r1_sha256, "os",
                                      mpss::KeyPolicy::none, minimum_isolation);
+    }
+
+    static std::unique_ptr<mpss::KeyPair> CreateWindowsKey(mpss::IsolationLevel minimum_isolation)
+    {
+        return mpss::impl::OSBackend{}.create_key("mock_win32_key", mpss::Algorithm::ecdsa_secp256r1_sha256,
+                                                  mpss::KeyPolicy::none, minimum_isolation);
     }
 
     static std::unique_ptr<mpss::KeyPair> OpenOsKey(
@@ -376,39 +383,27 @@ TEST_F(WindowsKeyCreation, AllProvidersFailReportEveryFailure)
     EXPECT_THAT(error, HasSubstr("Software Protection"));
 }
 
-// Scenario: stronger candidates fail for hardware, mixed, and software minimum isolation requests.
-// Expected behavior: each request tries only qualifying candidates, in strongest-first order.
-TEST_F(WindowsKeyCreation, MinimumIsolationFiltersCandidatesBeforeCreation)
+// Scenario: hardware isolation is required, but the TPM provider is unavailable.
+// Expected behavior: the Windows backend fails instead of returning a VBS or software key.
+TEST_F(WindowsKeyCreation, HardwareMinimumDoesNotUseUnderqualifiedFallback)
 {
-    std::string attempts;
-    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
-        .Times(6)
-        .WillRepeatedly([&attempts](NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *out, LPCWSTR, LPCWSTR, DWORD,
-                                    DWORD flags) -> SECURITY_STATUS {
-            if (tpm_provider_handle == provider)
-            {
-                attempts += 'T';
-                return status_not_supported;
-            }
-            if (0 != (flags & require_vbs_flag))
-            {
-                attempts += 'V';
-                return status_not_supported;
-            }
-            attempts += 'S';
-            *out = fake_key_handle;
-            return ERROR_SUCCESS;
-        });
+    FailTpmProvider();
 
-    std::unique_ptr<mpss::KeyPair> hardware = CreateOsKey(mpss::IsolationLevel::hardware);
-    std::unique_ptr<mpss::KeyPair> mixed = CreateOsKey(mpss::IsolationLevel::mixed);
-    std::unique_ptr<mpss::KeyPair> software = CreateOsKey(mpss::IsolationLevel::software);
+    std::unique_ptr<mpss::KeyPair> key = CreateWindowsKey(mpss::IsolationLevel::hardware);
 
-    EXPECT_EQ(nullptr, hardware);
-    EXPECT_EQ(nullptr, mixed);
-    ASSERT_NE(nullptr, software);
-    EXPECT_EQ(mpss::IsolationLevel::software, software->key_info().isolation_level);
-    EXPECT_EQ("TTVTVS", attempts);
+    EXPECT_EQ(nullptr, key);
+}
+
+// Scenario: mixed isolation is required, but neither TPM nor VBS creation succeeds.
+// Expected behavior: the Windows backend fails instead of returning a software key.
+TEST_F(WindowsKeyCreation, MixedMinimumDoesNotUseSoftwareFallback)
+{
+    FailTpmProvider();
+    FailVbsCreate();
+
+    std::unique_ptr<mpss::KeyPair> key = CreateWindowsKey(mpss::IsolationLevel::mixed);
+
+    EXPECT_EQ(nullptr, key);
 }
 
 // Scenario: the TPM-backed provider creates the key.
@@ -502,10 +497,16 @@ TEST_F(WindowsKeyCreation, UnderqualifiedOpenReleasesWithoutDeleting)
     KeyLivesIn(ksp_provider_handle);
     AnswerKeyProperties(Isolation::not_isolated);
     EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(0);
-    EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, fake_key_handle).Times(2).WillRepeatedly(Return(ERROR_SUCCESS));
+    bool handle_released = false;
+    EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, fake_key_handle)
+        .WillRepeatedly([&handle_released](NCRYPT_HANDLE) -> SECURITY_STATUS {
+            handle_released = true;
+            return ERROR_SUCCESS;
+        });
 
     std::unique_ptr<mpss::KeyPair> rejected = OpenOsKey(mpss::IsolationLevel::mixed);
     EXPECT_EQ(nullptr, rejected);
+    EXPECT_TRUE(handle_released);
     EXPECT_THAT(mpss::get_error(), HasSubstr("minimum isolation"));
 
     std::unique_ptr<mpss::KeyPair> reopened = OpenOsKey();
@@ -550,7 +551,7 @@ TEST_F(WindowsKeyCreation, UnderqualifiedNewKeyIsDeletedAndRejected)
 {
     FailTpmProvider();
     AnswerKeyProperties(Isolation::not_isolated);
-    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(1).WillOnce(Return(ERROR_SUCCESS));
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).WillOnce(Return(ERROR_SUCCESS));
 
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey(mpss::IsolationLevel::mixed);
 
@@ -564,7 +565,7 @@ TEST_F(WindowsKeyCreation, UnderqualifiedNewKeyCleanupFailureIsReported)
 {
     FailTpmProvider();
     AnswerKeyProperties(Isolation::not_isolated);
-    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(1).WillOnce(Return(status_failure));
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).WillOnce(Return(status_failure));
 
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey(mpss::IsolationLevel::mixed);
 
@@ -595,7 +596,7 @@ TEST_F(WindowsKeyCreation, VbsCreationWithUnreadableIsolationDeletesTheKeyAndFai
 {
     FailTpmProvider();
     AnswerKeyProperties(Isolation::read_fails);
-    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).Times(1).WillOnce(Return(ERROR_SUCCESS));
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).WillOnce(Return(ERROR_SUCCESS));
 
     std::unique_ptr<mpss::KeyPair> key = CreateOsKey();
 
