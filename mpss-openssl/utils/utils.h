@@ -7,6 +7,7 @@
 #include <memory>
 #include <mpss/mpss.h>
 #include <openssl/types.h>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,24 @@ namespace mpss_openssl::utils
 {
 
 using byte_vector = std::vector<std::byte>;
+
+[[nodiscard]]
+constexpr std::optional<mpss::IsolationLevel> parse_isolation_level(unsigned int value) noexcept
+{
+    switch (value)
+    {
+    case static_cast<unsigned int>(mpss::IsolationLevel::unspecified):
+        return mpss::IsolationLevel::unspecified;
+    case static_cast<unsigned int>(mpss::IsolationLevel::software):
+        return mpss::IsolationLevel::software;
+    case static_cast<unsigned int>(mpss::IsolationLevel::mixed):
+        return mpss::IsolationLevel::mixed;
+    case static_cast<unsigned int>(mpss::IsolationLevel::hardware):
+        return mpss::IsolationLevel::hardware;
+    default:
+        return std::nullopt;
+    }
+}
 
 /**
  * @brief Deleter that releases an object with a compile-time known function.
