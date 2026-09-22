@@ -69,12 +69,14 @@ MPSS_DECOR void clear_error() noexcept;
  * from static capability, in which case a true result means only that the backend implements the
  * algorithm and says nothing about whether its device is attached or usable. The YubiKey backend
  * answers statically and so reports availability with no device present; the operating-system backends
- * probe. Treat a true result as "worth attempting", not as a guarantee that the next call will succeed.
+ * probe. A concrete minimum isolation uses a key probe instead of YubiKey's static answer.
+ * Treat a true result as "worth attempting", not as a guarantee that the next call will succeed.
  *
  * A true result is cached for the remainder of the process; a false one is not, so a transient failure
  * does not become permanent.
  *
  * @param algorithm The signature algorithm to check.
+ * @param minimum_isolation The minimum acceptable key isolation level.
  * @return true if the algorithm is available, false otherwise. @ref has_error is set only when the
  * query could not be dispatched at all, that is, when the algorithm is unknown or no backend could be
  * selected. Once a backend answers, the answer is reported without an error, so a probe that failed
@@ -82,7 +84,8 @@ MPSS_DECOR void clear_error() noexcept;
  * false result is never cached.
  */
 [[nodiscard]]
-MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm,
+                                       IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
 /**
  * @brief Determines whether the given signature algorithm is available in a specific backend.
@@ -91,12 +94,14 @@ MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
  *
  * @param algorithm The signature algorithm to check.
  * @param backend_name The backend to check (e.g., "os", "yubikey").
+ * @param minimum_isolation The minimum acceptable key isolation level.
  * @return true if the algorithm is available, false otherwise. @ref has_error is set only when the
  * query could not be dispatched at all, that is, when the algorithm is unknown or the named backend
  * does not exist. Once the backend answers, the answer is reported without an error.
  */
 [[nodiscard]]
-MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name);
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name,
+                                       IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
 /**
  * @brief Returns all signature algorithms available in the default backend.
@@ -104,10 +109,12 @@ MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view bac
  * Each algorithm is decided by @ref is_algorithm_available(Algorithm) and inherits its meaning of
  * "available".
  *
+ * @param minimum_isolation The minimum acceptable key isolation level.
  * @return A vector of available @ref Algorithm values.
  */
 [[nodiscard]]
-MPSS_DECOR std::vector<Algorithm> get_available_algorithms();
+MPSS_DECOR std::vector<Algorithm>
+get_available_algorithms(IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
 /**
  * @brief Verifies the given signature against the given hash data and public key.
@@ -207,13 +214,15 @@ class MPSS_DECOR KeyPair
      * control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] minimum_isolation The minimum acceptable key isolation level.
      * @return Key pair if the key pair was created successfully, a null pointer otherwise.
      * @note The name must be unique. If a key pair with the same name already exists, the
      * function will return a null pointer.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
     /**
      * @brief Creates a new key pair using a specific backend.
@@ -222,31 +231,37 @@ class MPSS_DECOR KeyPair
      * @param[in] algorithm The signature algorithm to use.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
      * @param[in] policy Backend-specific key policy. Defaults to KeyPolicy::none (use env vars / backend defaults).
+     * @param[in] minimum_isolation The minimum acceptable key isolation level.
      * @return Key pair if created successfully, nullptr otherwise.
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
-                                           KeyPolicy policy = KeyPolicy::none);
+                                           KeyPolicy policy = KeyPolicy::none,
+                                           IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
     /**
      * @brief Opens the key pair with the given name.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
      * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
+     * @param[in] minimum_isolation The minimum acceptable key isolation level.
      * @return Key pair instance if the key pair was opened successfully, a null pointer
      * otherwise.
      */
     [[nodiscard]]
-    static std::unique_ptr<KeyPair> Open(std::string_view name);
+    static std::unique_ptr<KeyPair> Open(std::string_view name,
+                                         IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
     /**
      * @brief Opens the key pair with the given name using a specific backend.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
      * (0x20-0x7E); control characters, embedded NUL, and non-ASCII bytes are rejected.
      * @param[in] backend_name The backend to use (e.g., "os", "yubikey").
+     * @param[in] minimum_isolation The minimum acceptable key isolation level.
      * @return Key pair if opened successfully, nullptr otherwise.
      */
     [[nodiscard]]
-    static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name);
+    static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name,
+                                         IsolationLevel minimum_isolation = IsolationLevel::unspecified);
 
     /**
      * @brief Deletes the key pair with the given name from the safe storage.
@@ -323,6 +338,7 @@ class MPSS_DECOR KeyPair
     // NOLINTEND(*-non-private-member-variables-in-classes)
 
     KeyPair(Algorithm algorithm, bool hardware_backed, const char *storage_description);
+    KeyPair(Algorithm algorithm, IsolationLevel isolation_level, const char *storage_description);
 
     // Non-virtual interface: the public operations above clear the thread-local last-error on
     // entry and validate inputs, then dispatch to these backend-specific implementations.
@@ -336,6 +352,9 @@ class MPSS_DECOR KeyPair
 
     [[nodiscard]]
     virtual std::size_t do_extract_key(std::span<std::byte> public_key) const = 0;
+
+  private:
+    KeyPair(Algorithm algorithm, KeyInfo key_info);
 };
 
 } // namespace mpss
