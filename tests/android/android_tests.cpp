@@ -3,6 +3,7 @@
 
 #include "mpss/impl/android/JNIHelper.h"
 #include "mpss/impl/android/JNIObject.h"
+#include "mpss/impl/android/android_keypair.h"
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/log.h"
 #include "mpss/mpss.h"
@@ -217,6 +218,112 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
 }
 
 } // namespace
+
+// Scenario: Android reports valid, unknown, and invalid platform security levels.
+// Expected behavior: valid values map exactly and invalid values fail closed.
+TEST(AndroidIsolationPolicyTest, SecurityLevelsMapExactlyAndRejectInvalidValues)
+{
+    using enum mpss::IsolationLevel;
+
+    struct mapping
+    {
+        int security_level;
+        mpss::IsolationLevel isolation_level;
+        const char *storage_description;
+    };
+    static constexpr std::array mappings = {
+        mapping{0, software, "Unknown"},     mapping{1, software, "Software"},
+        mapping{2, mixed, "Unknown Secure"}, mapping{3, mixed, "Trusted Environment"},
+        mapping{4, hardware, "StrongBox"},
+    };
+
+    for (const mapping &expected : mappings)
+    {
+        const std::optional<mpss::KeyInfo> actual =
+            mpss::impl::os::android_key_info_from_security_level(expected.security_level);
+        ASSERT_TRUE(actual.has_value());
+        EXPECT_EQ(expected.isolation_level, actual->isolation_level);
+        EXPECT_STREQ(expected.storage_description, actual->storage_description);
+    }
+
+    for (const int invalid : {-1, 5})
+    {
+        EXPECT_FALSE(mpss::impl::os::android_key_info_from_security_level(invalid).has_value());
+    }
+}
+
+// Scenario: normal Android Keystore produces a software P-384 key while mixed isolation is required.
+// Expected behavior: the underqualified newly created key is deleted and never returned.
+TEST(AndroidIsolationPolicyTest, UnderqualifiedCreatedKeyIsDeleted)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    const std::string probe_name = "test_android_underqualified_create_probe";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(probe_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(probe_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+    std::unique_ptr<mpss::KeyPair> probe =
+        mpss::KeyPair::Create(probe_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, software);
+    ASSERT_NE(nullptr, probe) << mpss::get_error();
+    if (software != probe->key_info().isolation_level)
+    {
+        ASSERT_TRUE(probe->delete_key());
+        GTEST_SKIP() << "Normal Android Keystore is isolated above software on this device.";
+    }
+    ASSERT_TRUE(probe->delete_key());
+
+    const std::string key_name = "test_android_underqualified_create";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, mixed));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("below the requested minimum isolation"));
+
+    const std::optional<bool> persisted = java_key_operation("OpenKey", key_name);
+    ASSERT_TRUE(persisted.has_value()) << mpss::get_error();
+    EXPECT_FALSE(*persisted);
+}
+
+// Scenario: hardware isolation is requested for P-384, which StrongBox cannot create.
+// Expected behavior: creation fails without using or persisting a normal Android Keystore key.
+TEST(AndroidIsolationPolicyTest, HardwareP384DoesNotFallbackOrPersist)
+{
+    using enum mpss::Algorithm;
+    using enum mpss::IsolationLevel;
+
+    const std::string key_name = "test_android_hardware_minimum";
+    if (std::unique_ptr<mpss::KeyPair> existing = mpss::KeyPair::Open(key_name); nullptr != existing)
+    {
+        ASSERT_TRUE(existing->delete_key());
+    }
+    SCOPE_GUARD({
+        if (std::unique_ptr<mpss::KeyPair> cleanup = mpss::KeyPair::Open(key_name); nullptr != cleanup)
+        {
+            cleanup->delete_key();
+        }
+    });
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(key_name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, hardware));
+    const std::optional<bool> persisted = java_key_operation("OpenKey", key_name);
+    ASSERT_TRUE(persisted.has_value()) << mpss::get_error();
+    EXPECT_FALSE(*persisted);
+}
 
 TEST(AndroidSecurityTest, StandaloneVerifyRejectsMismatchedAlgorithm)
 {
