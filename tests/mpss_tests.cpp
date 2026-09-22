@@ -9,7 +9,9 @@
 #include "tests/test_key_names.h"
 #if defined(__APPLE__) && !defined(MPSS_CORE_IS_SHARED)
 #include "mpss/impl/apple/apple_api_wrapper.h"
+#include "mpss/impl/apple/apple_keychain_keypair.h"
 #include "mpss/impl/apple/apple_result.h"
+#include "mpss/impl/apple/apple_se_keypair.h"
 #include "mpss/impl/apple/apple_se_wrapper.h"
 #include "mpss/impl/apple/apple_utils.h"
 #endif
@@ -28,6 +30,8 @@
 #ifdef MPSS_BACKEND_YUBIKEY
 #include "mpss/impl/yubikey/yk_piv.h"
 #ifndef MPSS_CORE_IS_SHARED
+#include "mpss/impl/yubikey/yk_backend.h"
+#include "mpss/impl/yubikey/yk_keypair.h"
 #include "mpss/impl/yubikey/yk_utils.h"
 #endif
 #endif
@@ -729,6 +733,29 @@ TEST(AppleErrorPropagation, WrapperErrorsAreConsumedOnce)
     EXPECT_NE(std::string::npos, unicode_error.find(unicode_key_name));
 }
 
+// Scenario: Apple evaluates which minimums permit the software Keychain candidate.
+// Expected behavior: only unspecified and software can use Keychain; mixed and hardware cannot.
+TEST(IsolationLevelTest, AppleKeychainCandidateMatchesMinimum)
+{
+    EXPECT_TRUE(mpss::impl::os::utils::keychain_meets_minimum(IsolationLevel::unspecified));
+    EXPECT_TRUE(mpss::impl::os::utils::keychain_meets_minimum(IsolationLevel::software));
+    EXPECT_FALSE(mpss::impl::os::utils::keychain_meets_minimum(IsolationLevel::mixed));
+    EXPECT_FALSE(mpss::impl::os::utils::keychain_meets_minimum(IsolationLevel::hardware));
+}
+
+// Scenario: Apple key-pair implementations expose their disjoint storage classifications.
+// Expected behavior: Keychain reports software and Secure Enclave reports hardware with matching legacy flags.
+TEST(IsolationLevelTest, AppleMetadataUsesConcreteIsolation)
+{
+    mpss::impl::os::AppleKeychainKeyPair keychain{"keychain-metadata", ecdsa_secp384r1_sha384};
+    mpss::impl::os::AppleSEKeyPair secure_enclave{"secure-enclave-metadata", ecdsa_secp256r1_sha256};
+
+    EXPECT_EQ(IsolationLevel::software, keychain.key_info().isolation_level);
+    EXPECT_FALSE(keychain.key_info().is_hardware_backed);
+    EXPECT_EQ(IsolationLevel::hardware, secure_enclave.key_info().isolation_level);
+    EXPECT_TRUE(secure_enclave.key_info().is_hardware_backed);
+}
+
 TEST_F(MPSS, DISABLED_SecureEnclaveUserPresenceInteractiveSigning)
 {
     if (!MPSS_SE_SecureEnclaveIsSupported())
@@ -829,6 +856,28 @@ TEST_F(MPSS, VerificationErrorSurvivesKeyDestruction)
     handle.reset();
     EXPECT_EQ(verification_error, mpss::get_error());
     DeleteKey(key_name);
+}
+#endif
+
+#if defined(MPSS_BACKEND_YUBIKEY) && !defined(MPSS_CORE_IS_SHARED)
+// Scenario: YubiKey capability and metadata are evaluated at each concrete minimum.
+// Expected behavior: its single hardware PIV mode satisfies software, mixed, and hardware.
+TEST(IsolationLevelTest, YubiKeyHardwareSatisfiesEveryMinimum)
+{
+    constexpr std::array minimums{
+        IsolationLevel::software,
+        IsolationLevel::mixed,
+        IsolationLevel::hardware,
+    };
+    mpss::impl::yubikey::YubiKeyBackend backend;
+    mpss::impl::yubikey::YubiKeyKeyPair key{"metadata", ecdsa_secp256r1_sha256, 0x9A, 1};
+
+    EXPECT_EQ(IsolationLevel::hardware, key.key_info().isolation_level);
+    EXPECT_TRUE(key.key_info().is_hardware_backed);
+    for (const IsolationLevel minimum : minimums)
+    {
+        EXPECT_TRUE(backend.is_algorithm_available(ecdsa_secp256r1_sha256, minimum));
+    }
 }
 #endif
 
