@@ -88,12 +88,17 @@ const char *YubiKeyBackend::name() const
     return "yubikey";
 }
 
-bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm) const
+bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm, IsolationLevel minimum_isolation) const
 {
+    if (IsolationLevel::unspecified != minimum_isolation)
+    {
+        return Backend::is_algorithm_available(algorithm, minimum_isolation);
+    }
     return 0 != utils::mpss_to_yk_algorithm(algorithm);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy) const
+std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                                 IsolationLevel /*minimum_isolation*/) const
 {
     const std::string key_name{name};
     if (key_name.empty())
@@ -244,7 +249,7 @@ std::unique_ptr<KeyPair> YubiKeyBackend::create_key(std::string_view name, Algor
     return std::make_unique<YubiKeyKeyPair>(name, algorithm, slot, serial);
 }
 
-std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name) const
+std::unique_ptr<KeyPair> YubiKeyBackend::open_key(std::string_view name, IsolationLevel /*minimum_isolation*/) const
 {
     const std::string key_name{name};
     if (key_name.empty())

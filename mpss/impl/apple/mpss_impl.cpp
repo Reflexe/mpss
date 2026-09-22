@@ -86,7 +86,7 @@ OpenKeyResult try_open_key(const std::string &key_name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel /*minimum_isolation*/)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};
@@ -105,7 +105,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                  IsolationLevel /*minimum_isolation*/)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};

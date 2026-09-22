@@ -276,7 +276,7 @@ OpenKeyResult try_open_key(std::string_view name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, IsolationLevel /*minimum_isolation*/)
 {
     if (name.empty())
     {
@@ -293,7 +293,8 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                  IsolationLevel /*minimum_isolation*/)
 {
     if (name.empty())
     {

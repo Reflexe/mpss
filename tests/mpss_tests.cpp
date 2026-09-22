@@ -574,6 +574,11 @@ class RecoveringKeyPair : public KeyPair
     {
     }
 
+    RecoveringKeyPair(bool succeed, IsolationLevel isolation_level)
+        : KeyPair(ecdsa_secp256r1_sha256, isolation_level, "test"), succeed_(succeed)
+    {
+    }
+
     void release_key() override
     {
     }
@@ -610,6 +615,28 @@ class RecoveringKeyPair : public KeyPair
     bool succeed_;
 };
 } // namespace
+
+// Scenario: compare the ordered isolation levels against different minimums.
+// Expected behavior: unspecified is compatible only with itself, and concrete levels are ordered.
+TEST(IsolationLevelTest, Ordering)
+{
+    using enum IsolationLevel;
+    EXPECT_TRUE(meets_minimum_isolation(unspecified, unspecified));
+    EXPECT_FALSE(meets_minimum_isolation(unspecified, software));
+    EXPECT_TRUE(meets_minimum_isolation(software, unspecified));
+    EXPECT_TRUE(meets_minimum_isolation(hardware, mixed));
+    EXPECT_FALSE(meets_minimum_isolation(mixed, hardware));
+}
+
+// Scenario: construct key metadata through the legacy and explicit-level constructors.
+// Expected behavior: the legacy level remains unspecified and mixed maps to the legacy hardware flag.
+TEST(KeyPairTest, ConstructorMetadata)
+{
+    EXPECT_EQ(IsolationLevel::unspecified, RecoveringKeyPair{true}.key_info().isolation_level);
+    RecoveringKeyPair key_pair{true, IsolationLevel::mixed};
+    EXPECT_EQ(IsolationLevel::mixed, key_pair.key_info().isolation_level);
+    EXPECT_TRUE(key_pair.key_info().is_hardware_backed);
+}
 
 TEST(ErrorContract, SuccessDiscardsRecoveredInternalError)
 {
