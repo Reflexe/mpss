@@ -1481,6 +1481,116 @@ TEST_F(MPSS, DISABLED_SecureEnclaveUserPresenceInteractiveSigning)
 #endif
 
 #ifdef __APPLE__
+#ifndef MPSS_CORE_IS_SHARED
+// Scenario: a P-384 key is requested at either minimum that excludes software storage.
+// Expected behavior: creation fails without leaving a Keychain key under the requested name.
+TEST_F(MPSS, AppleStrongMinimumNeverCreatesKeychainFallback)
+{
+    for (const auto minimum : {MinimumIsolation::mixed, MinimumIsolation::hardware})
+    {
+        const std::string name = test_key_name("mpss_apple_strong_unsupported");
+        DeleteKey(name);
+        EXPECT_EQ(nullptr, KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp384r1_sha384,
+                                           KeyPolicy::none, minimum));
+        SCOPE_GUARD(DeleteKey(name));
+        EXPECT_EQ(nullptr, KeyPair::Open(KeyLocation{.backend_name = "os", .name = name}));
+    }
+}
+
+// Scenario: a P-256 key is requested with a minimum above software on a device with Secure Enclave.
+// Expected behavior: both mixed and hardware requests create only Secure Enclave keys.
+TEST_F(MPSS, AppleStrongMinimumUsesSecureEnclave)
+{
+    if (!MPSS_SE_SecureEnclaveIsSupported() ||
+        !mpss::is_algorithm_available(ecdsa_secp256r1_sha256, "os", MinimumIsolation::hardware))
+    {
+        GTEST_SKIP() << "Secure Enclave key creation not available";
+    }
+    for (const auto minimum : {MinimumIsolation::mixed, MinimumIsolation::hardware})
+    {
+        const std::string name = test_key_name("mpss_apple_strong_p256");
+        DeleteKey(name);
+        SCOPE_GUARD(DeleteKey(name));
+        auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp256r1_sha256,
+                                   KeyPolicy::none, minimum);
+        ASSERT_NE(nullptr, key);
+        EXPECT_EQ(StorageTier::apple_secure_enclave, key->key_info().storage_tier);
+        key.reset();
+        auto reopened = KeyPair::Open(KeyLocation{.backend_name = "os", .name = name}, minimum);
+        ASSERT_NE(nullptr, reopened);
+        EXPECT_EQ(StorageTier::apple_secure_enclave, reopened->key_info().storage_tier);
+    }
+}
+
+// Scenario: a P-256 software-minimum request runs with or without an available Secure Enclave.
+// Expected behavior: the reported enclave is used exclusively; otherwise Keychain is used.
+TEST_F(MPSS, AppleSoftwareMinimumPreservesStorageChoice)
+{
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256, "os", MinimumIsolation::software))
+    {
+        GTEST_SKIP() << "P-256 key creation not available";
+    }
+    const std::string name = test_key_name("mpss_apple_software_p256");
+    DeleteKey(name);
+    SCOPE_GUARD(DeleteKey(name));
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp256r1_sha256, KeyPolicy::none,
+                               MinimumIsolation::software);
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(MPSS_SE_SecureEnclaveIsSupported() ? StorageTier::apple_secure_enclave : StorageTier::apple_keychain,
+              key->key_info().storage_tier);
+}
+
+// Scenario: a persisted Keychain key is opened at a hardware minimum.
+// Expected behavior: only the opened runtime hold is released; the stored key remains available.
+TEST_F(MPSS, AppleRejectedOpenPreservesPersistedKey)
+{
+    const std::string name = test_key_name("mpss_apple_keychain_rejected_open");
+    DeleteKey(name);
+    SCOPE_GUARD(DeleteKey(name));
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp384r1_sha384, KeyPolicy::none,
+                               MinimumIsolation::software);
+    ASSERT_NE(nullptr, key);
+    if (key->key_info().storage_tier != StorageTier::apple_keychain)
+    {
+        GTEST_SKIP() << "No Keychain-backed key available";
+    }
+    key.reset();
+    EXPECT_EQ(nullptr, KeyPair::Open(KeyLocation{.backend_name = "os", .name = name}, MinimumIsolation::hardware));
+    auto reopened = KeyPair::Open(KeyLocation{.backend_name = "os", .name = name}, MinimumIsolation::software);
+    ASSERT_NE(nullptr, reopened);
+    EXPECT_EQ(StorageTier::apple_keychain, reopened->key_info().storage_tier);
+}
+
+// Scenario: availability is queried for software, hardware, then software again.
+// Expected behavior: hardware excludes P-384 without changing the software result.
+TEST(AppleAvailability, MinimumDoesNotLeakAcrossQueries)
+{
+    const bool software = mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", MinimumIsolation::software);
+    EXPECT_FALSE(mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", MinimumIsolation::hardware));
+    EXPECT_EQ(software, mpss::is_algorithm_available(ecdsa_secp384r1_sha384, "os", MinimumIsolation::software));
+}
+
+// Scenario: user presence is requested with a hardware minimum.
+// Expected behavior: P-256 uses Secure Enclave; unsupported algorithms never fall back.
+TEST_F(MPSS, AppleStrongMinimumPreservesUserPresencePolicy)
+{
+    const std::string name = test_key_name("mpss_apple_user_presence_minimum");
+    DeleteKey(name);
+    SCOPE_GUARD(DeleteKey(name));
+    const auto policy = KeyPolicy::apple_secure_enclave_user_presence;
+    EXPECT_EQ(nullptr, KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp384r1_sha384, policy,
+                                       MinimumIsolation::software));
+    if (!MPSS_SE_SecureEnclaveIsSupported())
+    {
+        GTEST_SKIP() << "Secure Enclave not available";
+    }
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name}, ecdsa_secp256r1_sha256, policy,
+                               MinimumIsolation::hardware);
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(StorageTier::apple_secure_enclave, key->key_info().storage_tier);
+}
+#endif
+
 TEST_F(MPSS, SecureEnclaveUserPresenceFailsWithoutSupportedKey)
 {
     const std::string key_name = test_key_name("mpss_apple_user_presence_unsupported_test");
@@ -2084,6 +2194,22 @@ TEST(KeyPolicyTest, CombineAndExtractAllFields)
 }
 
 #ifdef MPSS_BACKEND_YUBIKEY
+// Scenario: YubiKey's fixed hardware tier is queried at every valid minimum in changing order.
+// Expected behavior: static capability remains identical across levels and invalid minima fail closed.
+TEST(YubiKeyAvailability, MinimumIsStaticAndIndependentOfPriorQueries)
+{
+    for (const auto algorithm : {ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384})
+    {
+        const bool supported = mpss::is_algorithm_available(algorithm, "yubikey");
+        for (const auto minimum : {MinimumIsolation::software, MinimumIsolation::hardware, MinimumIsolation::mixed,
+                                   MinimumIsolation::software})
+        {
+            EXPECT_EQ(supported, mpss::is_algorithm_available(algorithm, "yubikey", minimum));
+        }
+        EXPECT_FALSE(mpss::is_algorithm_available(algorithm, "yubikey", static_cast<MinimumIsolation>(255)));
+    }
+}
+
 TEST_F(MPSS, YubiKeyBackendRejectsUnsupportedKeyPolicy)
 {
     const std::string key_name = test_key_name("mpss_yubikey_unsupported_policy_test");
@@ -2530,6 +2656,34 @@ class YubiKeySlotBinding : public ::testing::Test
     std::uint32_t serial_ = 0;
     ScopedEnvironmentVariable serial_env_{"MPSS_YUBIKEY_SERIAL"};
 };
+
+// Scenario: a connected YubiKey creates a PIV key with each valid minimum in turn.
+// Expected behavior: every creation and reopen reports the same hardware PIV tier.
+TEST_F(YubiKeySlotBinding, AllMinimumsCreateAndOpenHardwareKeys)
+{
+    for (const auto minimum : {MinimumIsolation::software, MinimumIsolation::mixed, MinimumIsolation::hardware})
+    {
+        const std::string name = test_key_name("mpss_yk_minimum");
+        const KeyLocation location{.backend_name = "yubikey", .name = name, .device_id = std::to_string(serial_)};
+        ASSERT_TRUE(KeyPair::Delete(location)) << mpss::get_error();
+        SCOPE_GUARD((void)KeyPair::Delete(location));
+        auto key = KeyPair::Create(location, ecdsa_secp256r1_sha256, KeyPolicy::none, minimum);
+        if (!key && yubikey_cannot_create_keys())
+        {
+            GTEST_SKIP() << "YubiKey cannot create keys: " << mpss::get_error();
+        }
+        ASSERT_NE(nullptr, key) << mpss::get_error();
+        EXPECT_EQ(StorageTier::yubikey_piv, key->key_info().storage_tier);
+        key.reset();
+        for (const auto open_minimum :
+             {MinimumIsolation::software, MinimumIsolation::mixed, MinimumIsolation::hardware})
+        {
+            auto reopened = KeyPair::Open(location, open_minimum);
+            ASSERT_NE(nullptr, reopened) << mpss::get_error();
+            EXPECT_EQ(StorageTier::yubikey_piv, reopened->key_info().storage_tier);
+        }
+    }
+}
 
 // A slot label describes the key held in that slot. Replacing the key without rewriting the label
 // leaves a slot whose name no longer matches its contents, and that name must not resolve.
