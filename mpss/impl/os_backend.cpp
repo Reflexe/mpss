@@ -21,7 +21,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 std::unique_ptr<KeyPair> open_key(std::string_view name);
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum);
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(__APPLE__)
 [[nodiscard]]
 bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum);
 #endif
@@ -71,7 +71,7 @@ std::unique_ptr<KeyPair> OSBackend::open_key(const KeyLocation &location,
     return accepts_location(location) ? os::open_key(location.name, minimum) : nullptr;
 }
 
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(__APPLE__)
 bool OSBackend::is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum) const
 {
     if (minimum == MinimumIsolation::software)
