@@ -87,6 +87,10 @@ MPSS_DECOR void clear_error() noexcept;
 [[nodiscard]]
 MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
 
+/** @brief Checks default-backend availability with a requested minimum protection level. */
+[[nodiscard]]
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum);
+
 /**
  * @brief Determines whether the given signature algorithm is available in a specific backend.
  *
@@ -101,6 +105,10 @@ MPSS_DECOR bool is_algorithm_available(Algorithm algorithm);
 [[nodiscard]]
 MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name);
 
+/** @brief Checks named-backend availability with a requested minimum protection level. */
+[[nodiscard]]
+MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name, MinimumIsolation minimum);
+
 /**
  * @brief Returns all signature algorithms available in the default backend.
  *
@@ -111,6 +119,10 @@ MPSS_DECOR bool is_algorithm_available(Algorithm algorithm, std::string_view bac
  */
 [[nodiscard]]
 MPSS_DECOR std::vector<Algorithm> get_available_algorithms();
+
+/** @brief Lists algorithms available with a requested minimum protection level. */
+[[nodiscard]]
+MPSS_DECOR std::vector<Algorithm> get_available_algorithms(MinimumIsolation minimum);
 
 /**
  * @brief Verifies the given signature against the given hash data and public key.
@@ -255,9 +267,18 @@ class MPSS_DECOR KeyPair
     static std::unique_ptr<KeyPair> Create(const KeyLocation &location, Algorithm algorithm,
                                            KeyPolicy policy = KeyPolicy::none);
 
+    /** @brief Creates a key at a location only when the backend can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                           MinimumIsolation minimum);
+
     /** @brief Opens a location using the same device-selection rules as @ref Create. */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Open(const KeyLocation &location);
+
+    /** @brief Opens a key at a location only when the backend can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Open(const KeyLocation &location, MinimumIsolation minimum);
 
     /**
      * @brief Opens only the referenced algorithm and public key, without signing or prompting.
@@ -269,6 +290,10 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Open(const KeyReference &reference);
+
+    /** @brief Opens a referenced key with both its identity and requested minimum enforced. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Open(const KeyReference &reference, MinimumIsolation minimum);
 
     /** @brief Clears every key under the name in the selected storage, without falling back. */
     [[nodiscard]]
@@ -288,6 +313,11 @@ class MPSS_DECOR KeyPair
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm,
                                            KeyPolicy policy = KeyPolicy::none);
 
+    /** @brief Creates using the default backend only if it can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                           MinimumIsolation minimum);
+
     /**
      * @brief Creates a new key pair using a specific backend.
      * @param[in] name The name of the key pair. Must be 1-64 printable ASCII characters (0x20-0x7E);
@@ -301,6 +331,11 @@ class MPSS_DECOR KeyPair
     static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                            KeyPolicy policy = KeyPolicy::none);
 
+    /** @brief Creates using the named backend only if it can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                           KeyPolicy policy, MinimumIsolation minimum);
+
     /**
      * @brief Opens the key pair with the given name.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
@@ -311,6 +346,10 @@ class MPSS_DECOR KeyPair
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Open(std::string_view name);
 
+    /** @brief Opens using the default backend only if it can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Open(std::string_view name, MinimumIsolation minimum);
+
     /**
      * @brief Opens the key pair with the given name using a specific backend.
      * @param[in] name The name of the key pair to open. Must be 1-64 printable ASCII characters
@@ -320,6 +359,11 @@ class MPSS_DECOR KeyPair
      */
     [[nodiscard]]
     static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name);
+
+    /** @brief Opens using the named backend only if it can enforce the requested minimum. */
+    [[nodiscard]]
+    static std::unique_ptr<KeyPair> Open(std::string_view name, std::string_view backend_name,
+                                         MinimumIsolation minimum);
 
     /**
      * @brief Deletes every key stored under the given name.

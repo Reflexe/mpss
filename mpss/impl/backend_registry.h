@@ -108,13 +108,31 @@ class Backend
      */
     [[nodiscard]]
     virtual bool is_algorithm_available(Algorithm algorithm) const;
+
+    // New entry points leave the existing virtual interface intact for callers compiled against it.
+    // Backends that have not implemented minimum-aware selection refuse stricter requests.
+    [[nodiscard]]
+    virtual std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                                MinimumIsolation minimum) const;
+    [[nodiscard]]
+    virtual std::unique_ptr<KeyPair> open_key(const KeyLocation &location,
+                                              std::span<const std::byte> expected_public_key,
+                                              MinimumIsolation minimum) const;
+    [[nodiscard]]
+    virtual bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum) const;
 };
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy);
+[[nodiscard]]
+std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum);
 
 [[nodiscard]]
 std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key = {});
+[[nodiscard]]
+std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key,
+                                  MinimumIsolation minimum);
 
 [[nodiscard]]
 bool delete_key(const KeyLocation &location);
@@ -133,10 +151,14 @@ bool verify(std::string_view backend_name, std::span<const std::byte> hash, std:
 
 [[nodiscard]]
 bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm);
+[[nodiscard]]
+bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, MinimumIsolation minimum);
 
 // Default-backend overloads that resolve the default backend and delegate to the above.
 [[nodiscard]]
 bool is_algorithm_available(Algorithm algorithm);
+[[nodiscard]]
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum);
 
 [[nodiscard]]
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

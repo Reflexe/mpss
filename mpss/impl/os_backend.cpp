@@ -15,7 +15,12 @@ namespace os
 [[nodiscard]]
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy);
 [[nodiscard]]
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum);
+[[nodiscard]]
 std::unique_ptr<KeyPair> open_key(std::string_view name);
+[[nodiscard]]
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum);
 [[nodiscard]]
 bool delete_key(std::string_view name);
 [[nodiscard]]
@@ -47,6 +52,19 @@ std::unique_ptr<KeyPair> OSBackend::open_key(const KeyLocation &location,
                                              std::span<const std::byte> /*expected_public_key*/) const
 {
     return accepts_location(location) ? os::open_key(location.name) : nullptr;
+}
+
+std::unique_ptr<KeyPair> OSBackend::create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                               MinimumIsolation minimum) const
+{
+    return accepts_location(location) ? os::create_key(location.name, algorithm, policy, minimum) : nullptr;
+}
+
+std::unique_ptr<KeyPair> OSBackend::open_key(const KeyLocation &location,
+                                             std::span<const std::byte> /*expected_public_key*/,
+                                             MinimumIsolation minimum) const
+{
+    return accepts_location(location) ? os::open_key(location.name, minimum) : nullptr;
 }
 
 bool OSBackend::delete_key(const KeyLocation &location) const

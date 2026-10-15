@@ -341,6 +341,16 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return open_key(name);
+    }
+    mpss::utils::log_and_set_error("Android backend cannot enforce the requested minimum isolation.");
+    return nullptr;
+}
+
 bool delete_key(std::string_view name)
 {
     if (name.empty())
@@ -582,6 +592,17 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
                            get_storage_tier_info(storage_tier).description);
     handed_to_caller = true;
     return std::make_unique<AndroidKeyPair>(algorithm, name, storage_tier, generation);
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return create_key(name, algorithm, policy);
+    }
+    mpss::utils::log_and_set_error("Android backend cannot enforce the requested minimum isolation.");
+    return nullptr;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
