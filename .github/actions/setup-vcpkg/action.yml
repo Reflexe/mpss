@@ -1,0 +1,20 @@
+name: Set up vcpkg
+description: Shallow-fetch the pinned vcpkg baseline (vcpkg.json builtin-baseline) and bootstrap it; exports VCPKG_ROOT.
+runs:
+  using: composite
+  steps:
+    - name: Bootstrap vcpkg (pinned baseline, shallow)
+      shell: bash
+      run: |
+        set -euo pipefail
+        BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+        git init -q vcpkg
+        git -C vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+        git -C vcpkg fetch --depth 1 origin "$BASELINE"
+        git -C vcpkg checkout -q FETCH_HEAD
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+        else
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+        fi
+        echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
