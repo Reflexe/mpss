@@ -8,7 +8,11 @@
 #include "mpss/impl/apple/apple_se_wrapper.h"
 #include "mpss/impl/apple/apple_utils.h"
 #include "mpss/impl/key_probe.h"
+#include "mpss/utils/scope_guard.h"
 #include "mpss/utils/utilities.h"
+#include <format>
+#include <random>
+#include <vector>
 
 namespace mpss::impl::os
 {
@@ -63,7 +67,7 @@ bool keychain_tier_also_holds(const std::string &key_name, bool &indeterminate)
     return false;
 }
 
-OpenKeyResult try_open_key(const std::string &key_name)
+OpenKeyResult try_open_key(const std::string &key_name, bool open_keychain = true)
 {
     using enum utils::AppleOperationResult;
 
@@ -106,6 +110,17 @@ OpenKeyResult try_open_key(const std::string &key_name)
             utils::report_invalid_apple_result("Secure Enclave", "open key", raw_result);
             return {.status = KeyProbeStatus::operational_error, .value = nullptr};
         }
+    }
+
+    if (!open_keychain)
+    {
+        bool indeterminate = false;
+        const bool exists = keychain_tier_also_holds(key_name, indeterminate);
+        if (indeterminate)
+        {
+            return {.status = KeyProbeStatus::operational_error, .value = nullptr};
+        }
+        return {.status = exists ? KeyProbeStatus::found : KeyProbeStatus::not_found, .value = nullptr};
     }
 
     int bit_size = 0;
@@ -153,13 +168,22 @@ OpenKeyResult try_open_key(const std::string &key_name)
 
 } // namespace
 
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum);
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum);
+
 std::unique_ptr<KeyPair> open_key(std::string_view name)
+{
+    return open_key(name, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
 {
     mpss::utils::clear_error();
     const std::string key_name{name};
-    if (key_name.empty())
+    if (key_name.empty() || !is_valid_minimum_isolation(minimum))
     {
-        mpss::utils::log_and_set_error("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Invalid Apple key name or minimum isolation.");
         return nullptr;
     }
 
@@ -168,18 +192,13 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     {
         mpss::utils::log_debug("Key '{}' not found.", key_name);
     }
-
-    return std::move(result.value);
-}
-
-std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
-{
-    if (minimum == MinimumIsolation::software)
+    if (result.value && !meets_minimum_isolation(result.value->key_info().storage_tier, minimum))
     {
-        return open_key(name);
+        result.value->release_key();
+        mpss::utils::log_and_set_error("Key '{}' does not meet the requested minimum isolation.", key_name);
+        return nullptr;
     }
-    mpss::utils::log_and_set_error("Apple backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+    return std::move(result.value);
 }
 
 bool delete_key(std::string_view name)
@@ -197,11 +216,17 @@ bool delete_key(std::string_view name)
 
 std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
+    return create_key(name, algorithm, policy, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
+{
     mpss::utils::clear_error();
     const std::string key_name{name};
-    if (key_name.empty())
+    if (key_name.empty() || !is_valid_minimum_isolation(minimum))
     {
-        mpss::utils::log_and_set_error("Key name cannot be empty.");
+        mpss::utils::log_and_set_error("Invalid Apple key name or minimum isolation.");
         return nullptr;
     }
 
@@ -228,7 +253,7 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    OpenKeyResult existing_key = try_open_key(key_name);
+    OpenKeyResult existing_key = try_open_key(key_name, minimum == MinimumIsolation::software);
     if (KeyProbeStatus::operational_error == existing_key.status)
     {
         return nullptr;
@@ -256,6 +281,13 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
+    if (minimum != MinimumIsolation::software)
+    {
+        mpss::utils::log_and_set_error("Algorithm '{}' requires Secure Enclave storage for this minimum isolation.",
+                                       get_algorithm_info(algorithm).type_str);
+        return nullptr;
+    }
+
     mpss::utils::log_trace("Creating key '{}' in Keychain.", key_name);
     std::uint64_t create_generation = 0;
     int key_location = 0;
@@ -270,15 +302,33 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     return nullptr;
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
-                                    MinimumIsolation minimum)
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum)
 {
-    if (minimum == MinimumIsolation::software)
+    const AlgorithmInfo info = get_algorithm_info(algorithm);
+    if (0 == info.key_bits || !is_valid_minimum_isolation(minimum))
     {
-        return create_key(name, algorithm, policy);
+        return false;
     }
-    mpss::utils::log_and_set_error("Apple backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+
+    std::random_device random;
+    const std::string name = std::format("MPSS_TEST_KEY_{:08x}{:08x}_CAN_DELETE", random(), random());
+    SCOPE_GUARD({ mpss::utils::clear_error(); });
+
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name, .device_id = std::nullopt}, algorithm,
+                               KeyPolicy::none, minimum);
+    if (!key)
+    {
+        return false;
+    }
+    const std::vector<std::byte> hash(info.hash_bits / 8, static_cast<std::byte>('a'));
+    const std::size_t size = key->sign_hash(hash, {});
+    bool available = false;
+    if (size != 0)
+    {
+        std::vector<std::byte> signature(size);
+        available = key->sign_hash(hash, signature) != 0;
+    }
+    return key->delete_key() && available;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,

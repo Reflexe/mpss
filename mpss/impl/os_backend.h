@@ -43,7 +43,7 @@ class OSBackend : public Backend
     std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key,
                                       MinimumIsolation minimum) const override;
 
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(__APPLE__)
     using Backend::is_algorithm_available;
 
     [[nodiscard]]

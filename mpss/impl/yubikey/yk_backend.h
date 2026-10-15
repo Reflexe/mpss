@@ -24,12 +24,23 @@ class YubiKeyBackend : public Backend
     bool is_algorithm_available(Algorithm algorithm) const override;
 
     [[nodiscard]]
+    bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum) const override;
+
+    [[nodiscard]]
     std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm,
                                         KeyPolicy policy) const override;
 
     [[nodiscard]]
+    std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                        MinimumIsolation minimum) const override;
+
+    [[nodiscard]]
     std::unique_ptr<KeyPair> open_key(const KeyLocation &location,
                                       std::span<const std::byte> expected_public_key = {}) const override;
+
+    [[nodiscard]]
+    std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key,
+                                      MinimumIsolation minimum) const override;
 
     [[nodiscard]]
     bool delete_key(const KeyLocation &location) const override;
