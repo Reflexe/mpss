@@ -42,6 +42,9 @@ static_assert(static_cast<int>(mpss::StorageTier::yubikey_piv) == MPSS_STORAGE_T
 // consumer of that header can name.
 static_assert(static_cast<int>(mpss::StorageTier::count) == MPSS_STORAGE_TIER_YUBIKEY_PIV + 1,
               "a new StorageTier needs an MPSS_STORAGE_TIER_* constant in mpss-openssl/api.h");
+static_assert(static_cast<unsigned int>(mpss::MinimumIsolation::software) == MPSS_MINIMUM_ISOLATION_SOFTWARE);
+static_assert(static_cast<unsigned int>(mpss::MinimumIsolation::mixed) == MPSS_MINIMUM_ISOLATION_MIXED);
+static_assert(static_cast<unsigned int>(mpss::MinimumIsolation::hardware) == MPSS_MINIMUM_ISOLATION_HARDWARE);
 
 // The same for the policy bits the "mpss_key_policy" parameter carries: a caller names a policy
 // with the api.h constants and this provider reads the number as a mpss::KeyPolicy, so the two
@@ -94,12 +97,13 @@ struct mpss_keymgmt_gen_ctx
     // Unset uses environment defaults; empty selects automatically; nonempty selects that device.
     std::optional<std::string> device_id = std::nullopt;
     std::uint64_t key_policy = 0;
+    mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software;
     int selection{0};
 };
 
 mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
                    const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy,
-                   const std::optional<std::string> &device_id)
+                   const std::optional<std::string> &device_id, mpss::MinimumIsolation minimum)
 {
     // Without an algorithm this opens the named key; with one it creates the key.
     if (key_name.empty())
@@ -113,15 +117,15 @@ mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_a
         {
             const mpss::KeyLocation location{mpss_backend.value_or(mpss::get_default_backend_name()),
                                              std::string{key_name}, device_id->empty() ? std::nullopt : device_id};
-            key_pair = mpss::KeyPair::Open(location);
+            key_pair = mpss::KeyPair::Open(location, minimum);
         }
         else if (mpss_backend)
         {
-            key_pair = mpss::KeyPair::Open(key_name, *mpss_backend);
+            key_pair = mpss::KeyPair::Open(key_name, *mpss_backend, minimum);
         }
         else
         {
-            key_pair = mpss::KeyPair::Open(key_name);
+            key_pair = mpss::KeyPair::Open(key_name, minimum);
         }
 
         if (key_pair)
@@ -140,15 +144,15 @@ mpss_key::mpss_key(std::string_view key_name, std::optional<std::string> &mpss_a
             {
                 const mpss::KeyLocation location{mpss_backend.value_or(mpss::get_default_backend_name()),
                                                  std::string{key_name}, device_id->empty() ? std::nullopt : device_id};
-                key_pair = mpss::KeyPair::Create(location, algorithm, policy);
+                key_pair = mpss::KeyPair::Create(location, algorithm, policy, minimum);
             }
             else if (mpss_backend)
             {
-                key_pair = mpss::KeyPair::Create(key_name, algorithm, *mpss_backend, policy);
+                key_pair = mpss::KeyPair::Create(key_name, algorithm, *mpss_backend, policy, minimum);
             }
             else
             {
-                key_pair = mpss::KeyPair::Create(key_name, algorithm, policy);
+                key_pair = mpss::KeyPair::Create(key_name, algorithm, policy, minimum);
             }
 
             this->mpss_algorithm = mpss::get_algorithm_info(algorithm).type_str;
@@ -311,10 +315,13 @@ extern "C" const OSSL_PARAM *mpss_keymgmt_gen_settable_params([[maybe_unused]] v
                                                               [[maybe_unused]] void *provctx)
 try
 {
-    static const OSSL_PARAM ret[] = {
-        OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0), OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
-        OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),  OSSL_PARAM_utf8_string("mpss_device_id", nullptr, 0),
-        OSSL_PARAM_uint64("mpss_key_policy", nullptr),       OSSL_PARAM_END};
+    static const OSSL_PARAM ret[] = {OSSL_PARAM_utf8_string("mpss_key_name", nullptr, 0),
+                                     OSSL_PARAM_utf8_string("mpss_algorithm", nullptr, 0),
+                                     OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
+                                     OSSL_PARAM_utf8_string("mpss_device_id", nullptr, 0),
+                                     OSSL_PARAM_uint64("mpss_key_policy", nullptr),
+                                     OSSL_PARAM_uint("mpss_minimum_isolation", nullptr),
+                                     OSSL_PARAM_END};
 
     return ret;
 }
@@ -384,6 +391,24 @@ try
         }
 
         ctx->device_id = std::move(value);
+    }
+
+    p = OSSL_PARAM_locate_const(params, "mpss_minimum_isolation");
+    if (nullptr != p)
+    {
+        unsigned int value = 0;
+        if (!OSSL_PARAM_get_uint(p, &value))
+        {
+            MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
+            return 0;
+        }
+        const auto minimum = parse_minimum_isolation(value);
+        if (!minimum)
+        {
+            MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
+            return 0;
+        }
+        ctx->minimum = *minimum;
     }
 
     return 1;
@@ -594,7 +619,8 @@ try
     // Set up the new mpss_key struct with the right info.
     std::optional<std::string> mpss_algorithm = ctx->mpss_algorithm;
     const auto policy = static_cast<mpss::KeyPolicy>(ctx->key_policy);
-    mpss_key *pkey = mpss_new<mpss_key>(ctx->key_name, mpss_algorithm, ctx->mpss_backend, policy, ctx->device_id);
+    mpss_key *pkey =
+        mpss_new<mpss_key>(ctx->key_name, mpss_algorithm, ctx->mpss_backend, policy, ctx->device_id, ctx->minimum);
     if (nullptr == pkey)
     {
         return nullptr;
@@ -724,12 +750,12 @@ try
     else if (mpss_reference_kind::default_locator == parsed.kind)
     {
         opened = parsed.key.location.backend_name.empty()
-                     ? mpss::KeyPair::Open(parsed.key.location.name)
-                     : mpss::KeyPair::Open(parsed.key.location.name, parsed.key.location.backend_name);
+                     ? mpss::KeyPair::Open(parsed.key.location.name, parsed.minimum)
+                     : mpss::KeyPair::Open(parsed.key.location.name, parsed.key.location.backend_name, parsed.minimum);
     }
     else
     {
-        opened = mpss::KeyPair::Open(parsed.key.location);
+        opened = mpss::KeyPair::Open(parsed.key.location, parsed.minimum);
     }
 
     mpss_ptr<mpss_key> pkey{mpss_new<mpss_key>(std::move(opened))};
