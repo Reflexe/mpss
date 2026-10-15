@@ -91,7 +91,18 @@ std::optional<KeyReference> KeyPair::reference() const
 
 std::unique_ptr<KeyPair> KeyPair::Create(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy)
 {
+    return Create(location, algorithm, policy, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> KeyPair::Create(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                         MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return nullptr;
+    }
     if (utils::in_interaction_handler())
     {
         utils::log_and_set_error("MPSS cannot be called from an interaction handler.");
@@ -100,12 +111,22 @@ std::unique_ptr<KeyPair> KeyPair::Create(const KeyLocation &location, Algorithm 
 
     // Keep the name's existence check and creation serialized against other lifecycle operations.
     const std::scoped_lock lifecycle{utils::name_mutex(location.name)};
-    return clear_error_on_success(impl::create_key(location, algorithm, policy));
+    return clear_error_on_success(impl::create_key(location, algorithm, policy, minimum));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(const KeyLocation &location)
 {
+    return Open(location, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> KeyPair::Open(const KeyLocation &location, MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return nullptr;
+    }
     if (utils::in_interaction_handler())
     {
         utils::log_and_set_error("MPSS cannot be called from an interaction handler.");
@@ -113,12 +134,22 @@ std::unique_ptr<KeyPair> KeyPair::Open(const KeyLocation &location)
     }
 
     const std::scoped_lock lifecycle{utils::name_mutex(location.name)};
-    return clear_error_on_success(impl::open_key(location));
+    return clear_error_on_success(impl::open_key(location, {}, minimum));
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(const KeyReference &reference)
 {
+    return Open(reference, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> KeyPair::Open(const KeyReference &reference, MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return nullptr;
+    }
     if (utils::in_interaction_handler())
     {
         utils::log_and_set_error("MPSS cannot be called from an interaction handler.");
@@ -135,7 +166,7 @@ std::unique_ptr<KeyPair> KeyPair::Open(const KeyReference &reference)
     // Own the expected bytes before opening; a backend may also use them to disambiguate a route.
     std::vector<std::byte> expected = reference.public_key;
     const std::scoped_lock lifecycle{utils::name_mutex(reference.location.name)};
-    auto key = impl::open_key(reference.location, expected);
+    auto key = impl::open_key(reference.location, expected, minimum);
     if (nullptr == key)
     {
         return nullptr;
@@ -191,11 +222,25 @@ std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algori
     return location ? Create(*location, algorithm, policy) : nullptr;
 }
 
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                         MinimumIsolation minimum)
+{
+    const std::optional<KeyLocation> location = location_with_defaults(name);
+    return location ? Create(*location, algorithm, policy, minimum) : nullptr;
+}
+
 std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
                                          KeyPolicy policy)
 {
     const std::optional<KeyLocation> location = location_with_defaults(name, backend_name);
     return location ? Create(*location, algorithm, policy) : nullptr;
+}
+
+std::unique_ptr<KeyPair> KeyPair::Create(std::string_view name, Algorithm algorithm, std::string_view backend_name,
+                                         KeyPolicy policy, MinimumIsolation minimum)
+{
+    const std::optional<KeyLocation> location = location_with_defaults(name, backend_name);
+    return location ? Create(*location, algorithm, policy, minimum) : nullptr;
 }
 
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
@@ -204,10 +249,22 @@ std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name)
     return location ? Open(*location) : nullptr;
 }
 
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, MinimumIsolation minimum)
+{
+    const std::optional<KeyLocation> location = location_with_defaults(name);
+    return location ? Open(*location, minimum) : nullptr;
+}
+
 std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name)
 {
     const std::optional<KeyLocation> location = location_with_defaults(name, backend_name);
     return location ? Open(*location) : nullptr;
+}
+
+std::unique_ptr<KeyPair> KeyPair::Open(std::string_view name, std::string_view backend_name, MinimumIsolation minimum)
+{
+    const std::optional<KeyLocation> location = location_with_defaults(name, backend_name);
+    return location ? Open(*location, minimum) : nullptr;
 }
 
 bool KeyPair::Delete(std::string_view name)
@@ -224,7 +281,17 @@ bool KeyPair::Delete(std::string_view name, std::string_view backend_name)
 
 bool is_algorithm_available(Algorithm algorithm)
 {
+    return is_algorithm_available(algorithm, MinimumIsolation::software);
+}
+
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return false;
+    }
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
@@ -232,25 +299,23 @@ bool is_algorithm_available(Algorithm algorithm)
         return false;
     }
 
-    // Cache results per algorithm to avoid repeated expensive probes.
+    // Cache results per algorithm and requested minimum to avoid repeated expensive probes.
     static std::mutex cache_mutex;
-    static std::array<std::optional<bool>, algorithm_info.size()> cache{};
+    static std::array<std::array<bool, 3>, algorithm_info.size()> cache{};
 
     const int idx = static_cast<int>(algorithm);
+    const auto minimum_idx = static_cast<std::size_t>(minimum);
     {
         const std::scoped_lock lock{cache_mutex};
-        if (cache[idx])
+        if (cache[idx][minimum_idx])
         {
-            // NOLINTBEGIN(bugprone-unchecked-optional-access) - guarded by the if above.
-            utils::log_trace("Algorithm availability for '{}' returned from cache: {}.", info.type_str,
-                             *cache[idx] ? "available" : "unavailable");
-            return *cache[idx];
-            // NOLINTEND(bugprone-unchecked-optional-access)
+            utils::log_trace("Algorithm availability for '{}' returned from cache: available.", info.type_str);
+            return true;
         }
     }
 
     utils::log_trace("Probing algorithm availability for '{}'.", info.type_str);
-    const bool available = impl::is_algorithm_available(algorithm);
+    const bool available = impl::is_algorithm_available(algorithm, minimum);
 
     // Cache positive results only. A positive is stable -- the platform genuinely supports the algorithm.
     // A negative is the only direction that can be wrong and stick: a one-time probe can fail while the
@@ -261,7 +326,7 @@ bool is_algorithm_available(Algorithm algorithm)
     if (available)
     {
         const std::scoped_lock lock{cache_mutex};
-        cache[idx] = true;
+        cache[idx][minimum_idx] = true;
     }
     utils::log_trace("Algorithm '{}' is {}.", info.type_str, available ? "available" : "unavailable");
     return available;
@@ -269,7 +334,17 @@ bool is_algorithm_available(Algorithm algorithm)
 
 bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
 {
+    return is_algorithm_available(algorithm, backend_name, MinimumIsolation::software);
+}
+
+bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name, MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return false;
+    }
     const AlgorithmInfo info = get_algorithm_info(algorithm);
     if (0 == info.key_bits)
     {
@@ -277,12 +352,22 @@ bool is_algorithm_available(Algorithm algorithm, std::string_view backend_name)
         return false;
     }
     utils::log_trace("Checking algorithm availability for '{}' on backend '{}'.", info.type_str, backend_name);
-    return impl::is_algorithm_available(backend_name, algorithm);
+    return impl::is_algorithm_available(backend_name, algorithm, minimum);
 }
 
 std::vector<Algorithm> get_available_algorithms()
 {
+    return get_available_algorithms(MinimumIsolation::software);
+}
+
+std::vector<Algorithm> get_available_algorithms(MinimumIsolation minimum)
+{
     clear_error();
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        utils::log_and_set_error("Invalid minimum isolation level.");
+        return {};
+    }
     std::vector<Algorithm> result;
     for (const auto &[alg, info] : algorithm_info)
     {
@@ -290,7 +375,7 @@ std::vector<Algorithm> get_available_algorithms()
         {
             continue;
         }
-        if (is_algorithm_available(alg))
+        if (is_algorithm_available(alg, minimum))
         {
             result.push_back(alg);
         }

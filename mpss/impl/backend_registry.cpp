@@ -305,6 +305,17 @@ bool is_algorithm_available(Algorithm algorithm)
     return backend->is_algorithm_available(algorithm);
 }
 
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum)
+{
+    const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_default_backend();
+    if (nullptr == backend)
+    {
+        utils::log_and_set_error("No default backend available.");
+        return false;
+    }
+    return backend->is_algorithm_available(algorithm, minimum);
+}
+
 bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
 {
     const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_backend(backend_name);
@@ -316,7 +327,24 @@ bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm)
     return backend->is_algorithm_available(algorithm);
 }
 
+bool is_algorithm_available(std::string_view backend_name, Algorithm algorithm, MinimumIsolation minimum)
+{
+    const std::shared_ptr<Backend> backend = BackendRegistry::Instance().get_backend(backend_name);
+    if (nullptr == backend)
+    {
+        utils::log_and_set_error("Backend '{}' not found.", backend_name);
+        return false;
+    }
+    return backend->is_algorithm_available(algorithm, minimum);
+}
+
 std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy)
+{
+    return create_key(location, algorithm, policy, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
 {
     if (!is_valid_location(location))
     {
@@ -339,7 +367,7 @@ std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algor
 
     // Allocate metadata before the backend can persist a key; recording it afterwards only moves the string.
     std::string recorded_name = name;
-    auto key = backend->create_key(location, algorithm, policy);
+    auto key = backend->create_key(location, algorithm, policy, minimum);
     if (nullptr != key)
     {
         utils::log_trace("Key '{}' created on backend '{}'.", name, backend->name());
@@ -350,6 +378,12 @@ std::unique_ptr<KeyPair> create_key(const KeyLocation &location, Algorithm algor
 }
 
 std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key)
+{
+    return open_key(location, expected_public_key, MinimumIsolation::software);
+}
+
+std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key,
+                                  MinimumIsolation minimum)
 {
     if (!is_valid_location(location))
     {
@@ -370,7 +404,7 @@ std::unique_ptr<KeyPair> open_key(const KeyLocation &location, std::span<const s
     utils::log_trace("Opening key '{}' using backend '{}'.", name, backend->name());
 
     std::string recorded_name = name;
-    auto key = backend->open_key(location, expected_public_key);
+    auto key = backend->open_key(location, expected_public_key, minimum);
     if (nullptr != key)
     {
         utils::log_trace("Key '{}' opened on backend '{}'.", name, backend->name());
@@ -517,6 +551,33 @@ bool Backend::is_algorithm_available(Algorithm algorithm) const
     std::vector<std::byte> sig(sig_size);
     const std::size_t written = key->sign_hash(hash, sig);
     return 0 != written;
+}
+
+std::unique_ptr<KeyPair> Backend::create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                             MinimumIsolation minimum) const
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return create_key(location, algorithm, policy);
+    }
+    utils::log_and_set_error("Backend '{}' cannot enforce the requested minimum isolation.", name());
+    return nullptr;
+}
+
+std::unique_ptr<KeyPair> Backend::open_key(const KeyLocation &location, std::span<const std::byte> expected_public_key,
+                                           MinimumIsolation minimum) const
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return open_key(location, expected_public_key);
+    }
+    utils::log_and_set_error("Backend '{}' cannot enforce the requested minimum isolation.", name());
+    return nullptr;
+}
+
+bool Backend::is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum) const
+{
+    return minimum == MinimumIsolation::software && is_algorithm_available(algorithm);
 }
 
 } // namespace mpss::impl

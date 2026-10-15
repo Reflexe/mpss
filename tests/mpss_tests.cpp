@@ -545,6 +545,55 @@ TEST(StorageTiers, OnlySecureHardwareTiersClaimHardwareBacking)
     }
 }
 
+// Scenario: every reported tier is compared with each requested minimum, including unknown.
+// Expected behavior: unknown counts only as software; mixed and hardware follow tier, not the legacy bool.
+TEST(StorageTiers, MinimumIsolationUsesTierNotHardwareFlag)
+{
+    using enum mpss::StorageTier;
+    for (const auto tier :
+         {unknown, windows_software, windows_vbs, windows_tpm, apple_keychain, apple_secure_enclave, android_software,
+          android_unknown_secure, android_trusted_environment, android_strongbox, yubikey_piv})
+    {
+        EXPECT_TRUE(mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::software));
+    }
+    for (const auto tier : {windows_vbs, windows_tpm, apple_secure_enclave, android_unknown_secure,
+                            android_trusted_environment, android_strongbox, yubikey_piv})
+    {
+        EXPECT_TRUE(mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::mixed));
+    }
+    for (const auto tier : {windows_tpm, apple_secure_enclave, android_strongbox, yubikey_piv})
+    {
+        EXPECT_TRUE(mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::hardware));
+    }
+    for (const auto tier : {unknown, windows_software, apple_keychain, android_software})
+    {
+        EXPECT_FALSE(mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::mixed));
+    }
+    for (const auto tier : {unknown, windows_software, windows_vbs, apple_keychain, android_software,
+                            android_unknown_secure, android_trusted_environment})
+    {
+        EXPECT_FALSE(mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::hardware));
+    }
+    EXPECT_FALSE(mpss::meets_minimum_isolation(static_cast<mpss::StorageTier>(255), mpss::MinimumIsolation::software));
+}
+
+// Scenario: callers supply an enum value outside the three supported minimums.
+// Expected behavior: create, open, and availability reject it rather than reaching a backend.
+TEST(StorageTiers, InvalidMinimumFailsAtPublicBoundary)
+{
+    const auto invalid = static_cast<mpss::MinimumIsolation>(255);
+    const mpss::KeyLocation location{.backend_name = "os", .name = "invalid_minimum", .device_id = std::nullopt};
+    EXPECT_EQ(nullptr,
+              mpss::KeyPair::Create(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none, invalid));
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(location, invalid));
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, invalid));
+    EXPECT_TRUE(mpss::has_error());
+    EXPECT_TRUE(mpss::get_available_algorithms(invalid).empty());
+    EXPECT_TRUE(mpss::has_error());
+}
+
 TEST_F(MPSS, ReopenReportsTheSameProtection256)
 {
     ReopenReportsTheSameProtection(ecdsa_secp256r1_sha256, "256");

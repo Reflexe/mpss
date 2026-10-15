@@ -437,7 +437,7 @@ TEST_F(WindowsKeyReference, InvalidBackendSignatureIsNotReturnedToTheCaller)
     ExportPublicKey(public_key);
     const mpss::KeyReference reference{
         {"os", "mock_bound_key", std::nullopt}, mpss::Algorithm::ecdsa_secp256r1_sha256, public_key};
-    auto key = mpss::KeyPair::Open(reference);
+    auto key = mpss::KeyPair::Open(reference, mpss::MinimumIsolation::software);
     ASSERT_NE(nullptr, key);
 
     // Resolve DLL exports directly so real calls cannot re-enter the patched import table.
@@ -564,6 +564,39 @@ TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
     EXPECT_EQ(mpss::StorageTier::windows_software, key->key_info().storage_tier);
     EXPECT_EQ("Software Protection", std::string(key->key_info().storage_description));
     EXPECT_FALSE(key->key_info().is_hardware_backed);
+}
+
+// Scenario: the OS backend has not implemented selection for mixed or hardware minimums.
+// Expected behavior: no key is created, opened, or deleted, and availability cannot claim support.
+TEST_F(WindowsKeyCreation, ExplicitMinimumFailsBeforeAccessingTheStore)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _).Times(0);
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, _, _).Times(0);
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                             mpss::MinimumIsolation::mixed));
+    EXPECT_THAT(mpss::get_error(), HasSubstr("cannot enforce"));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(location, mpss::MinimumIsolation::hardware));
+    EXPECT_THAT(mpss::get_error(), HasSubstr("cannot enforce"));
+    EXPECT_FALSE(
+        mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os", mpss::MinimumIsolation::hardware));
+    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::MinimumIsolation::mixed));
+    EXPECT_TRUE(mpss::get_available_algorithms(mpss::MinimumIsolation::hardware).empty());
+}
+
+// Scenario: the caller explicitly requests the minimum that accepts all existing keys.
+// Expected behavior: software fallback continues to create a key as it does for legacy calls.
+TEST_F(WindowsKeyCreation, SoftwareMinimumPreservesLegacyFallback)
+{
+    FailTpmProvider();
+    FailVbsCreate();
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    auto key = mpss::KeyPair::Create(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                     mpss::MinimumIsolation::software);
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::StorageTier::windows_software, key->key_info().storage_tier);
 }
 
 // Scenario: a caller asks for a key on a host with no hardware-isolated provider.

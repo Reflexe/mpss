@@ -25,7 +25,8 @@ namespace mpss
  * They are names, not a rank. Compare a tier for equality; never order it. The numbers run in
  * increasing protection within a platform, which makes `tier >= windows_tpm` look right and pass a
  * test on one platform, and then accept apple_keychain and android_software as stronger than a TPM.
- * What ranks tiers against each other is @ref StorageTierInfo::is_hardware_backed.
+ * Compare against a requested protection floor with @ref meets_minimum_isolation; hardware backing
+ * is reported separately by @ref StorageTierInfo::is_hardware_backed.
  */
 // NOLINTNEXTLINE(readability-enum-initial-value) - count is left implicit so that it follows the last tier.
 enum class StorageTier : std::uint8_t
@@ -44,6 +45,49 @@ enum class StorageTier : std::uint8_t
 
     count /**< Not a tier. The number of them, so the table can be checked against this enum. */
 };
+
+/** @brief A requested protection floor. Software includes unknown tiers accepted by existing MPSS calls. */
+enum class MinimumIsolation : std::uint8_t
+{
+    software,
+    mixed,
+    hardware
+};
+
+[[nodiscard]]
+constexpr bool is_valid_minimum_isolation(MinimumIsolation minimum) noexcept
+{
+    return minimum == MinimumIsolation::software || minimum == MinimumIsolation::mixed ||
+           minimum == MinimumIsolation::hardware;
+}
+
+/** @brief Whether a measured storage tier meets a requested minimum; unknown counts only as software. */
+[[nodiscard]]
+constexpr bool meets_minimum_isolation(StorageTier tier, MinimumIsolation minimum) noexcept
+{
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        return false;
+    }
+    if (minimum == MinimumIsolation::software)
+    {
+        return tier < StorageTier::count;
+    }
+    switch (tier)
+    {
+    case StorageTier::windows_tpm:
+    case StorageTier::apple_secure_enclave:
+    case StorageTier::android_strongbox:
+    case StorageTier::yubikey_piv:
+        return true;
+    case StorageTier::windows_vbs:
+    case StorageTier::android_unknown_secure:
+    case StorageTier::android_trusted_environment:
+        return minimum == MinimumIsolation::mixed;
+    default:
+        return false;
+    }
+}
 
 /**
  * @brief What a storage tier is, as reported through @ref KeyInfo.
