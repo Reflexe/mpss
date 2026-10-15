@@ -30,6 +30,17 @@ const char *empty_name_list[] = {nullptr};
 
 // Reported when the last-error buffer itself could not be updated.
 constexpr const char *internal_error_message = "Internal error.";
+
+std::optional<mpss::MinimumIsolation> validated_minimum(unsigned int value)
+{
+    const auto minimum = mpss_openssl::utils::parse_minimum_isolation(value);
+    if (!minimum)
+    {
+        mpss::utils::set_error("Invalid minimum isolation level.");
+        MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
+    }
+    return minimum;
+}
 } // namespace
 
 bool mpss_delete_key(const char *key_name)
@@ -91,11 +102,40 @@ catch (...)
     return false;
 }
 
+bool mpss_is_algorithm_available_with_minimum_isolation(const char *algorithm_name, unsigned int minimum_isolation)
+try
+{
+    const auto minimum = validated_minimum(minimum_isolation);
+    return minimum &&
+           mpss::is_algorithm_available(mpss_openssl::utils::try_get_mpss_algorithm(as_view(algorithm_name)), *minimum);
+}
+catch (...)
+{
+    mpss::utils::set_internal_error();
+    MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
+    return false;
+}
+
 bool mpss_is_algorithm_available_in_backend(const char *algorithm_name, const char *backend_name)
 try
 {
     return mpss::is_algorithm_available(mpss_openssl::utils::try_get_mpss_algorithm(as_view(algorithm_name)),
                                         as_view(backend_name));
+}
+catch (...)
+{
+    mpss::utils::set_internal_error();
+    MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
+    return false;
+}
+
+bool mpss_is_algorithm_available_in_backend_with_minimum_isolation(const char *algorithm_name, const char *backend_name,
+                                                                   unsigned int minimum_isolation)
+try
+{
+    const auto minimum = validated_minimum(minimum_isolation);
+    return minimum && mpss::is_algorithm_available(mpss_openssl::utils::try_get_mpss_algorithm(as_view(algorithm_name)),
+                                                   as_view(backend_name), *minimum);
 }
 catch (...)
 {
@@ -113,6 +153,30 @@ try
     static thread_local std::vector<const char *> names;
     names.clear();
     for (const mpss::Algorithm &alg : mpss::get_available_algorithms())
+    {
+        names.push_back(mpss::get_algorithm_info(alg).type_str);
+    }
+    names.push_back(nullptr);
+    return names.data();
+}
+catch (...)
+{
+    mpss::utils::set_internal_error();
+    MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR);
+    return empty_name_list;
+}
+
+const char **mpss_get_available_algorithms_with_minimum_isolation(unsigned int minimum_isolation)
+try
+{
+    const auto minimum = validated_minimum(minimum_isolation);
+    if (!minimum)
+    {
+        return empty_name_list;
+    }
+    static thread_local std::vector<const char *> names;
+    names.clear();
+    for (const mpss::Algorithm &alg : mpss::get_available_algorithms(*minimum))
     {
         names.push_back(mpss::get_algorithm_info(alg).type_str);
     }

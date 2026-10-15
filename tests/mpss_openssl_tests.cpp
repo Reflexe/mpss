@@ -4,6 +4,7 @@
 #include "mpss-openssl/api.h"
 #include "mpss-openssl/interaction_handler.h"
 #include "mpss-openssl/provider/provider.h"
+#include "mpss-openssl/provider/reference.h"
 #include "mpss/interaction_handler.h"
 #include "mpss/key_policy.h"
 #include "mpss/mpss.h"
@@ -263,7 +264,8 @@ std::string ReferenceBody(const std::string &pem)
 
 evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, const char *backend = nullptr,
                          std::uint64_t key_policy = MPSS_KEY_POLICY_NONE, const char *device_id = nullptr,
-                         const char *algorithm = mpss_p256_algorithm)
+                         const char *algorithm = mpss_p256_algorithm,
+                         std::optional<unsigned int> minimum_isolation = std::nullopt)
 {
     evp_pkey_ctx_ptr ctx(EVP_PKEY_CTX_new_from_name(libctx, "EC", "provider=mpss"));
     if (nullptr == ctx || 1 != EVP_PKEY_keygen_init(ctx.get()))
@@ -271,7 +273,7 @@ evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, cons
         return nullptr;
     }
 
-    OSSL_PARAM params[6];
+    OSSL_PARAM params[7];
     int count = 0;
     params[count++] = OSSL_PARAM_construct_utf8_string("mpss_key_name", const_cast<char *>(key_name.c_str()), 0);
     params[count++] = OSSL_PARAM_construct_utf8_string("mpss_algorithm", const_cast<char *>(algorithm), 0);
@@ -286,6 +288,10 @@ evp_pkey_ptr GenerateKey(OSSL_LIB_CTX *libctx, const std::string &key_name, cons
     if (nullptr != device_id)
     {
         params[count++] = OSSL_PARAM_construct_utf8_string("mpss_device_id", const_cast<char *>(device_id), 0);
+    }
+    if (minimum_isolation)
+    {
+        params[count++] = OSSL_PARAM_construct_uint("mpss_minimum_isolation", &*minimum_isolation);
     }
     params[count] = OSSL_PARAM_END;
     if (1 != EVP_PKEY_CTX_set_params(ctx.get(), params))
@@ -664,6 +670,104 @@ TEST(CApiErrorContract, AvailabilityQueriesHonorTheContract)
     EXPECT_TRUE(mpss_has_error());
 
     mpss_clear_error();
+}
+
+// Scenario: C clients query a minimum while the legacy availability signatures remain usable.
+// Expected behavior: Valid requests match core results; invalid values report through both error channels.
+TEST(CApiErrorContract, MinimumIsolationAvailability)
+{
+    static_assert(MPSS_MINIMUM_ISOLATION_SOFTWARE == static_cast<unsigned int>(mpss::MinimumIsolation::software));
+    static_assert(MPSS_MINIMUM_ISOLATION_MIXED == static_cast<unsigned int>(mpss::MinimumIsolation::mixed));
+    static_assert(MPSS_MINIMUM_ISOLATION_HARDWARE == static_cast<unsigned int>(mpss::MinimumIsolation::hardware));
+
+    const char *algorithm = "ecdsa_secp256r1_sha256";
+    for (const auto minimum :
+         {mpss::MinimumIsolation::software, mpss::MinimumIsolation::mixed, mpss::MinimumIsolation::hardware})
+    {
+        const auto value = static_cast<unsigned int>(minimum);
+        EXPECT_EQ(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, minimum),
+                  mpss_is_algorithm_available_with_minimum_isolation(algorithm, value));
+        EXPECT_EQ(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os", minimum),
+                  mpss_is_algorithm_available_in_backend_with_minimum_isolation(algorithm, "os", value));
+        const char **names = mpss_get_available_algorithms_with_minimum_isolation(value);
+        ASSERT_NE(nullptr, names);
+        for (const mpss::Algorithm available : mpss::get_available_algorithms(minimum))
+        {
+            bool found = false;
+            for (const char **name = names; nullptr != *name; ++name)
+            {
+                found |= std::string_view(*name) == mpss::get_algorithm_info(available).type_str;
+            }
+            EXPECT_TRUE(found);
+        }
+    }
+
+    for (const unsigned int invalid : {3U, 256U, ~0U})
+    {
+        mpss_clear_error();
+        ERR_clear_error();
+        EXPECT_FALSE(mpss_is_algorithm_available_with_minimum_isolation(algorithm, invalid));
+        EXPECT_TRUE(mpss_has_error());
+        EXPECT_NE(0UL, ERR_get_error());
+        mpss_clear_error();
+        ERR_clear_error();
+        EXPECT_FALSE(mpss_is_algorithm_available_in_backend_with_minimum_isolation(algorithm, "os", invalid));
+        EXPECT_TRUE(mpss_has_error());
+        EXPECT_NE(0UL, ERR_get_error());
+        mpss_clear_error();
+        ERR_clear_error();
+        const char **names = mpss_get_available_algorithms_with_minimum_isolation(invalid);
+        ASSERT_NE(nullptr, names);
+        EXPECT_EQ(nullptr, names[0]);
+        EXPECT_TRUE(mpss_has_error());
+        EXPECT_NE(0UL, ERR_get_error());
+    }
+    mpss_clear_error();
+    ERR_clear_error();
+    (void)mpss_get_available_algorithms();
+    (void)mpss_is_algorithm_available(algorithm);
+    (void)mpss_is_algorithm_available_in_backend(algorithm, "os");
+}
+
+// Scenario: Store locators carry different requested minimums without changing old locator bytes.
+// Expected behavior: Only internal locators carry the request; invalid values are rejected.
+TEST(MPSS_OpenSSL, MinimumIsolationIsScopedToInternalLocators)
+{
+    using namespace mpss_openssl::provider;
+    using mpss_openssl::utils::byte_vector;
+    byte_vector legacy;
+    byte_vector software;
+    byte_vector hardware;
+    ASSERT_TRUE(mpss_build_key_load_reference("os", "key", legacy));
+    ASSERT_TRUE(mpss_build_key_load_reference("os", "key", software, mpss::MinimumIsolation::software));
+    ASSERT_TRUE(mpss_build_key_load_reference("os", "key", hardware, mpss::MinimumIsolation::hardware));
+    EXPECT_EQ(legacy, software);
+    EXPECT_EQ(InternalLocatorReference("os", "key", true),
+              std::string_view(reinterpret_cast<const char *>(legacy.data()), legacy.size()));
+    EXPECT_NE(legacy, hardware);
+    mpss_load_reference parsed;
+    mpss_reference_error error{};
+    ASSERT_TRUE(mpss_parse_key_load_reference(
+        {reinterpret_cast<const unsigned char *>(hardware.data()), hardware.size()}, parsed, error));
+    EXPECT_EQ(mpss_reference_kind::default_locator, parsed.kind);
+    EXPECT_EQ(mpss::MinimumIsolation::hardware, parsed.minimum);
+    const std::byte encoded_hardware = hardware.back();
+    ASSERT_EQ(std::byte{MPSS_MINIMUM_ISOLATION_HARDWARE}, encoded_hardware);
+    hardware.back() = std::byte{3};
+    EXPECT_FALSE(mpss_parse_key_load_reference(
+        {reinterpret_cast<const unsigned char *>(hardware.data()), hardware.size()}, parsed, error));
+    hardware.back() = encoded_hardware;
+
+    byte_vector explicit_device;
+    ASSERT_TRUE(mpss_build_key_load_reference(mpss::KeyLocation{"yubikey", "key", "123"}, explicit_device,
+                                              mpss::MinimumIsolation::mixed));
+    ASSERT_TRUE(mpss_parse_key_load_reference(
+        {reinterpret_cast<const unsigned char *>(explicit_device.data()), explicit_device.size()}, parsed, error));
+    EXPECT_EQ(mpss_reference_kind::locator, parsed.kind);
+    EXPECT_EQ(mpss::MinimumIsolation::mixed, parsed.minimum);
+    ASSERT_TRUE(parsed.key.location.device_id.has_value());
+    EXPECT_EQ("123", *parsed.key.location.device_id);
+    EXPECT_FALSE(mpss_build_key_load_reference("os", "key", software, static_cast<mpss::MinimumIsolation>(3)));
 }
 
 TEST_F(MPSSDigest, SHA256)
@@ -1225,10 +1329,11 @@ class MPSSStore : public ::testing::Test
 
     // Open "mpss:<key_name>" through OSSL_STORE, optionally selecting a backend via the mpss_backend
     // ctx parameter, and return the reopened key (or nullptr if none was produced).
-    evp_pkey_ptr store_open_key(const std::string &key_name, const char *backend, const char *device_id = nullptr)
+    evp_pkey_ptr store_open_key(const std::string &key_name, const char *backend, const char *device_id = nullptr,
+                                std::optional<unsigned int> minimum_isolation = std::nullopt)
     {
         const std::string uri = "mpss:" + key_name;
-        OSSL_PARAM backend_params[3]{};
+        OSSL_PARAM backend_params[4]{};
         int count = 0;
         if (nullptr != backend)
         {
@@ -1238,6 +1343,10 @@ class MPSSStore : public ::testing::Test
         {
             backend_params[count++] =
                 OSSL_PARAM_construct_utf8_string("mpss_device_id", const_cast<char *>(device_id), 0);
+        }
+        if (minimum_isolation)
+        {
+            backend_params[count++] = OSSL_PARAM_construct_uint("mpss_minimum_isolation", &*minimum_isolation);
         }
         backend_params[count] = OSSL_PARAM_END;
         OSSL_STORE_CTX *store = OSSL_STORE_open_ex(uri.c_str(), libctx, "provider=mpss", nullptr, nullptr,
@@ -1359,6 +1468,62 @@ class MPSSStore : public ::testing::Test
         ASSERT_EQ(1, store_delete_key(key_name, backend));
     }
 };
+
+// Scenario: A key is generated with a minimum and then opened by default, named, and explicit-device locators.
+// Expected behavior: Store loads honor the requested minimum without changing the reported storage tier.
+TEST_F(MPSSStore, MinimumIsolationForGenerationAndStore)
+{
+    if (!mpss_is_algorithm_available_in_backend(mpss_p256_algorithm, "os"))
+    {
+        GTEST_SKIP() << "Algorithm not supported by OS backend";
+    }
+    const std::string name = test_key_name("mpss_minimum_store");
+    const mpss_key_location_t location{"os", name.c_str(), nullptr};
+    ASSERT_TRUE(mpss_delete_key_at(&location));
+    SCOPE_GUARD(mpss_delete_key_at(&location));
+
+    const evp_pkey_ptr key(GenerateKey(libctx, name, "os", MPSS_KEY_POLICY_NONE, "", mpss_p256_algorithm,
+                                       MPSS_MINIMUM_ISOLATION_SOFTWARE));
+    ASSERT_NE(nullptr, key);
+    int tier_value = -1;
+    ASSERT_EQ(1, EVP_PKEY_get_int_param(key.get(), "storage_tier", &tier_value));
+    const auto tier = static_cast<mpss::StorageTier>(tier_value);
+    ASSERT_NE(nullptr, store_open_key(name, "os", "", MPSS_MINIMUM_ISOLATION_SOFTWARE));
+    ASSERT_NE(nullptr, store_open_key(name, "os", nullptr, MPSS_MINIMUM_ISOLATION_SOFTWARE));
+    if (std::string_view(mpss_get_default_backend_name()) == "os")
+    {
+        ASSERT_NE(nullptr, store_open_key(name, nullptr, nullptr, MPSS_MINIMUM_ISOLATION_SOFTWARE));
+    }
+
+    const bool hardware = mpss::meets_minimum_isolation(tier, mpss::MinimumIsolation::hardware);
+    EXPECT_EQ(hardware, nullptr != store_open_key(name, "os", "", MPSS_MINIMUM_ISOLATION_HARDWARE));
+    EXPECT_EQ(hardware, nullptr != store_open_key(name, "os", nullptr, MPSS_MINIMUM_ISOLATION_HARDWARE));
+    if (std::string_view(mpss_get_default_backend_name()) == "os")
+    {
+        EXPECT_EQ(hardware, nullptr != store_open_key(name, nullptr, nullptr, MPSS_MINIMUM_ISOLATION_HARDWARE));
+    }
+    EXPECT_EQ(nullptr, store_open_key(name, "os", "", 256U));
+    const std::string invalid_name = test_key_name("mpss_invalid_minimum");
+    const mpss_key_location_t invalid_location{"os", invalid_name.c_str(), nullptr};
+    SCOPE_GUARD(mpss_delete_key_at(&invalid_location));
+    EXPECT_EQ(nullptr,
+              GenerateKey(libctx, invalid_name, "os", MPSS_KEY_POLICY_NONE, nullptr, mpss_p256_algorithm, 256U));
+
+    const std::string hardware_name = test_key_name("mpss_hardware_minimum");
+    const mpss_key_location_t hardware_location{"os", hardware_name.c_str(), nullptr};
+    ASSERT_TRUE(mpss_delete_key_at(&hardware_location));
+    SCOPE_GUARD(mpss_delete_key_at(&hardware_location));
+    const evp_pkey_ptr hardware_key(GenerateKey(libctx, hardware_name, "os", MPSS_KEY_POLICY_NONE, nullptr,
+                                                mpss_p256_algorithm, MPSS_MINIMUM_ISOLATION_HARDWARE));
+    if (hardware_key)
+    {
+        int actual_tier = -1;
+        ASSERT_EQ(1, EVP_PKEY_get_int_param(hardware_key.get(), "storage_tier", &actual_tier));
+        EXPECT_TRUE(mpss::meets_minimum_isolation(static_cast<mpss::StorageTier>(actual_tier),
+                                                  mpss::MinimumIsolation::hardware));
+    }
+    ERR_clear_error();
+}
 
 TEST_F(MPSSStore, ReopenByNameDefaultBackend)
 {

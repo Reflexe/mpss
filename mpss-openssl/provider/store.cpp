@@ -30,6 +30,7 @@ struct mpss_store_ctx
     std::string backend;
     // Unset uses environment defaults; empty selects automatically; nonempty selects that device.
     std::optional<std::string> device_id;
+    mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software;
     int expected_type = 0;
     bool loaded = false;
 };
@@ -114,8 +115,8 @@ try
         ctx->device_id ? mpss_build_key_load_reference(
                              mpss::KeyLocation{ctx->backend.empty() ? mpss::get_default_backend_name() : ctx->backend,
                                                ctx->key_name, ctx->device_id->empty() ? std::nullopt : ctx->device_id},
-                             reference)
-                       : mpss_build_key_load_reference(ctx->backend, ctx->key_name, reference);
+                             reference, ctx->minimum)
+                       : mpss_build_key_load_reference(ctx->backend, ctx->key_name, reference, ctx->minimum);
     if (!built)
     {
         return 0;
@@ -146,7 +147,8 @@ try
 {
     static const OSSL_PARAM settable[] = {OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, nullptr),
                                           OSSL_PARAM_utf8_string("mpss_backend", nullptr, 0),
-                                          OSSL_PARAM_utf8_string("mpss_device_id", nullptr, 0), OSSL_PARAM_END};
+                                          OSSL_PARAM_utf8_string("mpss_device_id", nullptr, 0),
+                                          OSSL_PARAM_uint("mpss_minimum_isolation", nullptr), OSSL_PARAM_END};
     return settable;
 }
 catch (...)
@@ -191,6 +193,24 @@ try
         }
 
         ctx->device_id = std::move(value);
+    }
+
+    p = OSSL_PARAM_locate_const(params, "mpss_minimum_isolation");
+    if (nullptr != p)
+    {
+        unsigned int value = 0;
+        if (!OSSL_PARAM_get_uint(p, &value))
+        {
+            MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
+            return 0;
+        }
+        const auto minimum = parse_minimum_isolation(value);
+        if (!minimum)
+        {
+            MPSS_ERR_RAISE(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
+            return 0;
+        }
+        ctx->minimum = *minimum;
     }
 
     // The expected-object-type hint carries an OSSL_STORE_INFO_* value; mpss_store_load uses it to

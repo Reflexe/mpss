@@ -23,12 +23,13 @@ struct KeyLocatorAsn1
     ASN1_UTF8STRING *backend;
     ASN1_UTF8STRING *name;
     ASN1_UTF8STRING *device;
+    ASN1_INTEGER *minimum;
 };
 
 ASN1_SEQUENCE(KeyLocatorAsn1) = {
     ASN1_SIMPLE(KeyLocatorAsn1, use_defaults, ASN1_BOOLEAN), ASN1_SIMPLE(KeyLocatorAsn1, backend, ASN1_UTF8STRING),
-    ASN1_SIMPLE(KeyLocatorAsn1, name, ASN1_UTF8STRING),
-    ASN1_EXP_OPT(KeyLocatorAsn1, device, ASN1_UTF8STRING, 0)} ASN1_SEQUENCE_END(KeyLocatorAsn1);
+    ASN1_SIMPLE(KeyLocatorAsn1, name, ASN1_UTF8STRING), ASN1_EXP_OPT(KeyLocatorAsn1, device, ASN1_UTF8STRING, 0),
+    ASN1_EXP_OPT(KeyLocatorAsn1, minimum, ASN1_INTEGER, 1)} ASN1_SEQUENCE_END(KeyLocatorAsn1);
 
 // Explicit tagging distinguishes internal store requests from persisted references.
 using KeyLocatorRequestAsn1 = KeyLocatorAsn1;
@@ -83,9 +84,10 @@ bool encode_locator(const KeyLocatorRequestAsn1 *value, byte_vector &out)
     return true;
 }
 
-bool build_locator(const mpss::KeyLocation &location, bool use_defaults, byte_vector &out)
+bool build_locator(const mpss::KeyLocation &location, bool use_defaults, byte_vector &out,
+                   mpss::MinimumIsolation minimum)
 {
-    if (!valid_location(location, use_defaults))
+    if (!valid_location(location, use_defaults) || !mpss::is_valid_minimum_isolation(minimum))
     {
         return false;
     }
@@ -109,6 +111,16 @@ bool build_locator(const mpss::KeyLocation &location, bool use_defaults, byte_ve
         }
     }
 
+    if (minimum != mpss::MinimumIsolation::software)
+    {
+        locator->minimum = ASN1_INTEGER_new();
+        if (nullptr == locator->minimum ||
+            1 != ASN1_INTEGER_set_uint64(locator->minimum, static_cast<std::uint64_t>(minimum)))
+        {
+            return false;
+        }
+    }
+
     // DER represents TRUE as 0xff, not merely any nonzero byte.
     locator->use_defaults = use_defaults ? 0xff : 0;
     return encode_locator(locator.get(), out);
@@ -119,14 +131,17 @@ bool build_locator(const mpss::KeyLocation &location, bool use_defaults, byte_ve
 namespace mpss_openssl::provider
 {
 
-bool mpss_build_key_load_reference(std::string_view backend, std::string_view key_name, utils::byte_vector &reference)
+bool mpss_build_key_load_reference(std::string_view backend, std::string_view key_name, utils::byte_vector &reference,
+                                   mpss::MinimumIsolation minimum)
 {
-    return build_locator(mpss::KeyLocation{std::string{backend}, std::string{key_name}, std::nullopt}, true, reference);
+    return build_locator(mpss::KeyLocation{std::string{backend}, std::string{key_name}, std::nullopt}, true, reference,
+                         minimum);
 }
 
-bool mpss_build_key_load_reference(const mpss::KeyLocation &location, utils::byte_vector &reference)
+bool mpss_build_key_load_reference(const mpss::KeyLocation &location, utils::byte_vector &reference,
+                                   mpss::MinimumIsolation minimum)
 {
-    return build_locator(location, false, reference);
+    return build_locator(location, false, reference, minimum);
 }
 
 bool mpss_parse_key_load_reference(std::span<const unsigned char> reference, mpss_load_reference &parsed,
@@ -176,6 +191,17 @@ bool mpss_parse_key_load_reference(std::span<const unsigned char> reference, mps
         if (nullptr != locator->device)
         {
             result.key.location.device_id = text_value(locator->device);
+        }
+
+        if (nullptr != locator->minimum)
+        {
+            std::uint64_t value = 0;
+            if (1 != ASN1_INTEGER_get_uint64(&value, locator->minimum) || value == 0 ||
+                value > static_cast<std::uint64_t>(mpss::MinimumIsolation::hardware))
+            {
+                return false;
+            }
+            result.minimum = static_cast<mpss::MinimumIsolation>(value);
         }
 
         if (!valid_location(result.key.location, use_defaults))
