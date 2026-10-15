@@ -3,6 +3,7 @@
 
 #include "mpss/impl/android/JNIHelper.h"
 #include "mpss/impl/android/JNIObject.h"
+#include "mpss/impl/android/android_keypair.h"
 #include "mpss/impl/android/android_utils.h"
 #include "mpss/log.h"
 #include "mpss/mpss.h"
@@ -262,8 +263,8 @@ std::optional<bool> java_key_operation(std::string_view operation, std::string_v
     return mpss::impl::os::utils::unbox_boolean(env, result.get());
 }
 
-// OpenKey and CreateKey report the cache generation their hold was taken on, so they return a
-// Long rather than a Boolean. A negative value means the key does not exist.
+// OpenKey and CreateKey return a Long generation for a held key. OpenKey returns -1 for a missing
+// key; CreateKey returns 0 when the requested StrongBox candidate is unavailable.
 std::optional<std::int64_t> java_open_key(std::string_view key_name)
 {
     mpss::impl::os::JNIEnvGuard guard;
@@ -311,7 +312,8 @@ std::optional<std::int64_t> java_open_key(std::string_view key_name)
     return mpss::impl::os::utils::unbox_long(env, result.get());
 }
 
-std::optional<std::int64_t> java_create_key(std::string_view key_name, mpss::Algorithm algorithm)
+std::optional<std::int64_t> java_create_key(std::string_view key_name, mpss::Algorithm algorithm,
+                                            bool use_strongbox = false)
 {
     mpss::impl::os::JNIEnvGuard guard;
     if (!guard.valid())
@@ -329,7 +331,7 @@ std::optional<std::int64_t> java_create_key(std::string_view key_name, mpss::Alg
     }
 
     jmethodID method = env->GetStaticMethodID(key_management, "CreateKey",
-                                              "(Ljava/lang/String;Lcom/microsoft/mpss/Algorithm;)Ljava/lang/Long;");
+                                              "(Ljava/lang/String;Lcom/microsoft/mpss/Algorithm;Z)Ljava/lang/Long;");
     if (mpss::impl::os::utils::check_and_clear_exception(env, "resolving KeyManagement.CreateKey"))
     {
         return std::nullopt;
@@ -399,8 +401,8 @@ std::optional<std::int64_t> java_create_key(std::string_view key_name, mpss::Alg
         return std::nullopt;
     }
 
-    jni_object result(env,
-                      env->CallStaticObjectMethod(key_management, method, java_key_name.get(), algorithm_value.get()));
+    jni_object result(env, env->CallStaticObjectMethod(key_management, method, java_key_name.get(),
+                                                       algorithm_value.get(), static_cast<jboolean>(use_strongbox)));
     if (mpss::impl::os::utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
     {
         return std::nullopt;
@@ -464,6 +466,119 @@ bool call_direct_key_store(const char *method_name, std::string_view key_name)
 }
 
 } // namespace
+
+// Scenario: Android reports each defined security level or an unrecognized value.
+// Expected behavior: Each defined value keeps its tier and legacy hardware flag; unknown meets only software.
+TEST(AndroidSecurityTest, SecurityLevelsKeepTheirStorageTiers)
+{
+    using enum mpss::MinimumIsolation;
+    using enum mpss::StorageTier;
+
+    const std::array expected{unknown, android_software, android_unknown_secure, android_trusted_environment,
+                              android_strongbox};
+    for (int level = 0; level < static_cast<int>(expected.size()); ++level)
+    {
+        const auto tier = mpss::impl::os::storage_tier_for_security_level(level);
+        ASSERT_EQ(expected[level], tier);
+        EXPECT_EQ(level >= 2, mpss::get_storage_tier_info(*tier).is_hardware_backed);
+        EXPECT_TRUE(mpss::meets_minimum_isolation(*tier, software));
+        EXPECT_EQ(level >= 2, mpss::meets_minimum_isolation(*tier, mixed));
+        EXPECT_EQ(level == 4, mpss::meets_minimum_isolation(*tier, hardware));
+    }
+    EXPECT_FALSE(mpss::impl::os::storage_tier_for_security_level(-1));
+    EXPECT_FALSE(mpss::impl::os::storage_tier_for_security_level(5));
+}
+
+// Scenario: StrongBox is requested for a curve it does not support.
+// Expected behavior: Neither direct Java nor the minimum-aware provider creates a normal-store key.
+TEST(AndroidSecurityTest, HardwareMinimumDoesNotFallBackForUnsupportedCurve)
+{
+    using enum mpss::Algorithm;
+    const std::string name = "test_android_hardware_p384";
+    ASSERT_TRUE(mpss::KeyPair::Delete(name)) << mpss::get_error();
+    SCOPE_GUARD(static_cast<void>(mpss::KeyPair::Delete(name)));
+
+    ASSERT_EQ(0, java_create_key(name, ecdsa_secp384r1_sha384, true));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none,
+                                             mpss::MinimumIsolation::hardware));
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(name));
+}
+
+// Scenario: StrongBox can generate a P-256 key at the hardware minimum.
+// Expected behavior: The returned tier is StrongBox, and the legacy hardware flag stays true.
+TEST(AndroidSecurityTest, HardwareMinimumReportsStrongBox)
+{
+    using enum mpss::Algorithm;
+    if (!mpss::is_algorithm_available(ecdsa_secp256r1_sha256, mpss::MinimumIsolation::hardware))
+    {
+        GTEST_SKIP() << "StrongBox P-256 is unavailable.";
+    }
+    const std::string name = "test_android_hardware_p256";
+    ASSERT_TRUE(mpss::KeyPair::Delete(name)) << mpss::get_error();
+    SCOPE_GUARD(static_cast<void>(mpss::KeyPair::Delete(name)));
+
+    auto key =
+        mpss::KeyPair::Create(name, ecdsa_secp256r1_sha256, mpss::KeyPolicy::none, mpss::MinimumIsolation::hardware);
+    ASSERT_NE(nullptr, key) << mpss::get_error();
+    EXPECT_EQ(mpss::StorageTier::android_strongbox, key->key_info().storage_tier);
+    EXPECT_TRUE(key->key_info().is_hardware_backed);
+    ASSERT_TRUE(key->delete_key()) << mpss::get_error();
+}
+
+// Scenario: A key is reopened with a stronger minimum than its measured storage tier.
+// Expected behavior: The open is refused but the persisted key remains available at the software minimum.
+TEST(AndroidSecurityTest, UnderqualifiedOpenDoesNotDeleteKey)
+{
+    using enum mpss::Algorithm;
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384))
+    {
+        GTEST_SKIP() << "P-384 is unavailable.";
+    }
+    const std::string name = "test_android_minimum_open";
+    ASSERT_TRUE(mpss::KeyPair::Delete(name)) << mpss::get_error();
+    SCOPE_GUARD(static_cast<void>(mpss::KeyPair::Delete(name)));
+
+    auto key = mpss::KeyPair::Create(name, ecdsa_secp384r1_sha384);
+    ASSERT_NE(nullptr, key) << mpss::get_error();
+    const auto tier = key->key_info().storage_tier;
+    ASSERT_NE(mpss::StorageTier::android_strongbox, tier);
+    key.reset();
+
+    EXPECT_EQ(nullptr, mpss::KeyPair::Open(name, mpss::MinimumIsolation::hardware));
+    EXPECT_NE(std::string::npos, mpss::get_error().find("minimum isolation"));
+    auto reopened = mpss::KeyPair::Open(name);
+    ASSERT_NE(nullptr, reopened) << mpss::get_error();
+    EXPECT_EQ(tier, reopened->key_info().storage_tier);
+    ASSERT_TRUE(reopened->delete_key()) << mpss::get_error();
+}
+
+// Scenario: A normal-store P-384 key is requested with a mixed minimum.
+// Expected behavior: A qualifying key is returned, or the underqualified generation is deleted.
+TEST(AndroidSecurityTest, MixedMinimumChecksMeasuredTier)
+{
+    using enum mpss::Algorithm;
+    if (!mpss::is_algorithm_available(ecdsa_secp384r1_sha384))
+    {
+        GTEST_SKIP() << "P-384 is unavailable.";
+    }
+    const std::string name = "test_android_minimum_create";
+    ASSERT_TRUE(mpss::KeyPair::Delete(name)) << mpss::get_error();
+    SCOPE_GUARD(static_cast<void>(mpss::KeyPair::Delete(name)));
+
+    auto key =
+        mpss::KeyPair::Create(name, ecdsa_secp384r1_sha384, mpss::KeyPolicy::none, mpss::MinimumIsolation::mixed);
+    if (key)
+    {
+        EXPECT_TRUE(mpss::meets_minimum_isolation(key->key_info().storage_tier, mpss::MinimumIsolation::mixed));
+        ASSERT_TRUE(key->delete_key()) << mpss::get_error();
+    }
+    else
+    {
+        EXPECT_EQ(nullptr, key);
+        EXPECT_NE(std::string::npos, mpss::get_error().find("minimum isolation"));
+        EXPECT_EQ(nullptr, mpss::KeyPair::Open(name));
+    }
+}
 
 TEST(AndroidSecurityTest, ImportedKeyIsRefused)
 {
