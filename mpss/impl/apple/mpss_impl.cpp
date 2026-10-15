@@ -172,6 +172,16 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return open_key(name);
+    }
+    mpss::utils::log_and_set_error("Apple backend cannot enforce the requested minimum isolation.");
+    return nullptr;
+}
+
 bool delete_key(std::string_view name)
 {
     mpss::utils::clear_error();
@@ -257,6 +267,17 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     }
 
     utils::report_keychain_error("create key");
+    return nullptr;
+}
+
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
+{
+    if (minimum == MinimumIsolation::software)
+    {
+        return create_key(name, algorithm, policy);
+    }
+    mpss::utils::log_and_set_error("Apple backend cannot enforce the requested minimum isolation.");
     return nullptr;
 }
 
