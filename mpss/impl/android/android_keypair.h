@@ -5,9 +5,30 @@
 
 #include "mpss/mpss.h"
 #include <cstdint>
+#include <optional>
 
 namespace mpss::impl::os
 {
+
+[[nodiscard]]
+constexpr std::optional<StorageTier> storage_tier_for_security_level(int level)
+{
+    switch (level)
+    {
+    case 0:
+        return StorageTier::unknown;
+    case 1:
+        return StorageTier::android_software;
+    case 2:
+        return StorageTier::android_unknown_secure;
+    case 3:
+        return StorageTier::android_trusted_environment;
+    case 4:
+        return StorageTier::android_strongbox;
+    default:
+        return std::nullopt;
+    }
+}
 
 class AndroidKeyPair : public mpss::KeyPair
 {

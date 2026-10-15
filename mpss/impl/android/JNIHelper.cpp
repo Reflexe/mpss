@@ -72,7 +72,7 @@ constexpr std::array<MethodSpec, static_cast<std::size_t>(JNIHelper::JavaMethod:
     {.id = JNIHelper::JavaMethod::create_key,
      .owner = OwnerClass::key_management,
      .name = "CreateKey",
-     .descriptor = "(Ljava/lang/String;Lcom/microsoft/mpss/Algorithm;)Ljava/lang/Long;",
+     .descriptor = "(Ljava/lang/String;Lcom/microsoft/mpss/Algorithm;Z)Ljava/lang/Long;",
      .is_static = true},
     {.id = JNIHelper::JavaMethod::close_key,
      .owner = OwnerClass::key_management,
