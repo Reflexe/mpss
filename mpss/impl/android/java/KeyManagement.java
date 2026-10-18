@@ -50,7 +50,7 @@ public class KeyManagement {
     private static final ThreadLocal<String> _lastError = ThreadLocal.withInitial(() -> "");
     private static final Object _keyLock = new Object();
 
-    private static KeyPair CreateKey(String keyName, Algorithm algorithm, Boolean useStrongbox)
+    private static KeyPair GenerateKey(String keyName, Algorithm algorithm, boolean useStrongbox)
             throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException, InvalidKeySpecException {
         if (null == keyName) {
             throw new IllegalArgumentException("keyName is null.");
@@ -99,8 +99,9 @@ public class KeyManagement {
                     Log.i("MPSS", "Key has security level StrongBox: " + keyName);
                     return 4;
                 default:
-                    Log.i("MPSS", "Key has unknown security level: " + keyName);
-                    return 0;
+                    Log.e("MPSS", "Key has unrecognized security level: " + keyName);
+                    SetError("Unrecognized key security level: " + level);
+                    return -1;
             }
         }
     }
@@ -246,14 +247,15 @@ public class KeyManagement {
 
     /**
      * Create a new long-term key.
-     * Tries to create first in StrongBox when supported, then falls back to AndroidKeyStore.
+     * Attempts one key store; the caller decides whether to fall back after StrongBox is unavailable.
      * @param keyName Name of the key to create.
      * @param algorithm Algorithm for the key.
-     * @return The generation the hold was taken on, or null if the key could not be created. The
+     * @param useStrongbox Whether to request StrongBox.
+     * @return The generation the hold was taken on, zero when StrongBox is unavailable, or null on error. The
      *         handle keeps it and presents it with every operation it makes, the release that gives
      *         the hold back included.
      */
-    public static Long CreateKey(String keyName, Algorithm algorithm) {
+    public static Long CreateKey(String keyName, Algorithm algorithm, boolean useStrongbox) {
         ClearError();
         synchronized (_keyLock) {
             try {
@@ -288,31 +290,17 @@ public class KeyManagement {
                     return null;
                 }
 
-                KeyPair kp = null;
-                boolean useStrongbox = false;
-
-                // Only P-256 is supported in StrongBox.
-                if (algorithm == Algorithm.secp256r1) {
-                    useStrongbox = true;
+                if (useStrongbox && algorithm != Algorithm.secp256r1) {
+                    return 0L;
                 }
 
+                KeyPair kp;
                 try {
-                    kp = CreateKey(keyName, algorithm, useStrongbox);
+                    kp = GenerateKey(keyName, algorithm, useStrongbox);
                 } catch (StrongBoxUnavailableException ex) {
+                    if (!useStrongbox) throw ex;
                     Log.i("MPSS", "StrongBox is not available.");
-                }
-
-                if (!useStrongbox && null == kp) {
-                    // If we are not using StrongBox, no need to try again.
-                    String msg = "Failed to create key in TEE.";
-                    Log.e("MPSS", msg);
-                    SetError(msg);
-                    return null;
-                }
-
-                // Try again without StrongBox.
-                if (null == kp) {
-                    kp = CreateKey(keyName, algorithm, /* useStrongBox */ false);
+                    return 0L;
                 }
 
                 if (null == kp) {

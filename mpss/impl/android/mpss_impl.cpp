@@ -9,7 +9,10 @@
 #include "mpss/impl/os_backend.h"
 #include "mpss/utils/scope_guard.h"
 #include "mpss/utils/utilities.h"
+#include <format>
 #include <optional>
+#include <random>
+#include <vector>
 
 using jni_string = mpss::impl::os::utils::JNIObj<jstring>;
 using jni_object = mpss::impl::os::utils::JNIObj<jobject>;
@@ -72,29 +75,14 @@ bool get_key_properties(std::string_view name, std::uint64_t generation, mpss::S
         return false;
     }
 
-    // The security level the key store reported, named as a tier. What each tier reports is
-    // answered in one place; see mpss/storage_tier.h.
-    switch (result)
+    const auto measured = mpss::impl::os::storage_tier_for_security_level(result);
+    if (!measured)
     {
-    case 0:
-        storage_tier = mpss::StorageTier::unknown;
-        return true;
-    case 1:
-        storage_tier = mpss::StorageTier::android_software;
-        return true;
-    case 2:
-        storage_tier = mpss::StorageTier::android_unknown_secure;
-        return true;
-    case 3:
-        storage_tier = mpss::StorageTier::android_trusted_environment;
-        return true;
-    case 4:
-        storage_tier = mpss::StorageTier::android_strongbox;
-        return true;
-    default:
         mpss::utils::log_and_set_error("Unknown result from KeyManagement.GetKeySecurityLevel");
         return false;
     }
+    storage_tier = *measured;
+    return true;
 }
 
 } // namespace
@@ -162,7 +150,7 @@ bool delete_created_key(JNIEnv *env, jclass key_management, jstring key_name, st
     return true;
 }
 
-OpenKeyResult try_open_key(std::string_view name)
+OpenKeyResult try_open_key(std::string_view name, MinimumIsolation minimum = MinimumIsolation::software)
 {
     mpss::utils::log_trace("Attempting to open key '{}' on Android backend.", name);
 
@@ -314,6 +302,11 @@ OpenKeyResult try_open_key(std::string_view name)
         // Error happened getting key properties. This is reported by get_key_properties, so we just return here.
         return {.status = KeyProbeStatus::operational_error, .value = nullptr};
     }
+    if (!meets_minimum_isolation(storage_tier, minimum))
+    {
+        mpss::utils::log_and_set_error("Key '{}' does not meet the requested minimum isolation.", name);
+        return {.status = KeyProbeStatus::operational_error, .value = nullptr};
+    }
 
     mpss::utils::log_trace("Key '{}' opened on Android with {} storage.", name,
                            get_storage_tier_info(storage_tier).description);
@@ -324,31 +317,29 @@ OpenKeyResult try_open_key(std::string_view name)
 
 } // namespace
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
 {
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        mpss::utils::log_and_set_error("Invalid minimum isolation.");
+        return nullptr;
+    }
     if (name.empty())
     {
         mpss::utils::log_and_set_error("Key name cannot be empty.");
         return nullptr;
     }
-
-    OpenKeyResult result = try_open_key(name);
+    OpenKeyResult result = try_open_key(name, minimum);
     if (KeyProbeStatus::not_found == result.status)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
     }
-
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
+std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
-    if (minimum == MinimumIsolation::software)
-    {
-        return open_key(name);
-    }
-    mpss::utils::log_and_set_error("Android backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+    return open_key(name, MinimumIsolation::software);
 }
 
 bool delete_key(std::string_view name)
@@ -423,8 +414,14 @@ bool delete_key(std::string_view name)
     return true;
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
 {
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        mpss::utils::log_and_set_error("Invalid minimum isolation.");
+        return nullptr;
+    }
     if (name.empty())
     {
         mpss::utils::log_and_set_error("Key name cannot be empty.");
@@ -440,6 +437,11 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     if (KeyPolicy::none != policy)
     {
         mpss::utils::log_and_set_error("Android backend does not support the requested key policy.");
+        return nullptr;
+    }
+    if (minimum == MinimumIsolation::hardware && algorithm != ecdsa_secp256r1_sha256)
+    {
+        mpss::utils::log_and_set_error("StrongBox does not support the requested algorithm.");
         return nullptr;
     }
 
@@ -539,26 +541,40 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
         return nullptr;
     }
 
-    jni_object result(env, env->CallStaticObjectMethod(key_management, method, key_name.get(), algorithm_value.get()));
-    if (utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
+    bool use_strongbox = algorithm == ecdsa_secp256r1_sha256;
+    std::uint64_t generation = 0;
+    for (;;)
     {
-        return nullptr;
+        jni_object result(env,
+                          env->CallStaticObjectMethod(key_management, method, key_name.get(), algorithm_value.get(),
+                                                      static_cast<jboolean>(use_strongbox)));
+        if (utils::check_and_clear_exception(env, "calling KeyManagement.CreateKey"))
+        {
+            return nullptr;
+        }
+        if (result.is_null())
+        {
+            utils::report_java_error(env, "KeyManagement.CreateKey");
+            return nullptr;
+        }
+        const std::optional<std::int64_t> created = utils::unbox_long(env, result.get());
+        if (!created || *created < 0)
+        {
+            mpss::utils::log_and_set_error("KeyManagement.CreateKey returned an invalid generation.");
+            return nullptr;
+        }
+        if (*created != 0)
+        {
+            generation = static_cast<std::uint64_t>(*created);
+            break;
+        }
+        if (!use_strongbox || minimum == MinimumIsolation::hardware)
+        {
+            mpss::utils::log_and_set_error("StrongBox is unavailable for the requested minimum isolation.");
+            return nullptr;
+        }
+        use_strongbox = false;
     }
-    if (result.is_null())
-    {
-        utils::report_java_error(env, "KeyManagement.CreateKey");
-        return nullptr;
-    }
-
-    const std::optional<std::int64_t> created = utils::unbox_long(env, result.get());
-    if (!created.has_value() || 0 >= created.value())
-    {
-        // Zero carries the same meaning here as on the open path: the cache had no generation to
-        // report, which leaves nothing for the handle to address.
-        utils::report_java_error(env, "KeyManagement.CreateKey");
-        return nullptr;
-    }
-    const std::uint64_t generation = static_cast<std::uint64_t>(created.value());
 
     // Creation took a hold on the cached key, released by the key pair's destructor. A path that
     // returns without one has to release it here instead.
@@ -571,18 +587,19 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     });
 
     StorageTier storage_tier = StorageTier::unknown;
-    if (!get_key_properties(name, generation, storage_tier))
+    const bool measured = get_key_properties(name, generation, storage_tier);
+    if (!measured || !meets_minimum_isolation(storage_tier, minimum))
     {
-        // Returning null tells the caller no key was created, so the key must not be left behind.
-        // This runs before the guard above releases the hold: releasing the last hold drops the
-        // cache entry, and the delete would then be refused.
+        if (measured)
+        {
+            mpss::utils::log_and_set_error("Created key '{}' does not meet the requested minimum isolation.", name);
+        }
+        // Delete before releasing the hold: the last release removes the generation used to identify this key.
         const std::string tier_error = mpss::utils::get_error();
         if (!delete_created_key(env, key_management, key_name.get(), generation))
         {
-            // The caller still sees why the create failed. The failed cleanup is only logged.
-            mpss::utils::log_warning("Could not delete key '{}' after failing to establish its storage tier: {}", name,
-                                     mpss::utils::get_error());
-            mpss::utils::set_error(tier_error);
+            mpss::utils::log_and_set_error("Rejected key '{}': {}; cleanup failed: {}; key may remain persisted.", name,
+                                           tier_error, mpss::utils::get_error());
         }
 
         return nullptr;
@@ -594,15 +611,38 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     return std::make_unique<AndroidKeyPair>(algorithm, name, storage_tier, generation);
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
-                                    MinimumIsolation minimum)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
-    if (minimum == MinimumIsolation::software)
+    return create_key(name, algorithm, policy, MinimumIsolation::software);
+}
+
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum)
+{
+    const AlgorithmInfo info = get_algorithm_info(algorithm);
+    if (0 == info.key_bits || !is_valid_minimum_isolation(minimum))
     {
-        return create_key(name, algorithm, policy);
+        return false;
     }
-    mpss::utils::log_and_set_error("Android backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+
+    std::random_device random;
+    const std::string name = std::format("MPSS_TEST_KEY_{:08x}{:08x}_CAN_DELETE", random(), random());
+    SCOPE_GUARD({ mpss::utils::clear_error(); });
+
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name, .device_id = std::nullopt}, algorithm,
+                               KeyPolicy::none, minimum);
+    if (!key)
+    {
+        return false;
+    }
+    const std::vector<std::byte> hash(info.hash_bits / 8, static_cast<std::byte>('a'));
+    const std::size_t size = key->sign_hash(hash, {});
+    bool available = false;
+    if (size != 0)
+    {
+        std::vector<std::byte> signature(size);
+        available = key->sign_hash(hash, signature) != 0;
+    }
+    return key->delete_key() && available;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
