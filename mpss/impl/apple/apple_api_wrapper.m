@@ -383,7 +383,7 @@ static OSStatus CountItemsWithName(NSString *keyLabel, CFIndex *countOut) {
     (id)kSecAttrKeyType : SupportedKeychainKeyType(),
     (id)kSecAttrApplicationTag : [keyLabel dataUsingEncoding:NSUTF8StringEncoding],
     (id)kSecAttrKeyClass : (__bridge id)kSecAttrKeyClassPrivate,
-    (id)kSecReturnRef : @YES,
+    (id)kSecReturnAttributes : @YES,
     (id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll
   };
 

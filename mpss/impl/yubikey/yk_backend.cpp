@@ -154,6 +154,11 @@ bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm) const
     return 0 != utils::mpss_to_yk_algorithm(algorithm);
 }
 
+bool YubiKeyBackend::is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum) const
+{
+    return meets_minimum_isolation(StorageTier::yubikey_piv, minimum) && is_algorithm_available(algorithm);
+}
+
 std::optional<std::vector<std::string>> YubiKeyBackend::available_devices() const
 {
     const std::optional<std::vector<std::uint32_t>> serials = YubiKeyPIV::available_serials();
@@ -431,6 +436,36 @@ std::unique_ptr<KeyPair> YubiKeyBackend::open_key(const KeyLocation &location,
 
     return std::make_unique<YubiKeyKeyPair>(name, slot_info.value.algorithm, slot_info.value.slot, piv.get_serial(),
                                             slot_metadata.public_key);
+}
+
+std::unique_ptr<KeyPair> YubiKeyBackend::create_key(const KeyLocation &location, Algorithm algorithm, KeyPolicy policy,
+                                                    MinimumIsolation minimum) const
+{
+    if (!meets_minimum_isolation(StorageTier::yubikey_piv, minimum))
+    {
+        mpss::utils::log_and_set_error("YubiKey cannot enforce the requested minimum isolation.");
+        return nullptr;
+    }
+    return create_key(location, algorithm, policy);
+}
+
+std::unique_ptr<KeyPair> YubiKeyBackend::open_key(const KeyLocation &location,
+                                                  std::span<const std::byte> expected_public_key,
+                                                  MinimumIsolation minimum) const
+{
+    if (!meets_minimum_isolation(StorageTier::yubikey_piv, minimum))
+    {
+        mpss::utils::log_and_set_error("YubiKey cannot enforce the requested minimum isolation.");
+        return nullptr;
+    }
+    auto key = open_key(location, expected_public_key);
+    if (key && !meets_minimum_isolation(key->key_info().storage_tier, minimum))
+    {
+        key->release_key();
+        mpss::utils::log_and_set_error("Opened YubiKey key does not meet the requested minimum isolation.");
+        return nullptr;
+    }
+    return key;
 }
 
 bool YubiKeyBackend::delete_key(const KeyLocation &location) const

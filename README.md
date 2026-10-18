@@ -50,14 +50,17 @@ false for unrelated reasons. `get_storage_tier_info()` answers for a tier withou
 Tiers are names, not a rank: compare one for equality, never order it. The values run in increasing
 protection within a platform, so `tier >= StorageTier::windows_tpm` passes every test written on one
 platform and then accepts `apple_keychain` and `android_software`, neither of which is hardware
-backing. `is_hardware_backed` is what ranks tiers against each other.
+backing. Use `meets_minimum_isolation(storage_tier, minimum)` for a requested protection floor;
+`is_hardware_backed` is separate metadata and does not rank tiers.
 
-**An algorithm constrains which tiers are eligible, but does not settle which one a key gets.** On
-Apple, MPSS asks the Secure Enclave to hold every key and establishes from the key itself whether it
-did. Which algorithms the enclave accepts, and what happens when it declines, differ between the two
-paths Apple provides; see [Apple: which store answers](#apple-which-store-answers). A key reports
-the protection it actually has, so a caller that reads `key_info()` sees a change in platform
-behavior rather than silently losing a guarantee it believed it had.
+**An algorithm constrains which tiers are eligible, but does not settle which one a key gets.**
+Apple software-minimum requests try the strongest supported path and may use Keychain when the
+Security framework's enclave request is declined.
+Creation at a mixed or hardware minimum uses only CryptoKit's P-256 Secure Enclave path; it never
+attempts Keychain creation. Opening an existing Security framework key instead checks its measured
+tier, accepting Secure Enclave storage and rejecting software Keychain storage. A key reports the
+protection it actually has, so a caller that reads `key_info()` sees a change in platform behavior
+rather than silently losing a guarantee.
 
 ### Apple: which store answers
 
@@ -75,9 +78,11 @@ bundle, so its request fails with `-34018` and the key is created in software. A
 does have one, which is why the same P-384 request reaches the enclave on a phone and not in a
 terminal.
 
-**A P-256 create does not fall back.** Where an enclave is reported, it is the only place MPSS will
-put that key: if the enclave declines, creation fails rather than quietly returning a software key.
-Only the Security framework path falls back, and it reports `apple_keychain` when it does.
+Where an enclave is reported, a failed CryptoKit P-256 create does not fall back to Keychain.
+At a mixed or hardware minimum, CryptoKit must create the P-256 key in Secure Enclave; a refusal
+fails creation without trying the Security framework. P-384 and P-521 cannot be created at those
+stronger minima. The Security framework path at a software minimum may fall back to software and
+reports the resulting tier.
 
 Observed:
 
@@ -973,9 +978,9 @@ these diagnostics are accompanied by OpenSSL's own error queue; see
 
 `is_algorithm_available()` returns `false` without an error for an unavailable algorithm;
 an unknown algorithm/backend or missing default backend sets an error.
-OS backends probe using a scratch key. YubiKey answers from static capabilities, even without
-a device. Default-backend queries cache positive results, so availability is not a readiness
-or storage-tier guarantee.
+OS backends probe using a scratch key at the requested minimum. YubiKey answers from static
+capabilities for all three minimums, even without a device. Default-backend queries cache positive
+results separately for each minimum, so availability is not a readiness or storage-tier guarantee.
 
 ### Thread Safety
 
