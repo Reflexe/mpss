@@ -52,6 +52,11 @@
 #define MPSS_STORAGE_TIER_ANDROID_TRUSTED_ENVIRONMENT 8
 #define MPSS_STORAGE_TIER_ANDROID_STRONGBOX 9
 #define MPSS_STORAGE_TIER_YUBIKEY_PIV 10
+
+/** @brief Requested minimum protection for availability, key generation, and store loading. */
+#define MPSS_MINIMUM_ISOLATION_SOFTWARE 0U
+#define MPSS_MINIMUM_ISOLATION_MIXED 1U
+#define MPSS_MINIMUM_ISOLATION_HARDWARE 2U
 // NOLINTEND(*-macro-to-enum)
 
 #ifdef __cplusplus
@@ -144,6 +149,15 @@ extern "C"
     MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available(const char *algorithm_name);
 
     /**
+     * @brief Checks default-backend availability with a requested minimum protection level.
+     * @param[in] algorithm_name The algorithm name.
+     * @param[in] minimum_isolation One of the MPSS_MINIMUM_ISOLATION_* constants.
+     * @return True if available; invalid minimums report an error through both error channels.
+     */
+    MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available_with_minimum_isolation(const char *algorithm_name,
+                                                                               unsigned int minimum_isolation);
+
+    /**
      * @brief Checks whether an algorithm is available in the specified backend.
      *
      * The meaning of "available" is the named backend's; see @ref mpss_is_algorithm_available.
@@ -155,6 +169,10 @@ extern "C"
      */
     MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available_in_backend(const char *algorithm_name,
                                                                    const char *backend_name);
+
+    /** @brief Checks named-backend availability with a requested minimum protection level. */
+    MPSS_OPENSSL_DECOR bool mpss_is_algorithm_available_in_backend_with_minimum_isolation(
+        const char *algorithm_name, const char *backend_name, unsigned int minimum_isolation);
 
     /**
      * @brief Returns all algorithm names available in the default backend.
@@ -168,6 +186,14 @@ extern "C"
      * lifetime of the process.
      */
     MPSS_OPENSSL_DECOR const char **mpss_get_available_algorithms(void);
+
+    /**
+     * @brief Lists default-backend algorithms meeting the requested minimum.
+     * @return A null-terminated list valid until the next call to this function on the same thread;
+     * an invalid minimum returns an empty list and reports an error through both error channels.
+     */
+    MPSS_OPENSSL_DECOR const char **mpss_get_available_algorithms_with_minimum_isolation(
+        unsigned int minimum_isolation);
 
     /**
      * @brief Retrieves the last error message recorded on this thread.

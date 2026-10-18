@@ -86,7 +86,7 @@ bool has_error() noexcept;
  * @brief Set the last error string that occurred.
  * @param error The error string to set.
  */
-void set_error(std::string error) noexcept;
+MPSS_DECOR void set_error(std::string error) noexcept;
 
 /**
  * @brief Set the last error to report an internal failure, such as an exception caught at an API boundary.

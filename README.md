@@ -1525,6 +1525,7 @@ X509_free(cert);
 | `mpss_backend` | UTF-8 string | No | Backend name; defaults to the selected backend. List names with `mpss_get_available_backends()` |
 | `mpss_device_id` | UTF-8 string | No | Exact backend-specific device ID. For YubiKey, a decimal serial. An empty string requests automatic selection without the environment default; omission uses the default serial |
 | `mpss_key_policy` | uint64 | No | `MPSS_KEY_POLICY_*` fields from `api.h`; defaults to `NONE`. The backend must enforce the requested policy |
+| `mpss_minimum_isolation` | unsigned int | No | Requested minimum `MPSS_MINIMUM_ISOLATION_SOFTWARE`, `MIXED`, or `HARDWARE`; defaults to `SOFTWARE`. The selected backend must enforce it before creating a key. |
 
 **Gettable parameters** (queried via `EVP_PKEY_get_params` on an existing key):
 
@@ -1544,6 +1545,12 @@ The standard OpenSSL parameters `OSSL_PKEY_PARAM_GROUP_NAME`, `OSSL_PKEY_PARAM_B
 Supply it with `mpss_backend` to select a particular device without changing process-wide defaults.
 Retrieve the actual serial from a generated or opened key with `EVP_PKEY_get_utf8_string_param(pkey, "mpss_device_id", ...)`.
 The returned device metadata remains associated with that key; a setter cannot retarget an existing `EVP_PKEY`.
+
+`OSSL_STORE_open_ex` also accepts `mpss_minimum_isolation` as an unsigned integer context parameter;
+it applies only to that load, not to saved key references or future store operations. The original
+C availability functions remain unchanged. Use their separately named
+`_with_minimum_isolation` variants to request a minimum; pass one of the constants from `api.h`.
+An invalid value fails and sets both the MPSS last error and OpenSSL error queue.
 
 #### Certificate Authority and Certificate Chain Creation
 

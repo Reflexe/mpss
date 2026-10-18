@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <memory>
 #include <openssl/types.h>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,6 +19,22 @@ namespace mpss_openssl::utils
 {
 
 using byte_vector = std::vector<std::byte>;
+
+[[nodiscard]]
+constexpr std::optional<mpss::MinimumIsolation> parse_minimum_isolation(unsigned int value) noexcept
+{
+    switch (value)
+    {
+    case static_cast<unsigned int>(mpss::MinimumIsolation::software):
+        return mpss::MinimumIsolation::software;
+    case static_cast<unsigned int>(mpss::MinimumIsolation::mixed):
+        return mpss::MinimumIsolation::mixed;
+    case static_cast<unsigned int>(mpss::MinimumIsolation::hardware):
+        return mpss::MinimumIsolation::hardware;
+    default:
+        return std::nullopt;
+    }
+}
 
 using mpss::utils::fn_deleter;
 
