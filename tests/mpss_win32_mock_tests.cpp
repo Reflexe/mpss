@@ -11,6 +11,8 @@
 
 #ifdef _WIN32
 
+#include "mpss/impl/os_backend.h"
+#include "mpss/impl/windows/win_utils.h"
 #include "mpss/key_info.h"
 #include "mpss/key_policy.h"
 #include "mpss/mpss.h"
@@ -566,23 +568,178 @@ TEST_F(WindowsKeyCreation, TpmAndVbsUnavailableFallBackToSoftware)
     EXPECT_FALSE(key->key_info().is_hardware_backed);
 }
 
-// Scenario: the OS backend has not implemented selection for mixed or hardware minimums.
-// Expected behavior: no key is created, opened, or deleted, and availability cannot claim support.
-TEST_F(WindowsKeyCreation, ExplicitMinimumFailsBeforeAccessingTheStore)
+// Scenario: no TPM is present, and a mixed minimum allows VBS but not software.
+// Expected behavior: the Windows backend creates a VBS key without claiming hardware backing.
+TEST_F(WindowsKeyCreation, MixedMinimumUsesVbsWithoutHardwareBacking)
 {
+    FailTpmProvider();
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    mpss::impl::OSBackend backend;
+    auto key = backend.create_key(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                  mpss::MinimumIsolation::mixed);
+
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::StorageTier::windows_vbs, key->key_info().storage_tier);
+    EXPECT_FALSE(key->key_info().is_hardware_backed);
+}
+
+// Scenario: a hardware minimum is requested on a host with no TPM.
+// Expected behavior: the backend refuses rather than creating a VBS or software key.
+TEST_F(WindowsKeyCreation, HardwareMinimumDoesNotCreateInSoftwareKsp)
+{
+    FailTpmProvider();
     EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _).Times(0);
-    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, _, _).Times(0);
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    mpss::impl::OSBackend backend;
+    EXPECT_EQ(nullptr, backend.create_key(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                          mpss::MinimumIsolation::hardware));
+    EXPECT_TRUE(mpss::has_error());
+}
+
+// Scenario: neither TPM nor VBS can create a key for a mixed minimum.
+// Expected behavior: the software candidate is never tried.
+TEST_F(WindowsKeyCreation, MixedMinimumDoesNotFallBackToSoftware)
+{
+    FailTpmProvider();
+    bool software_attempted = false;
+    EXPECT_MODULE_FUNC_CALL(NCryptCreatePersistedKey, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([&software_attempted](NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, LPCWSTR, LPCWSTR, DWORD,
+                                              DWORD flags) -> SECURITY_STATUS {
+            software_attempted |= 0 == (flags & require_vbs_flag);
+            return status_failure;
+        });
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    mpss::impl::OSBackend backend;
+    EXPECT_EQ(nullptr, backend.create_key(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                          mpss::MinimumIsolation::mixed));
+    EXPECT_FALSE(software_attempted);
+}
+
+// Scenario: a mixed minimum is requested, but the VBS candidate measures as software.
+// Expected behavior: the just-created key is deleted by its native handle, not returned or retried in software.
+TEST_F(WindowsKeyCreation, MeasuredVbsDowngradeDeletesNewKey)
+{
+    FailTpmProvider();
+    AnswerKeyProperties(Isolation::not_isolated);
+    bool deleted = false;
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _)
+        .WillOnce([&deleted](NCRYPT_KEY_HANDLE, DWORD) -> SECURITY_STATUS {
+            deleted = true;
+            return ERROR_SUCCESS;
+        });
+    const auto before = mpss::impl::os::utils::current_key_generation("mock_win32_key");
 
     const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
     EXPECT_EQ(nullptr, mpss::KeyPair::Create(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
                                              mpss::MinimumIsolation::mixed));
-    EXPECT_THAT(mpss::get_error(), HasSubstr("cannot enforce"));
-    EXPECT_EQ(nullptr, mpss::KeyPair::Open(location, mpss::MinimumIsolation::hardware));
-    EXPECT_THAT(mpss::get_error(), HasSubstr("cannot enforce"));
-    EXPECT_FALSE(
-        mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, "os", mpss::MinimumIsolation::hardware));
-    EXPECT_FALSE(mpss::is_algorithm_available(mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::MinimumIsolation::mixed));
-    EXPECT_TRUE(mpss::get_available_algorithms(mpss::MinimumIsolation::hardware).empty());
+    EXPECT_TRUE(deleted);
+    EXPECT_NE(before, mpss::impl::os::utils::current_key_generation("mock_win32_key"));
+    EXPECT_THAT(mpss::get_error(), HasSubstr("does not meet"));
+}
+
+// Scenario: deletion of a downgraded VBS candidate fails.
+// Expected behavior: no key is returned, cleanup failure is reported, and the name's generation is unchanged.
+TEST_F(WindowsKeyCreation, FailedDowngradeCleanupDoesNotInvalidateGeneration)
+{
+    FailTpmProvider();
+    AnswerKeyProperties(Isolation::not_isolated);
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, fake_key_handle, _).WillOnce(Return(status_failure));
+    bool released = false;
+    EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, fake_key_handle).WillOnce([&released](NCRYPT_HANDLE) -> SECURITY_STATUS {
+        released = true;
+        return ERROR_SUCCESS;
+    });
+    const auto before = mpss::impl::os::utils::current_key_generation("mock_win32_key");
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    EXPECT_EQ(nullptr, mpss::KeyPair::Create(location, mpss::Algorithm::ecdsa_secp256r1_sha256, mpss::KeyPolicy::none,
+                                             mpss::MinimumIsolation::mixed));
+    EXPECT_TRUE(released);
+    EXPECT_EQ(before, mpss::impl::os::utils::current_key_generation("mock_win32_key"));
+    EXPECT_THAT(mpss::get_error(), HasSubstr("Cleanup failed"));
+}
+
+// Scenario: the software KSP holds a software key below the requested mixed minimum.
+// Expected behavior: opening releases its handle without deleting the persisted key.
+TEST_F(WindowsKeyCreation, MinimumOpenReleasesUnderqualifiedHandleWithoutDeletion)
+{
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::not_isolated);
+    EXPECT_MODULE_FUNC_CALL(NCryptDeleteKey, _, _).Times(0);
+    bool released = false;
+    EXPECT_MODULE_FUNC_CALL(NCryptFreeObject, fake_key_handle)
+        .WillRepeatedly([&released](NCRYPT_HANDLE) -> SECURITY_STATUS {
+            released = true;
+            return ERROR_SUCCESS;
+        });
+
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    mpss::impl::OSBackend backend;
+    EXPECT_EQ(nullptr, backend.open_key(location, {}, mpss::MinimumIsolation::mixed));
+    EXPECT_TRUE(released);
+    EXPECT_THAT(mpss::get_error(), HasSubstr("does not meet"));
+    auto key = backend.open_key(location, {}, mpss::MinimumIsolation::software);
+    ASSERT_NE(nullptr, key);
+    EXPECT_EQ(mpss::StorageTier::windows_software, key->key_info().storage_tier);
+}
+
+// Scenario: a VBS key satisfies mixed but not hardware, while a TPM key satisfies hardware.
+// Expected behavior: direct Windows backend opens classify and enforce each actual tier.
+TEST_F(WindowsKeyCreation, MinimumOpenDistinguishesVbsFromTpm)
+{
+    const mpss::KeyLocation location{.backend_name = "os", .name = "mock_win32_key", .device_id = std::nullopt};
+    mpss::impl::OSBackend backend;
+    KeyLivesIn(ksp_provider_handle);
+    AnswerKeyProperties(Isolation::isolated);
+    EXPECT_EQ(nullptr, backend.open_key(location, {}, mpss::MinimumIsolation::hardware));
+    auto vbs = backend.open_key(location, {}, mpss::MinimumIsolation::mixed);
+    ASSERT_NE(nullptr, vbs);
+    EXPECT_EQ(mpss::StorageTier::windows_vbs, vbs->key_info().storage_tier);
+    EXPECT_FALSE(vbs->key_info().is_hardware_backed);
+
+    KeyLivesIn(tpm_provider_handle);
+    auto tpm = backend.open_key(location, {}, mpss::MinimumIsolation::hardware);
+    ASSERT_NE(nullptr, tpm);
+    EXPECT_EQ(mpss::StorageTier::windows_tpm, tpm->key_info().storage_tier);
+}
+
+// Scenario: the host has no TPM, but can create and sign with a VBS key.
+// Expected behavior: named and default mixed availability succeed, hardware fails, and a failed
+// hardware probe does not affect subsequent mixed probes.
+TEST_F(WindowsKeyCreation, AvailabilitySeparatesHardwareAndMixedMinimums)
+{
+    EXPECT_MODULE_FUNC_CALL(NCryptSignHash, _, _, _, _, _, _, _, _)
+        .Times(AnyNumber())
+        .WillRepeatedly([](NCRYPT_KEY_HANDLE, VOID *, PBYTE, DWORD, PBYTE out, DWORD size, DWORD *written,
+                           DWORD) -> SECURITY_STATUS {
+            *written = 64;
+            if (nullptr != out)
+            {
+                if (size < 64)
+                {
+                    return status_failure;
+                }
+                std::fill_n(out, 64, BYTE{0});
+            }
+            return ERROR_SUCCESS;
+        });
+
+    constexpr auto algorithm = mpss::Algorithm::ecdsa_secp256r1_sha256;
+    EXPECT_TRUE(mpss::is_algorithm_available(algorithm, "os", mpss::MinimumIsolation::hardware));
+    EXPECT_TRUE(mpss::is_algorithm_available(algorithm, mpss::MinimumIsolation::hardware));
+
+    FailTpmProvider();
+    EXPECT_FALSE(mpss::is_algorithm_available(algorithm, "os", mpss::MinimumIsolation::hardware));
+    EXPECT_TRUE(mpss::is_algorithm_available(algorithm, "os", mpss::MinimumIsolation::mixed));
+    EXPECT_TRUE(mpss::is_algorithm_available(algorithm, mpss::MinimumIsolation::mixed));
+    EXPECT_TRUE(mpss::is_algorithm_available(algorithm, "os", mpss::MinimumIsolation::mixed));
+
+    RESTORE_MODULE_FUNC(NCryptSignHash);
+    VERIFY_AND_CLEAR_MODULE_FUNC(NCryptSignHash);
 }
 
 // Scenario: the caller explicitly requests the minimum that accepts all existing keys.

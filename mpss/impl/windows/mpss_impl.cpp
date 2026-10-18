@@ -13,8 +13,10 @@
 #include <memory>
 #include <ncrypt.h>
 #include <optional>
+#include <random>
 #include <string>
 #include <tbs.h>
+#include <vector>
 
 namespace
 {
@@ -531,7 +533,7 @@ using enum Algorithm;
 
 using TryOpenKeyResult = mpss::impl::KeyProbeResult<std::unique_ptr<KeyPair>>;
 
-TryOpenKeyResult try_open_key(std::string_view name)
+TryOpenKeyResult try_open_key(std::string_view name, MinimumIsolation minimum = MinimumIsolation::software)
 {
     using enum mpss::impl::KeyProbeStatus;
 
@@ -566,6 +568,12 @@ TryOpenKeyResult try_open_key(std::string_view name)
         }
     });
 
+    if (!meets_minimum_isolation(storage_tier, minimum))
+    {
+        mpss::utils::log_and_set_error("Key '{}' does not meet the requested minimum isolation.", name);
+        return {.status = operational_error, .value = nullptr};
+    }
+
     // The key store is shared, so a name can be held by a key this backend did not create. MPSS
     // prohibits private key export on every key it creates, and a key that permits it cannot offer
     // the guarantee this backend exists to provide: its private material may already be held
@@ -599,15 +607,20 @@ TryOpenKeyResult try_open_key(std::string_view name)
             .value = std::make_unique<WindowsKeyPair>(name, algorithm, key_handle, storage_tier, generation)};
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name)
+std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
 {
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        mpss::utils::log_and_set_error("Invalid minimum isolation.");
+        return nullptr;
+    }
     if (name.empty())
     {
         mpss::utils::log_and_set_error("Key name cannot be empty.");
         return {};
     }
 
-    TryOpenKeyResult result = try_open_key(name);
+    TryOpenKeyResult result = try_open_key(name, minimum);
     if (mpss::impl::KeyProbeStatus::not_found == result.status)
     {
         mpss::utils::log_debug("Key '{}' not found.", name);
@@ -616,14 +629,9 @@ std::unique_ptr<KeyPair> open_key(std::string_view name)
     return std::move(result.value);
 }
 
-std::unique_ptr<KeyPair> open_key(std::string_view name, MinimumIsolation minimum)
+std::unique_ptr<KeyPair> open_key(std::string_view name)
 {
-    if (minimum == MinimumIsolation::software)
-    {
-        return open_key(name);
-    }
-    mpss::utils::log_and_set_error("Windows backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+    return open_key(name, MinimumIsolation::software);
 }
 
 bool delete_key(std::string_view name)
@@ -682,8 +690,14 @@ bool delete_key(std::string_view name)
     return true;
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
+                                    MinimumIsolation minimum)
 {
+    if (!is_valid_minimum_isolation(minimum))
+    {
+        mpss::utils::log_and_set_error("Invalid minimum isolation.");
+        return nullptr;
+    }
     const std::string key_name{name};
     if (key_name.empty())
     {
@@ -746,6 +760,10 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
 
     for (const key_storage_provider &provider : create_providers)
     {
+        if (!meets_minimum_isolation(provider.storage_tier, minimum))
+        {
+            continue;
+        }
         mpss::utils::log_trace("Creating key '{}' with {} provider.", name,
                                get_storage_tier_info(provider.storage_tier).description);
         const CreateKeyResult created = provider.create_key(name, algorithm);
@@ -757,25 +775,28 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
             if (provider.verify_virtual_isolation)
             {
                 const VirtualIsolation isolation = GetVirtualIsolation(key_handle);
-                if (VirtualIsolation::indeterminate == isolation)
-                {
-                    // The tier could not be established, so the key is removed rather than reported
-                    // at a tier that was never confirmed.
-                    if (ERROR_SUCCESS != ::NCryptDeleteKey(key_handle, /* dwFlags */ 0))
-                    {
-                        ::NCryptFreeObject(key_handle);
-                    }
-
-                    // No handle was ever issued for this key, so nothing can be holding it. Moved
-                    // on anyway, so that every deletion here advances the name without exception.
-                    utils::invalidate_key_generation(name);
-                    return nullptr;
-                }
-
                 if (VirtualIsolation::not_isolated == isolation)
                 {
                     // The key was created but is not isolated, so it is reported as what it is.
                     storage_tier = StorageTier::windows_software;
+                }
+                if (VirtualIsolation::indeterminate == isolation || !meets_minimum_isolation(storage_tier, minimum))
+                {
+                    const std::string reason =
+                        VirtualIsolation::indeterminate == isolation
+                            ? mpss::get_error()
+                            : std::format("Created key '{}' does not meet the requested minimum isolation.", name);
+                    const SECURITY_STATUS status = ::NCryptDeleteKey(key_handle, /* dwFlags */ 0);
+                    if (ERROR_SUCCESS != status)
+                    {
+                        ::NCryptFreeObject(key_handle);
+                        mpss::utils::log_and_set_error("{} Cleanup failed with error code {}.", reason,
+                                                       mpss::utils::to_hex(status));
+                        return nullptr;
+                    }
+                    utils::invalidate_key_generation(name);
+                    mpss::utils::log_and_set_error("{}", reason);
+                    return nullptr;
                 }
             }
 
@@ -806,15 +827,38 @@ std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, 
     return nullptr;
 }
 
-std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy,
-                                    MinimumIsolation minimum)
+std::unique_ptr<KeyPair> create_key(std::string_view name, Algorithm algorithm, KeyPolicy policy)
 {
-    if (minimum == MinimumIsolation::software)
+    return create_key(name, algorithm, policy, MinimumIsolation::software);
+}
+
+bool is_algorithm_available(Algorithm algorithm, MinimumIsolation minimum)
+{
+    const AlgorithmInfo info = get_algorithm_info(algorithm);
+    if (0 == info.key_bits || !is_valid_minimum_isolation(minimum))
     {
-        return create_key(name, algorithm, policy);
+        return false;
     }
-    mpss::utils::log_and_set_error("Windows backend cannot enforce the requested minimum isolation.");
-    return nullptr;
+
+    std::random_device random;
+    const std::string name = std::format("MPSS_TEST_KEY_{:08x}{:08x}_CAN_DELETE", random(), random());
+    SCOPE_GUARD({ mpss::utils::clear_error(); });
+
+    auto key = KeyPair::Create(KeyLocation{.backend_name = "os", .name = name, .device_id = std::nullopt}, algorithm,
+                               KeyPolicy::none, minimum);
+    if (!key)
+    {
+        return false;
+    }
+    const std::vector<std::byte> hash(info.hash_bits / 8, static_cast<std::byte>('a'));
+    const std::size_t size = key->sign_hash(hash, {});
+    bool available = false;
+    if (0 != size)
+    {
+        std::vector<std::byte> signature(size);
+        available = 0 != key->sign_hash(hash, signature);
+    }
+    return key->delete_key() && available;
 }
 
 bool verify(std::span<const std::byte> hash, std::span<const std::byte> public_key, Algorithm algorithm,
