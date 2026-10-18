@@ -27,7 +27,8 @@ struct mpss_key
 
     mpss_key(std::string_view key_name, std::optional<std::string> &mpss_algorithm,
              const std::optional<std::string> &mpss_backend, mpss::KeyPolicy policy = mpss::KeyPolicy::none,
-             const std::optional<std::string> &device_id = std::nullopt);
+             const std::optional<std::string> &device_id = std::nullopt,
+             mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software);
 
     explicit mpss_key(std::unique_ptr<mpss::KeyPair> opened_key);
 

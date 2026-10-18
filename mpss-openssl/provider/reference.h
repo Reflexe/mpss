@@ -21,7 +21,8 @@ inline constexpr std::size_t mpss_max_reference_pem_size = mpss::impl::max_refer
 
 // Persisted DER: SEQUENCE { version INTEGER, backend UTF8String, name UTF8String,
 //                          device [0] EXPLICIT UTF8String OPTIONAL, publicKey SubjectPublicKeyInfo }.
-// Internal store requests use a separate [0]-tagged ASN.1 structure and cannot be loaded as PEM.
+// Internal store requests use a separate [0]-tagged ASN.1 structure with an optional requested
+// minimum; they cannot be loaded as PEM and never change the persisted reference format.
 enum class mpss_reference_kind : std::uint8_t
 {
     locator,        // Internal store request with explicit selection; absent device means automatic.
@@ -33,16 +34,19 @@ struct mpss_load_reference
 {
     mpss::KeyReference key{};
     mpss_reference_kind kind = mpss_reference_kind::locator;
+    mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software;
 };
 
 using mpss_reference_error = mpss::impl::ReferenceError;
 
 // Internal store requests may use defaults or an explicit location; neither form is a PEM reference.
 [[nodiscard]]
-bool mpss_build_key_load_reference(std::string_view backend, std::string_view key_name, utils::byte_vector &reference);
+bool mpss_build_key_load_reference(std::string_view backend, std::string_view key_name, utils::byte_vector &reference,
+                                   mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software);
 
 [[nodiscard]]
-bool mpss_build_key_load_reference(const mpss::KeyLocation &location, utils::byte_vector &reference);
+bool mpss_build_key_load_reference(const mpss::KeyLocation &location, utils::byte_vector &reference,
+                                   mpss::MinimumIsolation minimum = mpss::MinimumIsolation::software);
 
 [[nodiscard]]
 bool mpss_parse_key_load_reference(std::span<const unsigned char> reference, mpss_load_reference &parsed,
